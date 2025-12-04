@@ -15,7 +15,13 @@ const MessageBubble = ({ message, isUser }) => {
                     : 'bg-gray-800 text-gray-100 rounded-tl-none border border-gray-700'
                     }`}>
                     <div className="markdown-content">
-                        <ReactMarkdown>{message}</ReactMarkdown>
+                        <ReactMarkdown
+                            components={{
+                                em: ({ node, ...props }) => <span className="text-gray-400 italic" {...props} />
+                            }}
+                        >
+                            {message}
+                        </ReactMarkdown>
                     </div>
                 </div>
             </div>

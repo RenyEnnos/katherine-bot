@@ -5,7 +5,21 @@ import { toPercent } from '../../../shared/utils/formatters';
 const EmotionPanel = ({ emotionState }) => {
     if (!emotionState) return null;
 
-    const { pleasure, arousal, dominance, mood_label, acting_instruction } = emotionState;
+    const { pleasure, arousal, dominance, mood_label, acting_instruction, joy, sadness, anger, fear, disgust, surprise, guilt, pride, tenderness, jealousy, gratitude } = emotionState;
+
+    const discreteEmotions = [
+        { label: 'Alegria', value: joy, color: 'text-yellow-400' },
+        { label: 'Tristeza', value: sadness, color: 'text-blue-400' },
+        { label: 'Raiva', value: anger, color: 'text-red-500' },
+        { label: 'Medo', value: fear, color: 'text-purple-400' },
+        { label: 'Nojo', value: disgust, color: 'text-green-400' },
+        { label: 'Surpresa', value: surprise, color: 'text-orange-400' },
+        { label: 'Culpa', value: guilt, color: 'text-gray-400' },
+        { label: 'Orgulho', value: pride, color: 'text-yellow-600' },
+        { label: 'Ternura', value: tenderness, color: 'text-pink-300' },
+        { label: 'Ciúmes', value: jealousy, color: 'text-green-600' },
+        { label: 'Gratidão', value: gratitude, color: 'text-pink-500' },
+    ].filter(e => e.value > 0.1).sort((a, b) => b.value - a.value).slice(0, 3);
 
     return (
         <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 shadow-lg w-full md:w-72 mt-4 md:mt-0 md:ml-4 flex-shrink-0">
@@ -19,6 +33,17 @@ const EmotionPanel = ({ emotionState }) => {
                     "{acting_instruction}"
                 </div>
             </div>
+
+            {/* Discrete Emotions */}
+            {discreteEmotions.length > 0 && (
+                <div className="mb-4 flex flex-wrap gap-2">
+                    {discreteEmotions.map(e => (
+                        <span key={e.label} className={`text-xs font-medium px-2 py-1 rounded-full bg-gray-700 ${e.color}`}>
+                            {e.label} {Math.round(e.value * 100)}%
+                        </span>
+                    ))}
+                </div>
+            )}
 
             <div className="space-y-3">
                 {[

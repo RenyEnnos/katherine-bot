@@ -23,3 +23,7 @@ build/
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# App specific
+core_memory.json
+.agent/

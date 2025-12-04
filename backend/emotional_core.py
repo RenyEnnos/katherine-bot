@@ -56,10 +56,14 @@ class AffectiveEngine:
             "triggered_emotions": {"joy": 0.5, "anger": 0.2, ...}
         }
         """
-        # Update Base Mood (PAD) - with inertia
-        self.state.pleasure = self._clamp(self.state.pleasure + (perception.get("valence", 0) * 0.1))
-        self.state.arousal = self._clamp(self.state.arousal + (perception.get("arousal_shift", 0) * 0.1))
-        self.state.dominance = self._clamp(self.state.dominance + (perception.get("dominance_shift", 0) * 0.1))
+        # Apply decay first (time passed since last interaction)
+        self._apply_time_decay()
+        self._apply_circadian_rhythm()
+
+        # Update Base Mood (PAD) - with inertia (increased sensitivity to 0.2)
+        self.state.pleasure = self._clamp(self.state.pleasure + (perception.get("valence", 0) * 0.2))
+        self.state.arousal = self._clamp(self.state.arousal + (perception.get("arousal_shift", 0) * 0.2))
+        self.state.dominance = self._clamp(self.state.dominance + (perception.get("dominance_shift", 0) * 0.2))
         
         # Update Active Emotions
         triggered = perception.get("triggered_emotions", {})

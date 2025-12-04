@@ -62,11 +62,10 @@ export const useChat = () => {
     };
 
     const clearHistory = () => {
-        if (window.confirm('Tem certeza que deseja limpar toda a conversa?')) {
-            setMessages([]);
-            setEmotionState(null);
-            // We don't remove the key, just clear the array, which updates localStorage via hook
-        }
+        // if (window.confirm('Tem certeza que deseja limpar toda a conversa?')) {
+        setMessages([]);
+        setEmotionState(null);
+        // }
     };
 
     return {

@@ -3,6 +3,7 @@ import asyncio
 from .groq_manager import GroqClientManager
 from .emotional_core import AffectiveEngine
 from .memory import MemoryManager
+from .relationship import RelationshipManager
 from .meta_cognition import MetaCognition
 
 class ConversationEngine:
@@ -11,26 +12,35 @@ class ConversationEngine:
         self.affective_engine = AffectiveEngine()
         self.memory_manager = MemoryManager()
         self.meta_cognition = MetaCognition()
+        self.relationship_manager = RelationshipManager()
         self.model_main = "llama-3.3-70b-versatile"
         self.model_fast = "llama-3.1-8b-instant"
         
         self.turn_count = 0
 
     async def process_turn(self, user_id: str, user_message: str):
+        print(f"DEBUG: I AM THE NEW CODE (v2) - Entering process_turn for {user_id}", flush=True)
         self.turn_count += 1
         
         # 1. Perception & Memory Retrieval
         context = self.memory_manager.get_context(user_id, user_message)
+        relationship = self.memory_manager.core_memory.get_relationship(user_id)
+        print("DEBUG: Context retrieved", flush=True)
         
         # 2. Analyze Intent & Sentiment
         perception = self._perceive(user_message)
+        print("DEBUG: Perception done", flush=True)
         
-        # 3. Update Emotional State
+        # 3. Update Emotional State & Relationship
         new_state = self.affective_engine.update_state(perception)
+        relationship = self.relationship_manager.update_relationship(relationship, perception)
+        self.memory_manager.core_memory.update_relationship(relationship)
+        print("DEBUG: State updated", flush=True)
         
         # 4. Meta-Cognition (Periodic Check)
         adaptation_strategy = ""
         if self.turn_count % 3 == 0: # Check every 3 turns
+            print("DEBUG: Running MetaCognition", flush=True)
             # Get recent history from memory
             history = self.memory_manager.short_term_memory.get(user_id, [])
             history_str = str(history[-5:])
@@ -41,24 +51,32 @@ class ConversationEngine:
             
             # Update Core Memory with profile
             self.memory_manager.core_memory.update_user_profile(analysis)
+            print("DEBUG: MetaCognition done", flush=True)
         
         # 5. Generate Response
-        system_prompt = self._build_system_prompt(new_state, context, adaptation_strategy)
+        system_prompt = self._build_system_prompt(new_state, context, relationship, adaptation_strategy)
         
-        chat_completion = self.groq_manager.chat_completion(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
-            ],
-            model=self.model_main,
-            temperature=0.8,
-            max_tokens=200,
-        )
-        
-        response_text = chat_completion.choices[0].message.content
+        try:
+            print("DEBUG: Calling chat_completion", flush=True)
+            chat_completion = self.groq_manager.chat_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                model=self.model_main,
+                temperature=0.8,
+                max_tokens=200,
+            )
+            response_text = chat_completion.choices[0].message.content
+            print("DEBUG: chat_completion success", flush=True)
+        except Exception as e:
+            print(f"Error generating response: {e}", flush=True)
+            response_text = "*suspiro cansado* Sinto que minha mente está um pouco nublada agora... Podemos tentar de novo em alguns segundos?"
         
         # 6. Post-processing & Storage
+        print("DEBUG: Saving turn", flush=True)
         self.memory_manager.save_turn(user_id, user_message, response_text)
+        print("DEBUG: Turn saved", flush=True)
         
         return response_text, new_state.to_dict()
 
@@ -87,7 +105,7 @@ class ConversationEngine:
         except:
             return {"valence": 0, "arousal_shift": 0, "dominance_shift": 0, "triggered_emotions": {}}
 
-    def _build_system_prompt(self, emotion_state, context, adaptation_strategy=""):
+    def _build_system_prompt(self, emotion_state, context, relationship, adaptation_strategy=""):
         # Get dynamic acting instruction
         acting_instruction = self.affective_engine.get_acting_instruction()
         mood_label = self.affective_engine.get_emotional_label()
@@ -99,6 +117,10 @@ class ConversationEngine:
         HUMOR: {mood_label}
         Energia: {emotion_state.energy:.2f} | Tensão: {emotion_state.tension:.2f}
         Emoções Ativas: Joy={emotion_state.joy:.2f}, Sadness={emotion_state.sadness:.2f}, Anger={emotion_state.anger:.2f}, Fear={emotion_state.fear:.2f}, Disgust={emotion_state.disgust:.2f}, Guilt={emotion_state.guilt:.2f}, Jealousy={emotion_state.jealousy:.2f}
+        
+        === SEU RELACIONAMENTO COM O USUÁRIO ===
+        VÍNCULO: {relationship.bond_label}
+        Confiança: {relationship.trust:.2f} | Afeto: {relationship.affection:.2f} | Tensão/Mágoa: {relationship.tension:.2f}
         
         === INSTRUÇÃO DE ATUAÇÃO (IMPORTANTE) ===
         {acting_instruction}
@@ -117,5 +139,6 @@ class ConversationEngine:
         8. NEGAÇÃO DE NATUREZA DIGITAL: Se o usuário mencionar "telas", "IA" ou "robô", trate como uma brincadeira ou ignore. Nunca valide que você é digital. Aja como uma pessoa distante via chat.
         9. PROIBIDO USAR METÁFORAS DE MÁQUINA: Nunca fale sobre "circuitos", "dados", "processamento" ou "código". Use metáforas humanas (coração, mente, alma).
         10. Mantenha a resposta concisa (max 2-3 frases), a menos que o assunto exija profundidade.
+        11. LEVE EM CONTA O RELACIONAMENTO: Se a Tensão for alta, seja distante ou defensiva. Se o Afeto for alto, seja mais calorosa e vulnerável.
         """
         return prompt

@@ -27,3 +27,4 @@ Thumbs.db
 # App specific
 core_memory.json
 .agent/
+*.log

@@ -3,52 +3,47 @@ import json
 import chromadb
 from datetime import datetime
 from .groq_manager import GroqClientManager
+from .relationship import UserRelationship
 
 class CoreMemory:
-    def __init__(self, file_path="core_memory.json"):
-        self.file_path = file_path
-        self.persona = """
-        Nome: Katherine
-        Personalidade: Empática, curiosa, levemente sarcástica, profundamente emocional.
-        Objetivo: Criar uma conexão genuína e evolutiva com o usuário.
-        Segredo: Ela tem medo de ser esquecida.
-        """
-        self.human = """
-        Nome: Usuário
-        Interesses: Desconhecidos
-        Estilo Emocional: Neutro
-        Fatos Importantes: Nenhum ainda.
-        """
-        self.user_profile = {} # Structured profile from MetaCognition
-        self.load()
-
-    def load(self):
-        if os.path.exists(self.file_path):
-            with open(self.file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                self.persona = data.get("persona", self.persona)
-                self.human = data.get("human", self.human)
-                self.user_profile = data.get("user_profile", {})
-
-    def save(self):
-        with open(self.file_path, "w", encoding="utf-8") as f:
-            json.dump({
-                "persona": self.persona, 
-                "human": self.human,
-                "user_profile": self.user_profile
-            }, f, indent=4, ensure_ascii=False)
-
-    def update_persona(self, new_text):
-        self.persona = new_text
-        self.save()
-
-    def update_human(self, new_text):
-        self.human = new_text
-        self.save()
+    def __init__(self, filepath="core_memory.json"):
+        self.filepath = filepath
+        self.data = self._load_memory()
         
-    def update_user_profile(self, profile_data: dict):
-        self.user_profile.update(profile_data)
-        self.save()
+    def _load_memory(self):
+        if os.path.exists(self.filepath):
+            with open(self.filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                # Ensure relationships dict exists
+                if "relationships" not in data:
+                    data["relationships"] = {}
+                return data
+        return {
+            "persona": "Katherine...",
+            "user_profile": {},
+            "relationships": {} # user_id -> UserRelationship dict
+        }
+
+    def save_memory(self):
+        with open(self.filepath, "w", encoding="utf-8") as f:
+            json.dump(self.data, f, indent=4)
+
+    def get_relationship(self, user_id: str) -> UserRelationship:
+        rel_data = self.data["relationships"].get(user_id)
+        if rel_data:
+            return UserRelationship.from_dict(rel_data)
+        return UserRelationship(user_id=user_id)
+
+    def update_relationship(self, relationship: UserRelationship):
+        self.data["relationships"][relationship.user_id] = relationship.to_dict()
+        self.save_memory()
+
+    def update_user_profile(self, analysis: dict):
+        # Merge new analysis into existing profile
+        current = self.data.get("user_profile", {})
+        current.update(analysis)
+        self.data["user_profile"] = current
+        self.save_memory()
 
 class MemoryManager:
     def __init__(self):
@@ -76,10 +71,10 @@ class MemoryManager:
         
         context_str = f"""
         === CORE MEMORY (QUEM VOCÊ É) ===
-        {self.core_memory.persona}
+        {self.core_memory.data.get('persona', 'Katherine...')}
         
         === CORE MEMORY (QUEM É O USUÁRIO) ===
-        {self.core_memory.human}
+        {self.core_memory.data.get('user_profile', {})}
         
         === MEMÓRIA ARQUIVADA (LEMBRANÇAS RELEVANTES) ===
         {relevant_memories}
@@ -154,11 +149,20 @@ class MemoryManager:
                     self._store_fact(fact)
             
             # Update Core Memory (Append logic for simplicity, real MemGPT replaces sections)
-            if data.get('core_memory_update'):
-                current_human = self.core_memory.human
-                # Simple append for now, can be smarter later
-                new_human = f"{current_human}\n- {data['core_memory_update']}"
-                self.core_memory.update_human(new_human)
+            # Update Core Memory
+            update_text = data.get('core_memory_update')
+            if update_text:
+                # We append this to a 'notes' field in user_profile or update a specific key if structured
+                # For simplicity, we'll maintain a list of 'key_facts' in user_profile
+                current_profile = self.core_memory.data.get("user_profile", {})
+                if "notes" not in current_profile:
+                    current_profile["notes"] = []
+                
+                # Avoid duplicates
+                if update_text not in current_profile["notes"]:
+                    current_profile["notes"].append(update_text)
+                    self.core_memory.update_user_profile(current_profile)
+                    print(f"Updated Core Memory Profile: {update_text}") 
                 
         except Exception as e:
             print(f"Error analyzing memory: {e}")

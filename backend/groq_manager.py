@@ -12,12 +12,13 @@ logger = logging.getLogger("GroqManager")
 class GroqClientManager:
     def __init__(self):
         self.keys = [k for k in GROQ_API_KEYS if k and k.strip()]
+        print(f"DEBUG: GroqClientManager initialized with {len(self.keys)} keys.")
         if not self.keys:
             logger.warning("No Groq API keys found in groq_keys.py! Please add them.")
         
         # Track cooldowns: {key: timestamp_when_available}
         self.cooldowns = {}
-        self.cooldown_duration = 60 * 2  # 2 minutes penalty for rate limits
+        self.cooldown_duration = 10  # Reduced to 10s to avoid long lockouts
 
     def _get_available_key(self) -> Optional[str]:
         now = time.time()

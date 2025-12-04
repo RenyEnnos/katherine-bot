@@ -37,6 +37,8 @@ async def chat_endpoint(input_data: ChatInput):
         response_text, current_emotion = await engine.process_turn(input_data.user_id, input_data.message)
         return ChatResponse(response=response_text, emotion_state=current_emotion)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")

@@ -45,5 +45,26 @@ async def chat_endpoint(input_data: ChatInput, background_tasks: BackgroundTasks
 def health_check():
     return {"status": "alive", "engine_status": "ready"}
 
+@app.get("/history/{user_id}")
+async def get_history(user_id: str):
+    try:
+        # Fetch last 50 messages from Supabase
+        # We access the supabase client via the engine's memory manager
+        if not engine.memory_manager.supabase:
+            return []
+            
+        response = engine.memory_manager.supabase.table("chat_logs")\
+            .select("*")\
+            .eq("user_id", user_id)\
+            .order("created_at", desc=True)\
+            .limit(50)\
+            .execute()
+            
+        # Return reversed (chronological order)
+        return response.data[::-1] if response.data else []
+    except Exception as e:
+        print(f"Error fetching history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)

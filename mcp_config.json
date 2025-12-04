@@ -1,0 +1,19 @@
+{
+  "inputs": [
+    {
+      "password": true,
+      "id": "brave-api-key",
+      "type": "promptString",
+      "description": "Brave Search API Key"
+    }
+  ],
+  "servers": {
+    "brave-search": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-e", "BRAVE_API_KEY", "mcp/brave-search"],
+      "env": {
+        "BRAVE_API_KEY": "${input:brave-api-key}"
+      }
+    }
+  }
+}

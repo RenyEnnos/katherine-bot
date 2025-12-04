@@ -1,26 +1,37 @@
 import { useState, useEffect, useRef } from 'react';
 import { sendMessage } from '../services/chatService';
-import { STORAGE_KEYS, SYSTEM_MESSAGES } from '../constants';
-import { useLocalStorage } from '../../../shared/hooks/useLocalStorage';
+import { SYSTEM_MESSAGES } from '../constants';
 
-export const useChat = () => {
-    // Use useLocalStorage for persistence
-    const [userId, setUserId] = useLocalStorage(STORAGE_KEYS.USER_ID, '');
-    const [messages, setMessages] = useLocalStorage(STORAGE_KEYS.CHAT_HISTORY, []);
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
+export const useChat = (userId) => {
+    const [messages, setMessages] = useState([]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [emotionState, setEmotionState] = useState(null);
     const messagesEndRef = useRef(null);
     const inputRef = useRef(null);
 
-    // Initialize user if not exists (handled by useLocalStorage initialValue logic mostly, 
-    // but we need to ensure a unique ID is generated if empty)
+    // Fetch history on mount or when userId changes
     useEffect(() => {
-        if (!userId) {
-            setUserId(`user-${Date.now()}`);
-        }
-    }, [userId, setUserId]);
+        if (!userId) return;
+
+        const fetchHistory = async () => {
+            try {
+                const response = await fetch(`${API_URL}/history/${userId}`);
+                if (response.ok) {
+                    const history = await response.json();
+                    // Map backend format to frontend format if needed
+                    // Backend returns: [{role: 'user', content: '...'}, ...]
+                    setMessages(history);
+                }
+            } catch (error) {
+                console.error("Failed to fetch history:", error);
+            }
+        };
+
+        fetchHistory();
+    }, [userId]);
 
     // Auto-scroll to bottom
     useEffect(() => {
@@ -62,10 +73,9 @@ export const useChat = () => {
     };
 
     const clearHistory = () => {
-        // if (window.confirm('Tem certeza que deseja limpar toda a conversa?')) {
         setMessages([]);
         setEmotionState(null);
-        // }
+        // Ideally, we should also call an API endpoint to clear history in backend if desired
     };
 
     return {

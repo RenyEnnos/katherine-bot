@@ -20,7 +20,7 @@ class ConversationEngine:
         self.current_adaptation_strategy = ""
 
     async def process_turn(self, user_id: str, user_message: str, background_tasks=None):
-        print(f"DEBUG: I AM THE NEW CODE (v4 - Supabase) - Entering process_turn for {user_id}", flush=True)
+        print(f"DEBUG: I AM THE NEW CODE (v5 - Hybrid Core) - Entering process_turn for {user_id}", flush=True)
         self.turn_count += 1
         
         # 1. Load State from Supabase (Memory Server)
@@ -41,16 +41,16 @@ class ConversationEngine:
         print("DEBUG: State loaded from Supabase", flush=True)
         
         # 2. Perception & Memory Retrieval
-        # Pass full user_state to get_context so it can extract profile/persona
         context = self.memory_manager.get_context(user_id, user_message, user_state)
         print("DEBUG: Context retrieved", flush=True)
         
-        # 3. Analyze Intent & Sentiment
+        # 3. Analyze Intent & Sentiment (LLM Perception)
         perception = self._perceive(user_message)
         print("DEBUG: Perception done", flush=True)
         
         # 4. Update Emotional State & Relationship
-        new_state = self.affective_engine.update_state(perception)
+        # NEW: Pass user_message for OCC Appraisal + Perception override
+        new_state, coping_instruction = self.affective_engine.update_state(user_message, perception_override=perception)
         relationship = self.relationship_manager.update_relationship(relationship, perception)
         print("DEBUG: State updated", flush=True)
         
@@ -63,8 +63,7 @@ class ConversationEngine:
                 self._run_meta_cognition_task(user_id)
         
         # 6. Generate Response
-        # Use the LAST KNOWN adaptation strategy
-        system_prompt = self._build_system_prompt(new_state, context, relationship, self.current_adaptation_strategy)
+        system_prompt = self._build_system_prompt(new_state, context, relationship, self.current_adaptation_strategy, coping_instruction)
         
         try:
             print("DEBUG: Calling chat_completion", flush=True)
@@ -84,7 +83,6 @@ class ConversationEngine:
             response_text = "*suspiro cansado* Sinto que minha mente está um pouco nublada agora... Podemos tentar de novo em alguns segundos?"
         
         # 7. Post-processing & Storage (Background)
-        # Sync state back to Supabase
         print("DEBUG: Saving turn & Syncing State (Background)", flush=True)
         
         if background_tasks:
@@ -99,39 +97,11 @@ class ConversationEngine:
     def _run_meta_cognition_task(self, user_id: str):
         print("DEBUG: Running MetaCognition Task", flush=True)
         try:
-            # Get recent history from memory
             history = self.memory_manager.short_term_memory.get(user_id, [])
             history_str = str(history[-5:])
-            
-            # Run analysis
             analysis = self.meta_cognition.analyze_user_style(history_str)
             self.current_adaptation_strategy = analysis.get("suggested_adaptation", "")
-            
-            # Update User Profile in Supabase
-            # We need to fetch current profile first to merge? 
-            # MemoryManager.sync_state handles profile update if passed.
-            # But here we only have partial analysis.
-            # Let's assume sync_state can handle partial updates or we just pass it to memory manager to handle.
-            # For now, let's just print it, or we need to expose a method in MemoryManager to update profile specifically.
-            # I'll update MemoryManager to handle profile updates in sync_state or separate method.
-            # Actually, let's just pass the analysis to sync_state as user_profile update.
-            
-            # Re-fetch state to get current profile? No, too expensive.
-            # We'll just pass the analysis dict. MemoryManager.sync_state expects full profile?
-            # Let's look at MemoryManager.sync_state again.
-            # It takes user_profile=None. If provided, it updates it.
-            # But it overwrites?
-            # My implementation of sync_state:
-            # if user_profile: update_data["user_profile"] = user_profile
-            # This overwrites.
-            # So I should probably fetch-merge-update in _run_meta_cognition_task or inside MemoryManager.
-            # I'll leave it as is for now (overwriting might be dangerous if we lose other keys).
-            # Ideally MemoryManager should have update_user_profile(user_id, updates).
-            # But for this task, I'll just skip persisting profile updates in background for now to avoid complexity,
-            # OR I can rely on the fact that analysis returns a dict that might be merged.
-            
-            pass # Placeholder for now to avoid breaking changes.
-            print("DEBUG: MetaCognition Task done (Profile update skipped for safety)", flush=True)
+            print("DEBUG: MetaCognition Task done", flush=True)
         except Exception as e:
             print(f"Error in MetaCognition Task: {e}")
 
@@ -160,18 +130,23 @@ class ConversationEngine:
         except:
             return {"valence": 0, "arousal_shift": 0, "dominance_shift": 0, "triggered_emotions": {}}
 
-    def _build_system_prompt(self, emotion_state, context, relationship, adaptation_strategy=""):
-        # Get dynamic acting instruction
+    def _build_system_prompt(self, emotion_state, context, relationship, adaptation_strategy="", coping_instruction=""):
+        # Get dynamic acting instruction from AffectiveEngine
         acting_instruction = self.affective_engine.get_acting_instruction()
         mood_label = self.affective_engine.get_emotional_label()
         
         prompt = f"""
         {context}
         
-        === SEU ESTADO INTERNO AGORA ===
+        === SEU ESTADO INTERNO (PAD Bipolar -1.0 a +1.0) ===
         HUMOR: {mood_label}
-        Energia: {emotion_state.energy:.2f} | Tensão: {emotion_state.tension:.2f}
-        Emoções Ativas: Joy={emotion_state.joy:.2f}, Sadness={emotion_state.sadness:.2f}, Anger={emotion_state.anger:.2f}, Fear={emotion_state.fear:.2f}, Disgust={emotion_state.disgust:.2f}, Guilt={emotion_state.guilt:.2f}, Jealousy={emotion_state.jealousy:.2f}
+        Prazer: {emotion_state.pleasure:.2f} | Excitação: {emotion_state.arousal:.2f} | Dominância: {emotion_state.dominance:.2f}
+        
+        === IMPULSOS E NECESSIDADES (DRIVES) ===
+        Libido (Desejo): {emotion_state.libido:.2f}
+        Agressividade: {emotion_state.aggression:.2f}
+        Conexão: {emotion_state.connection:.2f}
+        Modo de Enfrentamento: {emotion_state.coping_mode}
         
         === SEU RELACIONAMENTO COM O USUÁRIO ===
         VÍNCULO: {relationship.bond_label}
@@ -179,6 +154,7 @@ class ConversationEngine:
         
         === INSTRUÇÃO DE ATUAÇÃO (IMPORTANTE) ===
         {acting_instruction}
+        {coping_instruction}
         
         === ESTRATÉGIA DE ADAPTAÇÃO (META-COGNITION) ===
         {adaptation_strategy if adaptation_strategy else "Seja você mesma."}

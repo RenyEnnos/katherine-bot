@@ -5,7 +5,7 @@ import MessageList from './MessageList';
 import ChatInput from './ChatInput';
 import { useChat } from '../hooks/useChat';
 
-const ChatWindow = () => {
+const ChatWindow = ({ userId }) => {
     const {
         messages,
         input,
@@ -16,7 +16,7 @@ const ChatWindow = () => {
         inputRef,
         handleSend,
         clearHistory
-    } = useChat();
+    } = useChat(userId);
 
     return (
         <div className="flex flex-col h-screen max-w-6xl mx-auto relative">

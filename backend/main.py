@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import List, Optional
 import uvicorn
@@ -32,9 +32,9 @@ class ChatResponse(BaseModel):
     emotion_state: dict
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat_endpoint(input_data: ChatInput):
+async def chat_endpoint(input_data: ChatInput, background_tasks: BackgroundTasks):
     try:
-        response_text, current_emotion = await engine.process_turn(input_data.user_id, input_data.message)
+        response_text, current_emotion = await engine.process_turn(input_data.user_id, input_data.message, background_tasks)
         return ChatResponse(response=response_text, emotion_state=current_emotion)
     except Exception as e:
         import traceback

@@ -1,4 +1,6 @@
 import time
+import json
+import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from datetime import datetime
@@ -40,6 +42,7 @@ class AffectiveEngine:
     def __init__(self):
         self.state = EmotionalState()
         self.decay_rate = 0.05 # Rate at which active emotions return to 0 per turn/time unit
+        self.load_state()
     
     def get_current_state(self) -> EmotionalState:
         self._apply_time_decay()
@@ -152,3 +155,23 @@ class AffectiveEngine:
             return "Use diminutivos. Fale com carinho. Mostre proteção."
         else:
             return "Mantenha-se calma e atenta."
+
+    def save_state(self, filepath="emotional_state.json"):
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(self.state.to_dict(), f, indent=4)
+        except Exception as e:
+            print(f"Error saving emotional state: {e}")
+
+    def load_state(self, filepath="emotional_state.json"):
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    # Update state with loaded data
+                    for key, value in data.items():
+                        if hasattr(self.state, key):
+                            setattr(self.state, key, value)
+                    self.state.last_update = time.time() # Reset time to avoid huge decay
+            except Exception as e:
+                print(f"Error loading emotional state: {e}")

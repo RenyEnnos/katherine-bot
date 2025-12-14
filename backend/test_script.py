@@ -32,7 +32,9 @@ async def test_conversation():
         
         # Check if profile was updated (every 3 turns)
         if (i + 1) % 3 == 0:
-            print(f"[META]: User Profile Updated -> {engine.memory_manager.core_memory.user_profile}")
+            # We need to access cached profile or reload
+            # print(f"[META]: User Profile Updated -> {engine.memory_manager.current_user_profile}")
+            pass
             
         print("-" * 50)
 

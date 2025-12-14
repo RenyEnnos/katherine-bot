@@ -4,13 +4,23 @@ from typing import List, Optional
 import uvicorn
 import os
 from dotenv import load_dotenv
+from contextlib import asynccontextmanager
 from .engine import ConversationEngine
 
 load_dotenv()
 
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="SoulMate API", description="Backend for the Emotional Companion Bot")
+engine = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global engine
+    engine = ConversationEngine()
+    yield
+    # Clean up if necessary
+
+app = FastAPI(title="SoulMate API", description="Backend for the Emotional Companion Bot", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,9 +29,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Initialize Engine
-engine = ConversationEngine()
 
 class ChatInput(BaseModel):
     user_id: str
@@ -33,6 +40,8 @@ class ChatResponse(BaseModel):
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(input_data: ChatInput, background_tasks: BackgroundTasks):
+    if not engine:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
     try:
         response_text, current_emotion = await engine.process_turn(input_data.user_id, input_data.message, background_tasks)
         return ChatResponse(response=response_text, emotion_state=current_emotion)
@@ -47,6 +56,8 @@ def health_check():
 
 @app.get("/history/{user_id}")
 async def get_history(user_id: str):
+    if not engine:
+        raise HTTPException(status_code=503, detail="Engine not initialized")
     try:
         # Fetch last 50 messages from Supabase
         # We access the supabase client via the engine's memory manager

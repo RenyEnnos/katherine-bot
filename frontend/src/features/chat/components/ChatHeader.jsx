@@ -11,6 +11,7 @@ const ChatHeader = ({ clearHistory }) => {
                 onClick={clearHistory}
                 className="text-gray-500 hover:text-red-400 transition-colors p-2 rounded-md hover:bg-gray-800"
                 title="Limpar conversa"
+                aria-label="Limpar conversa"
             >
                 <Trash2 size={20} />
             </button>

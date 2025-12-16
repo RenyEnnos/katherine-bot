@@ -18,6 +18,7 @@ const ChatInput = ({ input, setInput, handleSend, isLoading, inputRef }) => {
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={handleKeyDown}
                     placeholder="Escreva aqui sua mensagem..."
+                    aria-label="Sua mensagem"
                     className="w-full bg-transparent text-white placeholder-gray-400 text-base p-2 max-h-32 min-h-[44px] resize-none focus:outline-none scrollbar-hide"
                     rows={1}
                     disabled={isLoading}
@@ -30,6 +31,8 @@ const ChatInput = ({ input, setInput, handleSend, isLoading, inputRef }) => {
                 <button
                     onClick={handleSend}
                     disabled={!input.trim() || isLoading}
+                    aria-label="Enviar mensagem"
+                    title="Enviar mensagem"
                     className={`p-2 rounded-lg mb-1 transition-all ${input.trim() && !isLoading
                         ? 'bg-blue-600 text-white hover:bg-blue-500 shadow-md'
                         : 'bg-gray-700 text-gray-500 cursor-not-allowed'

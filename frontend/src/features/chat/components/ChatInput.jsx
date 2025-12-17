@@ -1,5 +1,5 @@
 import React from 'react';
-import { Send } from 'lucide-react';
+import { Send, Loader2 } from 'lucide-react';
 
 const ChatInput = ({ input, setInput, handleSend, isLoading, inputRef }) => {
     const handleKeyDown = (e) => {
@@ -38,7 +38,7 @@ const ChatInput = ({ input, setInput, handleSend, isLoading, inputRef }) => {
                         : 'bg-gray-700 text-gray-500 cursor-not-allowed'
                         }`}
                 >
-                    <Send size={20} />
+                    {isLoading ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
                 </button>
             </div>
             <div className="text-center text-xs text-gray-500 mt-2">

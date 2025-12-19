@@ -18,13 +18,9 @@ class MemoryManager:
         else:
             self.supabase: Client = create_client(url, key)
 
-        # 2. Initialize Embeddings Model (Local)
+        # 2. Initialize Embeddings Model (Lazy Load)
         # We use a lightweight model compatible with the 384-dim vector in Supabase
-        try:
-            self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-        except Exception as e:
-            print(f"Error loading embedding model: {e}")
-            self.embedding_model = None
+        self.embedding_model = None
 
         # 3. Short-term memory (Working Context)
         self.short_term_memory = {} 
@@ -37,6 +33,16 @@ class MemoryManager:
         self.current_user_profile = {}
         self.current_relationship = None
         self.current_emotional_state = None
+
+    def _get_embedding_model(self):
+        if self.embedding_model is None:
+            try:
+                print("INFO: Loading embedding model (lazy)...")
+                self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+            except Exception as e:
+                print(f"Error loading embedding model: {e}")
+                self.embedding_model = None
+        return self.embedding_model
 
     def load_user_state(self, user_id: str) -> dict:
         """
@@ -186,12 +192,13 @@ class MemoryManager:
             print(f"Error compressing episodes: {e}")
 
     def _retrieve_relevant(self, user_id: str, query: str):
-        if not self.supabase or not self.embedding_model:
+        model = self._get_embedding_model()
+        if not self.supabase or not model:
             return "Memória indisponível (offline)."
 
         try:
             # Generate embedding
-            query_embedding = self.embedding_model.encode(query).tolist()
+            query_embedding = model.encode(query).tolist()
             
             # Call RPC function
             params = {
@@ -270,11 +277,12 @@ class MemoryManager:
             print(f"Error analyzing memory: {e}")
 
     def _store_memory(self, user_id: str, content: str, tags: list, importance: float):
-        if not self.supabase or not self.embedding_model:
+        model = self._get_embedding_model()
+        if not self.supabase or not model:
             return
 
         try:
-            embedding = self.embedding_model.encode(content).tolist()
+            embedding = model.encode(content).tolist()
             
             self.supabase.table("memories").insert({
                 "user_id": user_id,

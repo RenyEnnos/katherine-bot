@@ -22,12 +22,18 @@ const EmotionPanel = ({ emotionState }) => {
     ].filter(e => e.value > 0.1).sort((a, b) => b.value - a.value).slice(0, 3);
 
     return (
-        <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 shadow-lg w-full md:w-72 mt-4 md:mt-0 md:ml-4 flex-shrink-0">
-            <h3 className="text-gray-400 text-xs font-bold uppercase tracking-wider mb-3">
+        <aside
+            className="bg-gray-800 border border-gray-700 rounded-xl p-4 shadow-lg w-full md:w-72 mt-4 md:mt-0 md:ml-4 flex-shrink-0"
+            aria-label="Painel de Emoções"
+        >
+            <h3
+                id="emotion-panel-title"
+                className="text-gray-400 text-xs font-bold uppercase tracking-wider mb-3"
+            >
                 Humor da Katherine agora
             </h3>
 
-            <div className="mb-4">
+            <div className="mb-4" aria-labelledby="emotion-panel-title">
                 <div className="text-xl font-semibold text-white mb-1">{mood_label}</div>
                 <div className="text-gray-400 text-xs italic leading-tight">
                     "{acting_instruction}"
@@ -52,11 +58,18 @@ const EmotionPanel = ({ emotionState }) => {
                     { label: 'Dominância', value: dominance, icon: Crown, color: 'bg-purple-500' }
                 ].map(({ label, value, icon: Icon, color }) => (
                     <div key={label}>
-                        <div className="flex justify-between text-xs text-gray-400 mb-1">
+                        <div className="flex justify-between text-xs text-gray-400 mb-1" aria-hidden="true">
                             <span className="flex items-center gap-1"><Icon size={12} /> {label}</span>
                             <span>{toPercent(value)}%</span>
                         </div>
-                        <div className="w-full bg-gray-700 rounded-full h-1.5">
+                        <div
+                            className="w-full bg-gray-700 rounded-full h-1.5"
+                            role="progressbar"
+                            aria-valuenow={Math.round(value * 100)}
+                            aria-valuemin="0"
+                            aria-valuemax="100"
+                            aria-label={label}
+                        >
                             <div
                                 className={`${color} h-1.5 rounded-full transition-all duration-500 ease-out`}
                                 style={{ width: `${toPercent(value)}%` }}
@@ -65,7 +78,7 @@ const EmotionPanel = ({ emotionState }) => {
                     </div>
                 ))}
             </div>
-        </div>
+        </aside>
     );
 };
 

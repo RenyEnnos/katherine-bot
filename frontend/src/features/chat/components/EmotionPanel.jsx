@@ -56,7 +56,14 @@ const EmotionPanel = ({ emotionState }) => {
                             <span className="flex items-center gap-1"><Icon size={12} /> {label}</span>
                             <span>{toPercent(value)}%</span>
                         </div>
-                        <div className="w-full bg-gray-700 rounded-full h-1.5">
+                        <div
+                            role="progressbar"
+                            aria-label={`Nível de ${label}`}
+                            aria-valuenow={toPercent(value)}
+                            aria-valuemin="0"
+                            aria-valuemax="100"
+                            className="w-full bg-gray-700 rounded-full h-1.5"
+                        >
                             <div
                                 className={`${color} h-1.5 rounded-full transition-all duration-500 ease-out`}
                                 style={{ width: `${toPercent(value)}%` }}

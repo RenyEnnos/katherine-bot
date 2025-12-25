@@ -50,20 +50,30 @@ const EmotionPanel = ({ emotionState }) => {
                     { label: 'Prazer', value: pleasure, icon: Heart, color: 'bg-pink-500' },
                     { label: 'Energia', value: arousal, icon: Zap, color: 'bg-yellow-500' },
                     { label: 'Dominância', value: dominance, icon: Crown, color: 'bg-purple-500' }
-                ].map(({ label, value, icon: Icon, color }) => (
-                    <div key={label}>
-                        <div className="flex justify-between text-xs text-gray-400 mb-1">
-                            <span className="flex items-center gap-1"><Icon size={12} /> {label}</span>
-                            <span>{toPercent(value)}%</span>
-                        </div>
-                        <div className="w-full bg-gray-700 rounded-full h-1.5">
+                ].map(({ label, value, icon: Icon, color }) => {
+                    const labelId = `label-${label.toLowerCase()}`;
+                    return (
+                        <div key={label}>
+                            <div className="flex justify-between text-xs text-gray-400 mb-1">
+                                <span id={labelId} className="flex items-center gap-1"><Icon size={12} /> {label}</span>
+                                <span>{toPercent(value)}%</span>
+                            </div>
                             <div
-                                className={`${color} h-1.5 rounded-full transition-all duration-500 ease-out`}
-                                style={{ width: `${toPercent(value)}%` }}
-                            ></div>
+                                className="w-full bg-gray-700 rounded-full h-1.5"
+                                role="progressbar"
+                                aria-labelledby={labelId}
+                                aria-valuenow={toPercent(value)}
+                                aria-valuemin="0"
+                                aria-valuemax="100"
+                            >
+                                <div
+                                    className={`${color} h-1.5 rounded-full transition-all duration-500 ease-out`}
+                                    style={{ width: `${toPercent(value)}%` }}
+                                ></div>
+                            </div>
                         </div>
-                    </div>
-                ))}
+                    );
+                })}
             </div>
         </div>
     );

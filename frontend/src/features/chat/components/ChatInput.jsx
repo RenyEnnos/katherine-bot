@@ -11,8 +11,9 @@ const ChatInput = ({ input, setInput, handleSend, isLoading, inputRef }) => {
 
     return (
         <div className="flex-shrink-0 p-4 bg-gray-900 border-t border-gray-800">
-            <div className="max-w-3xl mx-auto relative flex items-end gap-2 bg-gray-800 p-2 rounded-xl border border-gray-700 focus-within:border-gray-600 focus-within:ring-1 focus-within:ring-gray-600 transition-all shadow-sm">
+            <div className={`max-w-3xl mx-auto relative flex items-end gap-2 bg-gray-800 p-2 rounded-xl border border-gray-700 focus-within:border-gray-600 focus-within:ring-1 focus-within:ring-gray-600 transition-all shadow-sm ${isLoading ? 'opacity-50' : ''}`}>
                 <textarea
+                    aria-label="Escreva sua mensagem"
                     ref={inputRef}
                     value={input}
                     onChange={(e) => setInput(e.target.value)}

@@ -7,7 +7,7 @@ const MessageBubble = ({ message, isUser }) => {
         <div className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'} mb-6`}>
             <div className={`flex max-w-[80%] md:max-w-[70%] ${isUser ? 'flex-row-reverse' : 'flex-row'} gap-4`}>
                 {/* Avatar */}
-                <Avatar isUser={isUser} />
+                <Avatar isUser={isUser} name={isUser ? "Você" : "Katherine"} />
 
                 {/* Message Content */}
                 <div className={`px-4 py-3 rounded-2xl shadow-sm text-sm md:text-base leading-relaxed ${isUser

@@ -1,16 +1,29 @@
-import React from 'react';
+import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { Copy, Check } from 'lucide-react';
 import Avatar from '../../../shared/components/ui/Avatar';
 
 const MessageBubble = ({ message, isUser }) => {
+    const [isCopied, setIsCopied] = useState(false);
+
+    const handleCopy = async () => {
+        try {
+            await navigator.clipboard.writeText(message);
+            setIsCopied(true);
+            setTimeout(() => setIsCopied(false), 2000);
+        } catch (err) {
+            console.error('Failed to copy text:', err);
+        }
+    };
+
     return (
-        <div className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'} mb-6`}>
-            <div className={`flex max-w-[80%] md:max-w-[70%] ${isUser ? 'flex-row-reverse' : 'flex-row'} gap-4`}>
+        <div className={`flex w-full ${isUser ? 'justify-end mb-6' : 'justify-start mb-10'}`}>
+            <div className={`flex max-w-[80%] md:max-w-[70%] ${isUser ? 'flex-row-reverse' : 'flex-row'} gap-4 group relative`}>
                 {/* Avatar */}
                 <Avatar isUser={isUser} name={isUser ? "Você" : "Katherine"} />
 
                 {/* Message Content */}
-                <div className={`px-4 py-3 rounded-2xl shadow-sm text-sm md:text-base leading-relaxed ${isUser
+                <div className={`relative px-4 py-3 rounded-2xl shadow-sm text-sm md:text-base leading-relaxed ${isUser
                     ? 'bg-blue-600 text-white rounded-tr-none'
                     : 'bg-gray-800 text-gray-100 rounded-tl-none border border-gray-700'
                     }`}>
@@ -23,6 +36,19 @@ const MessageBubble = ({ message, isUser }) => {
                             {message}
                         </ReactMarkdown>
                     </div>
+
+                    {!isUser && (
+                        <button
+                            onClick={handleCopy}
+                            aria-label={isCopied ? "Copiado!" : "Copiar mensagem"}
+                            className={`absolute -bottom-8 left-0 p-1.5 rounded-lg transition-all duration-200
+                                ${isCopied ? 'text-green-400 bg-green-400/10' : 'text-gray-400 hover:text-white hover:bg-gray-700 opacity-0 group-hover:opacity-100 focus:opacity-100'}
+                            `}
+                        >
+                            {isCopied ? <Check size={14} /> : <Copy size={14} />}
+                            <span className="sr-only">{isCopied ? "Copiado!" : "Copiar mensagem"}</span>
+                        </button>
+                    )}
                 </div>
             </div>
         </div>

@@ -1,6 +1,7 @@
-## 2024-05-23 - [Critical Learnings Log]
-(This file was found empty or with single entry during inspection, ensuring history is preserved)
+## 2024-05-20 - Avatar Accessibility
+**Learning:** Screen readers announce "img" for avatars. Adding meaningful `aria-label` with the speaker's name improves context.
+**Action:** Use `role="img"` and `aria-label` on avatars, hiding internal icons.
 
-## 2024-05-22 - [Avatar Accessibility]
-**Learning:** Purely visual components like Avatars often get overlooked for accessibility. While "decorative", they provide context (who is speaking). Adding `role="img"` and `aria-label` to the container and hiding the internal icon (`aria-hidden="true"`) is a robust pattern to ensure screen readers announce "User" or "Bot" instead of ignoring it or reading the icon filename/SVG title.
-**Action:** Always check "decorative" icons that convey meaning (like speaker identity) and add appropriate ARIA labels.
+## 2024-05-22 - Message Copy Interaction
+**Learning:** Users often need to copy AI responses. Adding a copy button is a high-value, low-effort addition.
+**Action:** Implement copy-to-clipboard with visual feedback (check icon) on assistant messages.

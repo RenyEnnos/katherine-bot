@@ -4,3 +4,7 @@
 ## 2024-05-22 - [Avatar Accessibility]
 **Learning:** Purely visual components like Avatars often get overlooked for accessibility. While "decorative", they provide context (who is speaking). Adding `role="img"` and `aria-label` to the container and hiding the internal icon (`aria-hidden="true"`) is a robust pattern to ensure screen readers announce "User" or "Bot" instead of ignoring it or reading the icon filename/SVG title.
 **Action:** Always check "decorative" icons that convey meaning (like speaker identity) and add appropriate ARIA labels.
+
+## 2024-05-23 - [Assistant Message Actions]
+**Learning:** Auxiliary actions (like Copy) on assistant messages can clutter the UI. Hiding them until hover/focus (`opacity-0 group-hover:opacity-100 focus:opacity-100`) keeps the interface clean while maintaining discoverability.
+**Action:** Use the group-hover opacity pattern for secondary message actions.

@@ -1,10 +1,24 @@
-import React from 'react';
+import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { Copy, Check } from 'lucide-react';
 import Avatar from '../../../shared/components/ui/Avatar';
 
 const MessageBubble = ({ message, isUser }) => {
+    const [isCopied, setIsCopied] = useState(false);
+
+    const handleCopy = async () => {
+        if (!message) return;
+        try {
+            await navigator.clipboard.writeText(message);
+            setIsCopied(true);
+            setTimeout(() => setIsCopied(false), 2000);
+        } catch (err) {
+            console.error('Failed to copy text:', err);
+        }
+    };
+
     return (
-        <div className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'} mb-6`}>
+        <div className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'} mb-6 group`}>
             <div className={`flex max-w-[80%] md:max-w-[70%] ${isUser ? 'flex-row-reverse' : 'flex-row'} gap-4`}>
                 {/* Avatar */}
                 <Avatar isUser={isUser} name={isUser ? "Você" : "Katherine"} />
@@ -24,6 +38,18 @@ const MessageBubble = ({ message, isUser }) => {
                         </ReactMarkdown>
                     </div>
                 </div>
+
+                {/* Copy Button */}
+                {!isUser && (
+                    <button
+                        onClick={handleCopy}
+                        aria-label={isCopied ? "Copiado!" : "Copiar mensagem"}
+                        className="self-center p-2 rounded-lg text-gray-500 hover:text-white hover:bg-gray-800 transition-all opacity-0 group-hover:opacity-100 focus:opacity-100"
+                        title="Copiar mensagem"
+                    >
+                        {isCopied ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}
+                    </button>
+                )}
             </div>
         </div>
     );

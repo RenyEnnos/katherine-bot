@@ -4,3 +4,7 @@
 ## 2024-05-22 - [Avatar Accessibility]
 **Learning:** Purely visual components like Avatars often get overlooked for accessibility. While "decorative", they provide context (who is speaking). Adding `role="img"` and `aria-label` to the container and hiding the internal icon (`aria-hidden="true"`) is a robust pattern to ensure screen readers announce "User" or "Bot" instead of ignoring it or reading the icon filename/SVG title.
 **Action:** Always check "decorative" icons that convey meaning (like speaker identity) and add appropriate ARIA labels.
+
+## 2024-05-24 - [Hover Visibility & Keyboard Access]
+**Learning:** When using `group-hover:opacity-100` to reveal actions (like copy buttons) on hover, keyboard users are often left behind because the element remains invisible when focused.
+**Action:** Always pair `group-hover:opacity-100` with `focus:opacity-100` (on the element itself) or `focus-within:opacity-100` (on the container) to ensure actions are discoverable via keyboard navigation.

@@ -4,3 +4,7 @@
 ## 2024-05-22 - [Avatar Accessibility]
 **Learning:** Purely visual components like Avatars often get overlooked for accessibility. While "decorative", they provide context (who is speaking). Adding `role="img"` and `aria-label` to the container and hiding the internal icon (`aria-hidden="true"`) is a robust pattern to ensure screen readers announce "User" or "Bot" instead of ignoring it or reading the icon filename/SVG title.
 **Action:** Always check "decorative" icons that convey meaning (like speaker identity) and add appropriate ARIA labels.
+
+## 2024-05-24 - [Message Actions Layout]
+**Learning:** To support auxiliary actions (like Copy) on chat bubbles without breaking the avatar-message horizontal alignment, wrapping the message content in a `flex-col` container (sibling to the Avatar) provides a stable area for actions below the bubble. This scales better than absolute positioning which can overlap content.
+**Action:** Use vertical flex wrappers for message content when adding message-level actions.

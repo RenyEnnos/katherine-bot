@@ -6,5 +6,5 @@
 **Action:** Always check "decorative" icons that convey meaning (like speaker identity) and add appropriate ARIA labels.
 
 ## 2024-05-24 - [Mobile-First Hover Actions]
-**Learning:** Action buttons (like Copy) inside items need to be accessible on touch devices where "hover" doesn't exist. Hiding them completely (`opacity-0`) makes them inaccessible.
-**Action:** Use `opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100` pattern. This keeps actions visible by default on mobile/touch, but cleaner (hover-only) on desktop, while ensuring keyboard focus makes them visible.
+**Learning:** Action buttons (like Copy) inside items need to be accessible on touch devices where "hover" doesn't exist. Hiding them completely (\`opacity-0\`) makes them inaccessible.
+**Action:** Use \`opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100\` pattern. This keeps actions visible by default on mobile/touch, but cleaner (hover-only) on desktop, while ensuring keyboard focus makes them visible.

@@ -8,7 +8,12 @@ const ChatHeader = ({ clearHistory }) => {
                 Katherine <span className="text-gray-500 font-normal">– SoulMate</span>
             </div>
             <button
-                onClick={clearHistory}
+                type="button"
+                onClick={() => {
+                    if (window.confirm('Tem certeza que deseja limpar toda a conversa?')) {
+                        clearHistory();
+                    }
+                }}
                 className="text-gray-500 hover:text-red-400 transition-colors p-2 rounded-md hover:bg-gray-800"
                 title="Limpar conversa"
                 aria-label="Limpar conversa"

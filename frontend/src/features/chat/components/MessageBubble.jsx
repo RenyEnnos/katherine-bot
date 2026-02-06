@@ -17,13 +17,13 @@ const MessageBubble = ({ message, isUser }) => {
     };
 
     return (
-        <div className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'} mb-6`}>
-            <div className={`flex max-w-[80%] md:max-w-[70%] ${isUser ? 'flex-row-reverse' : 'flex-row'} gap-4 group`}>
+        <div className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'} mb-6 group`}>
+            <div className={`flex max-w-[80%] md:max-w-[70%] ${isUser ? 'flex-row-reverse' : 'flex-row'} gap-4`}>
                 {/* Avatar */}
                 <Avatar isUser={isUser} name={isUser ? "Você" : "Katherine"} />
 
                 {/* Content Wrapper */}
-                <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} min-w-0`}>
+                <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} max-w-full overflow-hidden`}>
                     {/* Message Content */}
                     <div className={`px-4 py-3 rounded-2xl shadow-sm text-sm md:text-base leading-relaxed ${isUser
                         ? 'bg-blue-600 text-white rounded-tr-none'

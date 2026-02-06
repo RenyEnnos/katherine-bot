@@ -38,7 +38,7 @@ const MessageBubble = ({ message, isUser }) => {
                     </div>
                 </div>
 
-                {/* Copy Button */}
+                {/* Copy Button - Visible on mobile, hover on desktop */}
                 {!isUser && (
                     <div className="flex flex-col justify-center">
                         <button

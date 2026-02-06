@@ -26,7 +26,11 @@ const MessageList = ({ messages, isLoading, messagesEndRef }) => {
             ))}
 
             {isLoading && (
-                <div className="flex items-center gap-2 text-gray-500 text-sm ml-2 animate-pulse">
+                <div
+                    className="flex items-center gap-2 text-gray-500 text-sm ml-2 animate-pulse"
+                    role="status"
+                    aria-live="polite"
+                >
                     <Loader2 size={16} className="animate-spin" />
                     Katherine está digitando...
                 </div>

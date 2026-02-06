@@ -22,9 +22,8 @@ const MessageBubble = ({ message, isUser }) => {
                 {/* Avatar */}
                 <Avatar isUser={isUser} name={isUser ? "Você" : "Katherine"} />
 
-                {/* Content Wrapper */}
+                {/* Message Content & Actions */}
                 <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} max-w-full overflow-hidden`}>
-                    {/* Message Content */}
                     <div className={`px-4 py-3 rounded-2xl shadow-sm text-sm md:text-base leading-relaxed ${isUser
                         ? 'bg-blue-600 text-white rounded-tr-none'
                         : 'bg-gray-800 text-gray-100 rounded-tl-none border border-gray-700'
@@ -40,24 +39,15 @@ const MessageBubble = ({ message, isUser }) => {
                         </div>
                     </div>
 
-                    {/* Copy Button */}
+                    {/* Copy Button (only for Assistant) */}
                     {!isUser && (
                         <button
                             onClick={handleCopy}
-                            aria-label={isCopied ? "Copiado com sucesso" : "Copiar resposta"}
-                            className="mt-1 flex items-center gap-1.5 p-1 text-xs text-gray-500 hover:text-gray-300 transition-all opacity-0 group-hover:opacity-100 focus:opacity-100"
+                            aria-label={isCopied ? "Copiado" : "Copiar resposta"}
+                            className="mt-1 p-1.5 text-gray-500 hover:text-gray-300 transition-all opacity-0 group-hover:opacity-100 focus:opacity-100 rounded-md hover:bg-gray-800"
+                            title="Copiar resposta"
                         >
-                            {isCopied ? (
-                                <>
-                                    <Check size={14} className="text-green-500" />
-                                    <span className="text-green-500 font-medium">Copiado!</span>
-                                </>
-                            ) : (
-                                <>
-                                    <Copy size={14} />
-                                    <span>Copiar</span>
-                                </>
-                            )}
+                            {isCopied ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}
                         </button>
                     )}
                 </div>

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Copy, Check } from 'lucide-react';
 import Avatar from '../../../shared/components/ui/Avatar';
@@ -6,11 +6,20 @@ import Avatar from '../../../shared/components/ui/Avatar';
 const MessageBubble = ({ message, isUser }) => {
     const [isCopied, setIsCopied] = useState(false);
 
+    useEffect(() => {
+        if (isCopied) {
+            const timeout = setTimeout(() => {
+                setIsCopied(false);
+            }, 2000);
+            return () => clearTimeout(timeout);
+        }
+    }, [isCopied]);
+
     const handleCopy = async () => {
+        if (!navigator?.clipboard) return;
         try {
             await navigator.clipboard.writeText(message);
             setIsCopied(true);
-            setTimeout(() => setIsCopied(false), 2000);
         } catch (err) {
             console.error('Failed to copy text: ', err);
         }

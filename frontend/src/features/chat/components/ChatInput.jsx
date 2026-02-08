@@ -33,7 +33,7 @@ const ChatInput = ({ input, setInput, handleSend, isLoading, inputRef }) => {
                     disabled={!input.trim() || isLoading}
                     aria-label="Enviar mensagem (Enter)"
                     title="Enviar mensagem (Enter)"
-                    className={`p-2 rounded-lg mb-1 transition-all ${input.trim() && !isLoading
+                    className={`p-2 rounded-lg mb-1 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${input.trim() && !isLoading
                         ? 'bg-blue-600 text-white hover:bg-blue-500 shadow-md'
                         : 'bg-gray-700 text-gray-500 cursor-not-allowed'
                         }`}

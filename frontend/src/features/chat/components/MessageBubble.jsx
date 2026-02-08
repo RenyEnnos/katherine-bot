@@ -39,17 +39,6 @@ const MessageBubble = ({ message, isUser }) => {
                         </div>
                     </div>
 
-                    {/* Copy Button (only for Assistant) */}
-                    {!isUser && (
-                        <button
-                            onClick={handleCopy}
-                            aria-label={isCopied ? "Copiado" : "Copiar resposta"}
-                            className="mt-1 p-1.5 text-gray-500 hover:text-gray-300 transition-all opacity-0 group-hover:opacity-100 focus:opacity-100 rounded-md hover:bg-gray-800"
-                            title="Copiar resposta"
-                        >
-                            {isCopied ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}
-                        </button>
-                    )}
                 </div>
 
                 {/* Copy Button - Visible on mobile, hover on desktop */}
@@ -58,10 +47,10 @@ const MessageBubble = ({ message, isUser }) => {
                         <button
                             onClick={handleCopy}
                             className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-all opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100"
-                            aria-label="Copiar mensagem"
-                            title="Copiar mensagem"
+                            aria-label={isCopied ? "Copiado" : "Copiar mensagem"}
+                            title={isCopied ? "Copiado" : "Copiar mensagem"}
                         >
-                            {isCopied ? <Check size={16} /> : <Copy size={16} />}
+                            {isCopied ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}
                         </button>
                     </div>
                 )}

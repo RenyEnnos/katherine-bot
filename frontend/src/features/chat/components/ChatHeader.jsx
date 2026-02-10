@@ -1,13 +1,29 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Trash2, Check, X } from 'lucide-react';
 
 const ChatHeader = ({ clearHistory }) => {
     const [showConfirm, setShowConfirm] = useState(false);
+    const deleteBtnRef = useRef(null);
+    const cancelBtnRef = useRef(null);
+    const isFirstRender = useRef(true);
 
     const handleClear = () => {
         clearHistory();
         setShowConfirm(false);
     };
+
+    useEffect(() => {
+        if (isFirstRender.current) {
+            isFirstRender.current = false;
+            return;
+        }
+
+        if (showConfirm) {
+            cancelBtnRef.current?.focus();
+        } else {
+            deleteBtnRef.current?.focus();
+        }
+    }, [showConfirm]);
 
     return (
         <header className="flex-shrink-0 h-16 border-b border-gray-800 flex items-center justify-between px-4 md:px-8 bg-gray-900 z-10">
@@ -27,6 +43,7 @@ const ChatHeader = ({ clearHistory }) => {
                         <Check size={20} />
                     </button>
                     <button
+                        ref={cancelBtnRef}
                         onClick={() => setShowConfirm(false)}
                         className="text-gray-500 hover:text-gray-300 transition-colors p-2 rounded-md hover:bg-gray-800"
                         title="Cancelar"
@@ -37,6 +54,7 @@ const ChatHeader = ({ clearHistory }) => {
                 </div>
             ) : (
                 <button
+                    ref={deleteBtnRef}
                     onClick={() => setShowConfirm(true)}
                     className="text-gray-500 hover:text-red-400 transition-colors p-2 rounded-md hover:bg-gray-800"
                     title="Limpar conversa"

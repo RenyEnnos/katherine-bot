@@ -12,3 +12,7 @@
 ## 2024-05-25 - [Responsive Visibility Overlap]
 **Learning:** Using only `opacity` for responsive visibility (e.g., `md:opacity-0`) can lead to duplicate interactive elements if hover states (`group-hover:opacity-100`) override the opacity on larger screens. Elements intended to be hidden on desktop may reappear on hover alongside their desktop counterparts.
 **Action:** Pair `hidden` / `block` utilities with opacity transitions when elements should be completely removed from the layout/accessibility tree on specific breakpoints, or ensure hover states are scoped to the correct breakpoint (e.g., `md:group-hover:opacity-100` vs `group-hover:opacity-100`).
+
+## 2024-05-25 - [Focus Management in Conditional UI]
+**Learning:** When replacing interactive elements (like a delete button) with a confirmation dialog in the same container, focus is often lost to the `body` if the original element is removed from the DOM. This disorients keyboard users.
+**Action:** Use `useEffect` with `useRef` to programmatically move focus to the new primary action (e.g., "Cancel" or "Confirm") when the state changes, and restore it to the trigger element when the dialog closes.

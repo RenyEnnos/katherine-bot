@@ -1,8 +1,27 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Trash2, Check, X } from 'lucide-react';
 
 const ChatHeader = ({ clearHistory }) => {
     const [showConfirm, setShowConfirm] = useState(false);
+    const trashRef = useRef(null);
+    const cancelRef = useRef(null);
+    const isFirstRender = useRef(true);
+
+    // Focus management
+    useEffect(() => {
+        if (isFirstRender.current) {
+            isFirstRender.current = false;
+            return;
+        }
+
+        if (showConfirm) {
+            // Focus on Cancel button for safety when confirmation appears
+            cancelRef.current?.focus();
+        } else {
+            // Return focus to Trash button when confirmation is closed/cancelled
+            trashRef.current?.focus();
+        }
+    }, [showConfirm]);
 
     const handleClear = () => {
         clearHistory();
@@ -20,15 +39,16 @@ const ChatHeader = ({ clearHistory }) => {
                     <span className="text-sm text-gray-400">Confirmar?</span>
                     <button
                         onClick={handleClear}
-                        className="text-red-400 hover:text-red-300 transition-colors p-2 rounded-md hover:bg-gray-800"
+                        className="text-red-400 hover:text-red-300 transition-colors p-2 rounded-md hover:bg-gray-800 focus-visible:ring-2 focus-visible:ring-red-500 focus:outline-none"
                         title="Confirmar limpeza"
                         aria-label="Confirmar limpeza"
                     >
                         <Check size={20} />
                     </button>
                     <button
+                        ref={cancelRef}
                         onClick={() => setShowConfirm(false)}
-                        className="text-gray-500 hover:text-gray-300 transition-colors p-2 rounded-md hover:bg-gray-800"
+                        className="text-gray-500 hover:text-gray-300 transition-colors p-2 rounded-md hover:bg-gray-800 focus-visible:ring-2 focus-visible:ring-gray-600 focus:outline-none"
                         title="Cancelar"
                         aria-label="Cancelar"
                     >
@@ -37,8 +57,9 @@ const ChatHeader = ({ clearHistory }) => {
                 </div>
             ) : (
                 <button
+                    ref={trashRef}
                     onClick={() => setShowConfirm(true)}
-                    className="text-gray-500 hover:text-red-400 transition-colors p-2 rounded-md hover:bg-gray-800"
+                    className="text-gray-500 hover:text-red-400 transition-colors p-2 rounded-md hover:bg-gray-800 focus-visible:ring-2 focus-visible:ring-gray-600 focus:outline-none"
                     title="Limpar conversa"
                     aria-label="Limpar conversa"
                 >

@@ -12,3 +12,7 @@
 ## 2024-05-25 - [Responsive Visibility Overlap]
 **Learning:** Using only `opacity` for responsive visibility (e.g., `md:opacity-0`) can lead to duplicate interactive elements if hover states (`group-hover:opacity-100`) override the opacity on larger screens. Elements intended to be hidden on desktop may reappear on hover alongside their desktop counterparts.
 **Action:** Pair `hidden` / `block` utilities with opacity transitions when elements should be completely removed from the layout/accessibility tree on specific breakpoints, or ensure hover states are scoped to the correct breakpoint (e.g., `md:group-hover:opacity-100` vs `group-hover:opacity-100`).
+
+## 2024-05-26 - [Focus Management in Toggle UI]
+**Learning:** When a button toggles a UI state that removes the button itself (e.g., Delete -> Confirm/Cancel), keyboard focus is lost if not manually managed. This creates a disorientation for keyboard users.
+**Action:** Always use `useRef` to store references to the new focus target (e.g., Cancel button) and the original trigger (e.g., Delete button), and use `useEffect` to move focus when the state changes.

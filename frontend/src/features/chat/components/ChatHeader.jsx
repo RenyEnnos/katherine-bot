@@ -3,10 +3,17 @@ import { Trash2, Check, X } from 'lucide-react';
 
 const ChatHeader = ({ clearHistory }) => {
     const [showConfirm, setShowConfirm] = useState(false);
+    const [shouldFocusTrash, setShouldFocusTrash] = useState(false);
 
     const handleClear = () => {
         clearHistory();
         setShowConfirm(false);
+    };
+
+    const handleKeyDown = (e) => {
+        if (e.key === 'Escape') {
+            setShowConfirm(false);
+        }
     };
 
     return (
@@ -16,7 +23,10 @@ const ChatHeader = ({ clearHistory }) => {
             </div>
 
             {showConfirm ? (
-                <div className="flex items-center gap-2">
+                <div
+                    className="flex items-center gap-2"
+                    onKeyDown={handleKeyDown}
+                >
                     <span className="text-sm text-gray-400">Confirmar?</span>
                     <button
                         onClick={handleClear}
@@ -28,6 +38,7 @@ const ChatHeader = ({ clearHistory }) => {
                     </button>
                     <button
                         onClick={() => setShowConfirm(false)}
+                        autoFocus
                         className="text-gray-500 hover:text-gray-300 transition-colors p-2 rounded-md hover:bg-gray-800"
                         title="Cancelar"
                         aria-label="Cancelar"
@@ -37,7 +48,11 @@ const ChatHeader = ({ clearHistory }) => {
                 </div>
             ) : (
                 <button
-                    onClick={() => setShowConfirm(true)}
+                    onClick={() => {
+                        setShouldFocusTrash(true);
+                        setShowConfirm(true);
+                    }}
+                    autoFocus={shouldFocusTrash}
                     className="text-gray-500 hover:text-red-400 transition-colors p-2 rounded-md hover:bg-gray-800"
                     title="Limpar conversa"
                     aria-label="Limpar conversa"

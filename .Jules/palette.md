@@ -12,3 +12,7 @@
 ## 2024-05-25 - [Responsive Visibility Overlap]
 **Learning:** Using only `opacity` for responsive visibility (e.g., `md:opacity-0`) can lead to duplicate interactive elements if hover states (`group-hover:opacity-100`) override the opacity on larger screens. Elements intended to be hidden on desktop may reappear on hover alongside their desktop counterparts.
 **Action:** Pair `hidden` / `block` utilities with opacity transitions when elements should be completely removed from the layout/accessibility tree on specific breakpoints, or ensure hover states are scoped to the correct breakpoint (e.g., `md:group-hover:opacity-100` vs `group-hover:opacity-100`).
+
+## 2024-05-24 - [Focus Management on Conditional Render]
+**Learning:** For simple visibility toggles (like confirmation dialogs replacing the trigger button), focus is lost to the document body when the focused element unmounts. Using `autoFocus` on the entering element and conditional `autoFocus` on the returning trigger is a simpler, more declarative pattern than using `useEffect` + refs for restoring focus in React.
+**Action:** Use `autoFocus` prop for inline confirmation patterns where elements are swapped in/out of the DOM.

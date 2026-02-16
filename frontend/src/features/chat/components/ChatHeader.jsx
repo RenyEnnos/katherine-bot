@@ -3,10 +3,21 @@ import { Trash2, Check, X } from 'lucide-react';
 
 const ChatHeader = ({ clearHistory }) => {
     const [showConfirm, setShowConfirm] = useState(false);
+    const [shouldFocusTrash, setShouldFocusTrash] = useState(false);
 
     const handleClear = () => {
         clearHistory();
         setShowConfirm(false);
+        setShouldFocusTrash(true);
+    };
+
+    const handleCancel = () => {
+        setShowConfirm(false);
+        setShouldFocusTrash(true);
+    };
+
+    const handleKeyDown = (e) => {
+        if (e.key === 'Escape') handleCancel();
     };
 
     return (
@@ -16,7 +27,10 @@ const ChatHeader = ({ clearHistory }) => {
             </div>
 
             {showConfirm ? (
-                <div className="flex items-center gap-2">
+                <div
+                    className="flex items-center gap-2"
+                    onKeyDown={handleKeyDown}
+                >
                     <span className="text-sm text-gray-400">Confirmar?</span>
                     <button
                         onClick={handleClear}
@@ -27,20 +41,22 @@ const ChatHeader = ({ clearHistory }) => {
                         <Check size={20} />
                     </button>
                     <button
-                        onClick={() => setShowConfirm(false)}
+                        onClick={handleCancel}
                         className="text-gray-500 hover:text-gray-300 transition-colors p-2 rounded-md hover:bg-gray-800"
                         title="Cancelar"
                         aria-label="Cancelar"
+                        autoFocus
                     >
                         <X size={20} />
                     </button>
                 </div>
             ) : (
                 <button
-                    onClick={() => setShowConfirm(true)}
+                    onClick={() => { setShowConfirm(true); setShouldFocusTrash(false); }}
                     className="text-gray-500 hover:text-red-400 transition-colors p-2 rounded-md hover:bg-gray-800"
                     title="Limpar conversa"
                     aria-label="Limpar conversa"
+                    autoFocus={shouldFocusTrash}
                 >
                     <Trash2 size={20} />
                 </button>

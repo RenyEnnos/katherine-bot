@@ -28,7 +28,10 @@ const ChatHeader = ({ clearHistory }) => {
             </div>
 
             {showConfirm ? (
-                <div className="flex items-center gap-2" onKeyDown={handleKeyDown}>
+                <div
+                    className="flex items-center gap-2"
+                    onKeyDown={handleKeyDown}
+                >
                     <span className="text-sm text-gray-400">Confirmar?</span>
                     <button
                         onClick={handleClear}

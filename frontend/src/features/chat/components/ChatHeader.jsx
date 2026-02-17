@@ -3,29 +3,34 @@ import { Trash2, Check, X } from 'lucide-react';
 
 const ChatHeader = ({ clearHistory }) => {
     const [showConfirm, setShowConfirm] = useState(false);
-    const [shouldFocusTrash, setShouldFocusTrash] = useState(false);
     const trashRef = useRef(null);
+    const prevShowConfirm = useRef(showConfirm);
 
     useEffect(() => {
-        if (!showConfirm && shouldFocusTrash && trashRef.current) {
+        // Focus restoration when confirmation closes
+        if (prevShowConfirm.current && !showConfirm && trashRef.current) {
             trashRef.current.focus();
-            setShouldFocusTrash(false);
         }
-    }, [showConfirm, shouldFocusTrash]);
+        prevShowConfirm.current = showConfirm;
+    }, [showConfirm]);
+
+    useEffect(() => {
+        // Handle Escape key globally when confirmation is open
+        const handleKeyDown = (e) => {
+            if (e.key === 'Escape') {
+                setShowConfirm(false);
+            }
+        };
+
+        if (showConfirm) {
+            document.addEventListener('keydown', handleKeyDown);
+        }
+        return () => document.removeEventListener('keydown', handleKeyDown);
+    }, [showConfirm]);
 
     const handleClear = () => {
         clearHistory();
         setShowConfirm(false);
-        setShouldFocusTrash(true);
-    };
-
-    const handleCancel = () => {
-        setShowConfirm(false);
-        setShouldFocusTrash(true);
-    };
-
-    const handleKeyDown = (e) => {
-        if (e.key === 'Escape') handleCancel();
     };
 
     return (
@@ -35,10 +40,7 @@ const ChatHeader = ({ clearHistory }) => {
             </div>
 
             {showConfirm ? (
-                <div
-                    className="flex items-center gap-2"
-                    onKeyDown={handleKeyDown}
-                >
+                <div className="flex items-center gap-2">
                     <span className="text-sm text-gray-400">Confirmar?</span>
                     <button
                         onClick={handleClear}
@@ -49,7 +51,7 @@ const ChatHeader = ({ clearHistory }) => {
                         <Check size={20} />
                     </button>
                     <button
-                        onClick={handleCancel}
+                        onClick={() => setShowConfirm(false)}
                         className="text-gray-500 hover:text-gray-300 transition-colors p-2 rounded-md hover:bg-gray-800"
                         title="Cancelar"
                         aria-label="Cancelar"

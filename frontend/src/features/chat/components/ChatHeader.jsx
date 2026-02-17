@@ -1,9 +1,17 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Trash2, Check, X } from 'lucide-react';
 
 const ChatHeader = ({ clearHistory }) => {
     const [showConfirm, setShowConfirm] = useState(false);
     const [shouldFocusTrash, setShouldFocusTrash] = useState(false);
+    const trashRef = useRef(null);
+
+    useEffect(() => {
+        if (!showConfirm && shouldFocusTrash && trashRef.current) {
+            trashRef.current.focus();
+            setShouldFocusTrash(false);
+        }
+    }, [showConfirm, shouldFocusTrash]);
 
     const handleClear = () => {
         clearHistory();
@@ -52,11 +60,11 @@ const ChatHeader = ({ clearHistory }) => {
                 </div>
             ) : (
                 <button
-                    onClick={() => { setShowConfirm(true); setShouldFocusTrash(false); }}
+                    ref={trashRef}
+                    onClick={() => setShowConfirm(true)}
                     className="text-gray-500 hover:text-red-400 transition-colors p-2 rounded-md hover:bg-gray-800"
                     title="Limpar conversa"
                     aria-label="Limpar conversa"
-                    autoFocus={shouldFocusTrash}
                 >
                     <Trash2 size={20} />
                 </button>

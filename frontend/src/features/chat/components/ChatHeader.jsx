@@ -15,6 +15,12 @@ const ChatHeader = ({ clearHistory }) => {
         setShowConfirm(true);
     };
 
+    const handleKeyDown = (e) => {
+        if (e.key === 'Escape') {
+            setShowConfirm(false);
+        }
+    };
+
     return (
         <header className="flex-shrink-0 h-16 border-b border-gray-800 flex items-center justify-between px-4 md:px-8 bg-gray-900 z-10">
             <div className="font-semibold text-lg tracking-tight text-white">
@@ -22,7 +28,7 @@ const ChatHeader = ({ clearHistory }) => {
             </div>
 
             {showConfirm ? (
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2" onKeyDown={handleKeyDown}>
                     <span className="text-sm text-gray-400">Confirmar?</span>
                     <button
                         onClick={handleClear}

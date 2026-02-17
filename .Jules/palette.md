@@ -13,6 +13,10 @@
 **Learning:** Using only `opacity` for responsive visibility (e.g., `md:opacity-0`) can lead to duplicate interactive elements if hover states (`group-hover:opacity-100`) override the opacity on larger screens. Elements intended to be hidden on desktop may reappear on hover alongside their desktop counterparts.
 **Action:** Pair `hidden` / `block` utilities with opacity transitions when elements should be completely removed from the layout/accessibility tree on specific breakpoints, or ensure hover states are scoped to the correct breakpoint (e.g., `md:group-hover:opacity-100` vs `group-hover:opacity-100`).
 
-## 2024-05-27 - [Focus Management in Conditional Rendering]
-**Learning:** When replacing an interactive element (like a button) with new content (like a confirmation dialog) via conditional rendering, keyboard focus is lost to the document body, confusing screen reader users and breaking tab navigation flow.
-**Action:** Use `autoFocus` on the primary action of the new content to guide focus immediately, and ensure focus is restored to the trigger element (or a logical equivalent) when the new content is dismissed, using state-controlled `autoFocus` or `useEffect`.
+## 2024-05-26 - [Focus Management in Conditional UI]
+**Learning:** For simple UI toggles (e.g., replacing a button with a confirmation dialog), conditionally rendering elements with `autoFocus` is a robust and minimal pattern for managing focus. It avoids complex `useEffect` + `useRef` logic while ensuring keyboard users are not lost when the DOM structure changes.
+**Action:** Use conditional rendering + `autoFocus` for inline confirmation states to preserve keyboard context.
+
+## 2024-05-27 - [Focus Restoration Precision]
+**Learning:** While `autoFocus` handles initial focus well, using it for *restoration* (e.g. going back to a trigger button) can cause "sticky" focus on re-renders if state isn't managed perfectly. A `useRef` + `useEffect` pattern offers more precise control for restoring focus without side effects.
+**Action:** Prefer `useRef` and `useEffect` over state-controlled `autoFocus` when precise focus restoration is needed after closing a modal/dialog.

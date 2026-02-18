@@ -34,6 +34,11 @@ const ChatHeader = ({ clearHistory }) => {
         setShowConfirm(false);
     };
 
+    const handleTrashClick = () => {
+        setShouldFocusTrash(true);
+        setShowConfirm(true);
+    };
+
     const handleKeyDown = (e) => {
         if (e.key === 'Escape') {
             setShowConfirm(false);
@@ -61,6 +66,7 @@ const ChatHeader = ({ clearHistory }) => {
                         <Check size={20} />
                     </button>
                     <button
+                        autoFocus
                         onClick={() => setShowConfirm(false)}
                         autoFocus
                         className="text-gray-500 hover:text-gray-300 transition-colors p-2 rounded-md hover:bg-gray-800"
@@ -73,6 +79,8 @@ const ChatHeader = ({ clearHistory }) => {
                 </div>
             ) : (
                 <button
+                    autoFocus={shouldFocusTrash}
+                    onClick={handleTrashClick}
                     ref={trashRef}
                     onClick={() => setShowConfirm(true)}
                     onClick={() => {

@@ -1,8 +1,32 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Trash2, Check, X } from 'lucide-react';
 
 const ChatHeader = ({ clearHistory }) => {
     const [showConfirm, setShowConfirm] = useState(false);
+    const trashRef = useRef(null);
+    const prevShowConfirm = useRef(showConfirm);
+
+    useEffect(() => {
+        // Focus restoration when confirmation closes
+        if (prevShowConfirm.current && !showConfirm && trashRef.current) {
+            trashRef.current.focus();
+        }
+        prevShowConfirm.current = showConfirm;
+    }, [showConfirm]);
+
+    useEffect(() => {
+        // Handle Escape key globally when confirmation is open
+        const handleKeyDown = (e) => {
+            if (e.key === 'Escape') {
+                setShowConfirm(false);
+            }
+        };
+
+        if (showConfirm) {
+            document.addEventListener('keydown', handleKeyDown);
+        }
+        return () => document.removeEventListener('keydown', handleKeyDown);
+    }, [showConfirm]);
     const [shouldFocusTrash, setShouldFocusTrash] = useState(false);
 
     const handleClear = () => {
@@ -44,9 +68,11 @@ const ChatHeader = ({ clearHistory }) => {
                     <button
                         autoFocus
                         onClick={() => setShowConfirm(false)}
+                        autoFocus
                         className="text-gray-500 hover:text-gray-300 transition-colors p-2 rounded-md hover:bg-gray-800"
                         title="Cancelar"
                         aria-label="Cancelar"
+                        autoFocus
                     >
                         <X size={20} />
                     </button>
@@ -55,6 +81,13 @@ const ChatHeader = ({ clearHistory }) => {
                 <button
                     autoFocus={shouldFocusTrash}
                     onClick={handleTrashClick}
+                    ref={trashRef}
+                    onClick={() => setShowConfirm(true)}
+                    onClick={() => {
+                        setShouldFocusTrash(true);
+                        setShowConfirm(true);
+                    }}
+                    autoFocus={shouldFocusTrash}
                     className="text-gray-500 hover:text-red-400 transition-colors p-2 rounded-md hover:bg-gray-800"
                     title="Limpar conversa"
                     aria-label="Limpar conversa"

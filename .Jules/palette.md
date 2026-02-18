@@ -16,3 +16,7 @@
 ## 2024-05-26 - [Focus Management in Conditional UI]
 **Learning:** For simple UI toggles (e.g., replacing a button with a confirmation dialog), conditionally rendering elements with `autoFocus` is a robust and minimal pattern for managing focus. It avoids complex `useEffect` + `useRef` logic while ensuring keyboard users are not lost when the DOM structure changes.
 **Action:** Use conditional rendering + `autoFocus` for inline confirmation states to preserve keyboard context.
+
+## 2024-05-27 - [Focus Restoration Precision]
+**Learning:** While `autoFocus` handles initial focus well, using it for *restoration* (e.g. going back to a trigger button) can cause "sticky" focus on re-renders if state isn't managed perfectly. A `useRef` + `useEffect` pattern offers more precise control for restoring focus without side effects.
+**Action:** Prefer `useRef` and `useEffect` over state-controlled `autoFocus` when precise focus restoration is needed after closing a modal/dialog.

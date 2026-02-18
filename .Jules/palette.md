@@ -20,3 +20,7 @@
 ## 2024-05-27 - [Focus Restoration Precision]
 **Learning:** While `autoFocus` handles initial focus well, using it for *restoration* (e.g. going back to a trigger button) can cause "sticky" focus on re-renders if state isn't managed perfectly. A `useRef` + `useEffect` pattern offers more precise control for restoring focus without side effects.
 **Action:** Prefer `useRef` and `useEffect` over state-controlled `autoFocus` when precise focus restoration is needed after closing a modal/dialog.
+
+## 2024-05-28 - [Single Source of Truth for Focus]
+**Learning:** Mixing declarative focus (`autoFocus`) with imperative focus logic (`useEffect`, state-based flags) leads to duplicate attributes and unpredictable behavior. Code becomes fragile and harder to maintain when multiple mechanisms try to control the same focus event.
+**Action:** Enforce a single strategy for each focus transition: use `autoFocus` for entry into new contexts (like modals), and `useEffect/useRef` for restoring focus to previous contexts.

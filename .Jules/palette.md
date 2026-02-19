@@ -20,3 +20,7 @@
 ## 2024-05-27 - [Focus Restoration Precision]
 **Learning:** While `autoFocus` handles initial focus well, using it for *restoration* (e.g. going back to a trigger button) can cause "sticky" focus on re-renders if state isn't managed perfectly. A `useRef` + `useEffect` pattern offers more precise control for restoring focus without side effects.
 **Action:** Prefer `useRef` and `useEffect` over state-controlled `autoFocus` when precise focus restoration is needed after closing a modal/dialog.
+
+## 2024-05-28 - [Duplicate Props & Focus Restoration]
+**Learning:** Duplicate JSX props (e.g., multiple `onClick`) might pass standard ESLint configurations but can cause undefined behavior and build warnings. Additionally, while `autoFocus` is great for initial focus in conditional renders, restoring focus to a trigger element is more reliably handled via `useEffect` and `useRef` to avoid "sticky" focus issues on re-renders.
+**Action:** Always check build logs for duplicate prop warnings if linting is silent, and prefer `useEffect` over state-driven `autoFocus` for restoring focus to specific elements after a dialog closes.

@@ -6,16 +6,17 @@ const ChatHeader = ({ clearHistory }) => {
     const trashRef = useRef(null);
     const prevShowConfirm = useRef(showConfirm);
 
+    // Focus restoration logic
     useEffect(() => {
-        // Focus restoration when confirmation closes
+        // If confirm was showing and now hidden, and we have the trash ref, focus it
         if (prevShowConfirm.current && !showConfirm && trashRef.current) {
             trashRef.current.focus();
         }
         prevShowConfirm.current = showConfirm;
     }, [showConfirm]);
 
+    // Handle Escape key globally when confirmation is open
     useEffect(() => {
-        // Handle Escape key globally when confirmation is open
         const handleKeyDown = (e) => {
             if (e.key === 'Escape') {
                 setShowConfirm(false);
@@ -27,22 +28,10 @@ const ChatHeader = ({ clearHistory }) => {
         }
         return () => document.removeEventListener('keydown', handleKeyDown);
     }, [showConfirm]);
-    const [shouldFocusTrash, setShouldFocusTrash] = useState(false);
 
     const handleClear = () => {
         clearHistory();
         setShowConfirm(false);
-    };
-
-    const handleTrashClick = () => {
-        setShouldFocusTrash(true);
-        setShowConfirm(true);
-    };
-
-    const handleKeyDown = (e) => {
-        if (e.key === 'Escape') {
-            setShowConfirm(false);
-        }
     };
 
     return (
@@ -52,43 +41,31 @@ const ChatHeader = ({ clearHistory }) => {
             </div>
 
             {showConfirm ? (
-                <div
-                    className="flex items-center gap-2"
-                    onKeyDown={handleKeyDown}
-                >
+                <div className="flex items-center gap-2">
                     <span className="text-sm text-gray-400">Confirmar?</span>
                     <button
                         onClick={handleClear}
-                        className="text-red-400 hover:text-red-300 transition-colors p-2 rounded-md hover:bg-gray-800"
+                        className="text-red-400 hover:text-red-300 transition-colors p-2 rounded-md hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-red-500"
                         title="Confirmar limpeza"
                         aria-label="Confirmar limpeza"
                     >
                         <Check size={20} />
                     </button>
                     <button
-                        autoFocus
                         onClick={() => setShowConfirm(false)}
                         autoFocus
-                        className="text-gray-500 hover:text-gray-300 transition-colors p-2 rounded-md hover:bg-gray-800"
+                        className="text-gray-500 hover:text-gray-300 transition-colors p-2 rounded-md hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-500"
                         title="Cancelar"
                         aria-label="Cancelar"
-                        autoFocus
                     >
                         <X size={20} />
                     </button>
                 </div>
             ) : (
                 <button
-                    autoFocus={shouldFocusTrash}
-                    onClick={handleTrashClick}
-                    ref={trashRef}
                     onClick={() => setShowConfirm(true)}
-                    onClick={() => {
-                        setShouldFocusTrash(true);
-                        setShowConfirm(true);
-                    }}
-                    autoFocus={shouldFocusTrash}
-                    className="text-gray-500 hover:text-red-400 transition-colors p-2 rounded-md hover:bg-gray-800"
+                    ref={trashRef}
+                    className="text-gray-500 hover:text-red-400 transition-colors p-2 rounded-md hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-red-500"
                     title="Limpar conversa"
                     aria-label="Limpar conversa"
                 >

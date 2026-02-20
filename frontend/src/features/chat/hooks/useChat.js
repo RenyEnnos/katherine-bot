@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { sendMessage } from '../services/chatService';
 import { SYSTEM_MESSAGES } from '../constants';
 
@@ -72,11 +72,11 @@ export const useChat = (userId) => {
         }
     };
 
-    const clearHistory = () => {
+    const clearHistory = useCallback(() => {
         setMessages([]);
         setEmotionState(null);
         // Ideally, we should also call an API endpoint to clear history in backend if desired
-    };
+    }, []);
 
     return {
         messages,

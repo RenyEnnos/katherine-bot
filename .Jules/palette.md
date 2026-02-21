@@ -20,3 +20,7 @@
 ## 2024-05-27 - [Focus Restoration Precision]
 **Learning:** While `autoFocus` handles initial focus well, using it for *restoration* (e.g. going back to a trigger button) can cause "sticky" focus on re-renders if state isn't managed perfectly. A `useRef` + `useEffect` pattern offers more precise control for restoring focus without side effects.
 **Action:** Prefer `useRef` and `useEffect` over state-controlled `autoFocus` when precise focus restoration is needed after closing a modal/dialog.
+
+## 2024-05-28 - [Inline Confirmation Semantics]
+**Learning:** When replacing a trigger button with inline confirmation controls, simply swapping elements can confuse screen readers. Wrapping the confirmation controls in a container with `role="group"` and `aria-label` provides necessary context that a modal would otherwise provide, without the overhead of a full dialog trap.
+**Action:** Wrap inline confirmation actions in a semantic group with a clear label to maintain context for assistive technology.

@@ -24,3 +24,7 @@
 ## 2024-05-28 - [Inline Confirmation Semantics]
 **Learning:** When replacing a trigger button with inline confirmation controls, simply swapping elements can confuse screen readers. Wrapping the confirmation controls in a container with `role="group"` and `aria-label` provides necessary context that a modal would otherwise provide, without the overhead of a full dialog trap.
 **Action:** Wrap inline confirmation actions in a semantic group with a clear label to maintain context for assistive technology.
+
+## 2024-05-30 - [Markdown Component Styling]
+**Learning:** `react-markdown` v9 removes the `inline` prop for code components, making it tricky to distinguish inline `code` from block `pre`. However, using a CSS descendant selector pattern (e.g., `pre` styling `[&>code]:bg-transparent`) allows for clean separation of block vs. inline styles without complex logic or additional dependencies.
+**Action:** Use parent-based CSS selectors to style nested components when direct props are unavailable or unreliable.

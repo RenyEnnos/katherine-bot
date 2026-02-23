@@ -31,7 +31,64 @@ const MessageBubble = ({ message, isUser }) => {
                         <div className="markdown-content">
                             <ReactMarkdown
                                 components={{
-                                    em: ({ node, ...props }) => <span className="text-gray-400 italic" {...props} />
+                                    // Headers
+                                    h1: ({ node, ...props }) => <h1 className="text-xl font-bold mt-4 mb-2" {...props} />,
+                                    h2: ({ node, ...props }) => <h2 className="text-lg font-bold mt-3 mb-2" {...props} />,
+                                    h3: ({ node, ...props }) => <h3 className="text-base font-bold mt-2 mb-1" {...props} />,
+
+                                    // Links
+                                    a: ({ node, ...props }) => (
+                                        <a
+                                            className={`hover:underline break-all ${isUser ? 'text-white underline' : 'text-blue-400'}`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            {...props}
+                                        />
+                                    ),
+
+                                    // Lists
+                                    ul: ({ node, ...props }) => <ul className="list-disc pl-5 space-y-1 my-2" {...props} />,
+                                    ol: ({ node, ...props }) => <ol className="list-decimal pl-5 space-y-1 my-2" {...props} />,
+                                    li: ({ node, ...props }) => <li className="pl-1" {...props} />,
+
+                                    // Code
+                                    code: ({ node, inline, className, children, ...props }) => {
+                                        return (
+                                            <code
+                                                className={`px-1.5 py-0.5 rounded text-sm font-mono ${isUser
+                                                    ? 'bg-blue-700 text-blue-100'
+                                                    : 'bg-gray-700 text-gray-200 border border-gray-600'}`}
+                                                {...props}
+                                            >
+                                                {children}
+                                            </code>
+                                        );
+                                    },
+                                    pre: ({ node, ...props }) => (
+                                        <div className={`rounded-lg overflow-hidden my-3 border ${isUser
+                                            ? 'bg-blue-800 border-blue-700'
+                                            : 'bg-gray-950 border-gray-700'}`}>
+                                            <pre
+                                                className={`p-3 overflow-x-auto font-mono text-sm [&_code]:bg-transparent [&_code]:border-none [&_code]:p-0`}
+                                                {...props}
+                                            />
+                                        </div>
+                                    ),
+
+                                    // Blockquotes
+                                    blockquote: ({ node, ...props }) => (
+                                        <blockquote
+                                            className={`border-l-4 pl-4 italic my-2 ${isUser
+                                                ? 'border-blue-400 text-blue-100'
+                                                : 'border-gray-600 text-gray-400'}`}
+                                            {...props}
+                                        />
+                                    ),
+
+                                    // Emphasis
+                                    em: ({ node, ...props }) => (
+                                        <span className={`italic ${isUser ? 'text-blue-100' : 'text-gray-400'}`} {...props} />
+                                    )
                                 }}
                             >
                                 {message}

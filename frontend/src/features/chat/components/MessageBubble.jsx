@@ -31,7 +31,17 @@ const MessageBubble = ({ message, isUser }) => {
                         <div className="markdown-content">
                             <ReactMarkdown
                                 components={{
-                                    em: ({ node, ...props }) => <span className="text-gray-400 italic" {...props} />
+                                    em: ({ node, ...props }) => <span className="italic opacity-80" {...props} />,
+                                    h1: ({ node, ...props }) => <h1 className="text-xl font-bold mb-3 mt-4 first:mt-0" {...props} />,
+                                    h2: ({ node, ...props }) => <h2 className="text-lg font-bold mb-2 mt-3 first:mt-0" {...props} />,
+                                    h3: ({ node, ...props }) => <h3 className="text-base font-bold mb-2 mt-2 first:mt-0" {...props} />,
+                                    ul: ({ node, ...props }) => <ul className="list-disc pl-5 mb-2 space-y-1" {...props} />,
+                                    ol: ({ node, ...props }) => <ol className="list-decimal pl-5 mb-2 space-y-1" {...props} />,
+                                    li: ({ node, ...props }) => <li className="pl-1" {...props} />,
+                                    a: ({ node, ...props }) => <a className={`underline hover:opacity-80 transition-opacity ${isUser ? 'text-white' : 'text-blue-400'}`} target="_blank" rel="noopener noreferrer" {...props} />,
+                                    blockquote: ({ node, ...props }) => <blockquote className={`border-l-4 pl-4 py-1 my-2 italic ${isUser ? 'border-white/30 text-white/80' : 'border-gray-600 text-gray-400'}`} {...props} />,
+                                    code: ({ node, ...props }) => <code className={`font-mono text-sm rounded px-1.5 py-0.5 ${isUser ? 'bg-blue-700 text-white' : 'bg-gray-900 text-gray-200 border border-gray-700'}`} {...props} />,
+                                    pre: ({ node, ...props }) => <pre className={`font-mono text-sm rounded-lg p-3 overflow-x-auto my-2 [&_code]:bg-transparent [&_code]:border-0 [&_code]:p-0 ${isUser ? 'bg-blue-800 text-white' : 'bg-gray-950 text-gray-300 border border-gray-700'}`} {...props} />
                                 }}
                             >
                                 {message}

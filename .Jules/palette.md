@@ -24,3 +24,7 @@
 ## 2024-05-28 - [Inline Confirmation Semantics]
 **Learning:** When replacing a trigger button with inline confirmation controls, simply swapping elements can confuse screen readers. Wrapping the confirmation controls in a container with `role="group"` and `aria-label` provides necessary context that a modal would otherwise provide, without the overhead of a full dialog trap.
 **Action:** Wrap inline confirmation actions in a semantic group with a clear label to maintain context for assistive technology.
+
+## 2024-05-30 - [Markdown Accessibility]
+**Learning:** `react-markdown` v9 renders plain HTML elements that are unstyled by default in Tailwind, making lists and code blocks inaccessible and hard to scan. Custom component mapping is required to restore visual hierarchy and accessibility (e.g., proper list bullets, code block contrast).
+**Action:** Always provide custom components for `ul`, `ol`, `code`, `pre`, and `a` when using `react-markdown` in a Tailwind project to ensure readability and accessibility.

@@ -31,7 +31,26 @@ const MessageBubble = ({ message, isUser }) => {
                         <div className="markdown-content">
                             <ReactMarkdown
                                 components={{
-                                    em: ({ node, ...props }) => <span className="text-gray-400 italic" {...props} />
+                                    em: ({ node, ...props }) => <span className="italic opacity-80" {...props} />,
+                                    strong: ({ node, ...props }) => <span className="font-semibold" {...props} />,
+                                    ul: ({ node, ...props }) => <ul className="list-disc pl-4 space-y-1 my-2" {...props} />,
+                                    ol: ({ node, ...props }) => <ol className="list-decimal pl-4 space-y-1 my-2" {...props} />,
+                                    li: ({ node, ...props }) => <li className="pl-1" {...props} />,
+                                    a: ({ node, ...props }) => (
+                                        <a target="_blank" rel="noopener noreferrer"
+                                           className={`underline ${isUser ? 'text-blue-100 hover:text-white' : 'text-blue-400 hover:text-blue-300'}`}
+                                           {...props}
+                                        />
+                                    ),
+                                    code: ({ node, ...props }) => (
+                                        <code className={`font-mono text-xs px-1 py-0.5 rounded ${isUser ? 'bg-blue-700 text-blue-50' : 'bg-gray-900 text-pink-200'}`} {...props} />
+                                    ),
+                                    pre: ({ node, ...props }) => (
+                                        <pre className={`p-3 rounded-lg overflow-x-auto my-2 border text-sm [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-inherit ${isUser ? 'bg-blue-800 border-blue-700 text-blue-50' : 'bg-gray-950 border-gray-700 text-gray-300'}`} {...props} />
+                                    ),
+                                    blockquote: ({ node, ...props }) => (
+                                        <blockquote className={`border-l-4 pl-3 py-1 italic my-2 ${isUser ? 'border-blue-400 text-blue-100' : 'border-gray-600 text-gray-400'}`} {...props} />
+                                    )
                                 }}
                             >
                                 {message}

@@ -24,3 +24,7 @@
 ## 2024-05-28 - [Inline Confirmation Semantics]
 **Learning:** When replacing a trigger button with inline confirmation controls, simply swapping elements can confuse screen readers. Wrapping the confirmation controls in a container with `role="group"` and `aria-label` provides necessary context that a modal would otherwise provide, without the overhead of a full dialog trap.
 **Action:** Wrap inline confirmation actions in a semantic group with a clear label to maintain context for assistive technology.
+
+## 2024-05-22 - Improved Markdown Rendering in Chat
+**Learning:** `react-markdown` without `@tailwindcss/typography` or custom components renders unstyled HTML, which is a major UX gap for chat apps that output code or lists. Conditional styling based on message sender (user vs assistant) is crucial for readability on different background colors.
+**Action:** Always inspect `ReactMarkdown` implementation to ensure `components` are mapped to styled elements, especially for `code`, `pre`, `ul`, `ol`, and `a`.

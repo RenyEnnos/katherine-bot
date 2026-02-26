@@ -31,7 +31,17 @@ const MessageBubble = ({ message, isUser }) => {
                         <div className="markdown-content">
                             <ReactMarkdown
                                 components={{
-                                    em: ({ node, ...props }) => <span className="text-gray-400 italic" {...props} />
+                                    em: ({ node, ...props }) => <span className="italic opacity-75" {...props} />,
+                                    ul: ({ node, ...props }) => <ul className="list-disc ml-4 space-y-1 my-2" {...props} />,
+                                    ol: ({ node, ...props }) => <ol className="list-decimal ml-4 space-y-1 my-2" {...props} />,
+                                    li: ({ node, ...props }) => <li className="pl-1" {...props} />,
+                                    a: ({ node, ...props }) => <a className={`underline hover:opacity-80 break-all ${isUser ? 'text-white' : 'text-blue-400'}`} target="_blank" rel="noopener noreferrer" {...props} />,
+                                    h1: ({ node, ...props }) => <h1 className="text-lg font-bold mt-2 mb-1" {...props} />,
+                                    h2: ({ node, ...props }) => <h2 className="text-base font-bold mt-2 mb-1" {...props} />,
+                                    h3: ({ node, ...props }) => <h3 className="text-sm font-bold mt-2 mb-1" {...props} />,
+                                    code: ({ node, ...props }) => <code className={`font-mono text-xs px-1 py-0.5 rounded ${isUser ? 'bg-blue-700' : 'bg-gray-700'}`} {...props} />,
+                                    pre: ({ node, ...props }) => <pre className={`font-mono text-xs p-3 rounded-lg overflow-x-auto my-2 [&_code]:bg-transparent [&_code]:p-0 ${isUser ? 'bg-blue-800' : 'bg-gray-900'}`} {...props} />,
+                                    blockquote: ({ node, ...props }) => <blockquote className="border-l-2 border-current pl-3 italic opacity-80 my-2" {...props} />
                                 }}
                             >
                                 {message}

@@ -24,3 +24,7 @@
 ## 2024-05-28 - [Inline Confirmation Semantics]
 **Learning:** When replacing a trigger button with inline confirmation controls, simply swapping elements can confuse screen readers. Wrapping the confirmation controls in a container with `role="group"` and `aria-label` provides necessary context that a modal would otherwise provide, without the overhead of a full dialog trap.
 **Action:** Wrap inline confirmation actions in a semantic group with a clear label to maintain context for assistive technology.
+
+## 2024-05-29 - [Dynamic Disabled State Communication]
+**Learning:** Simply disabling a button (like 'Send') can leave users confused as to *why* it is disabled. Updating the `aria-label` and `title` to explain the reason (e.g., "Digite uma mensagem para enviar" vs "Enviando mensagem...") provides critical context to both screen reader users and sighted users (via tooltips), reducing frustration.
+**Action:** When a main action button is conditionally disabled, provide a dynamic aria-label/title that explains the condition required to enable it, rather than a static label.

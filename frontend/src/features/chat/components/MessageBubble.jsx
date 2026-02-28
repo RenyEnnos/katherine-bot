@@ -46,7 +46,7 @@ const MessageBubble = ({ message, isUser }) => {
                     <div className="flex flex-col justify-center">
                         <button
                             onClick={handleCopy}
-                            className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-all opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100"
+                            className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-all opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
                             aria-label={isCopied ? "Copiado" : "Copiar mensagem"}
                             title={isCopied ? "Copiado" : "Copiar mensagem"}
                         >

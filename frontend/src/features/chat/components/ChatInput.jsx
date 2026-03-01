@@ -19,7 +19,7 @@ const ChatInput = ({ input, setInput, handleSend, isLoading, inputRef }) => {
                     onKeyDown={handleKeyDown}
                     placeholder="Escreva aqui sua mensagem..."
                     aria-label="Sua mensagem"
-                    className="w-full bg-transparent text-white placeholder-gray-400 text-base p-2 max-h-32 min-h-[44px] resize-none focus:outline-none scrollbar-hide"
+                    className="w-full bg-transparent text-white placeholder-gray-400 text-base p-2 max-h-32 min-h-[44px] resize-none focus:outline-none scrollbar-hide disabled:opacity-50 disabled:cursor-not-allowed"
                     rows={1}
                     disabled={isLoading}
                     style={{ height: 'auto', minHeight: '44px' }}
@@ -31,8 +31,8 @@ const ChatInput = ({ input, setInput, handleSend, isLoading, inputRef }) => {
                 <button
                     onClick={handleSend}
                     disabled={!input.trim() || isLoading}
-                    aria-label="Enviar mensagem (Enter)"
-                    title="Enviar mensagem (Enter)"
+                    aria-label={isLoading ? "Enviando..." : (!input.trim() ? "Digite uma mensagem para enviar" : "Enviar mensagem (Enter)")}
+                    title={isLoading ? "Enviando..." : (!input.trim() ? "Digite uma mensagem para enviar" : "Enviar mensagem (Enter)")}
                     className={`p-2 rounded-lg mb-1 transition-all ${input.trim() && !isLoading
                         ? 'bg-blue-600 text-white hover:bg-blue-500 shadow-md'
                         : 'bg-gray-700 text-gray-500 cursor-not-allowed'

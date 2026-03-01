@@ -3,8 +3,16 @@ import { supabase } from './lib/supabaseClient';
 import AuthPage from './features/auth/AuthPage';
 import ChatWindow from './features/chat/components/ChatWindow';
 
-function App() {
+function App({ testUserId }) {
     const [session, setSession] = useState(null);
+
+    if (testUserId) {
+        return (
+            <div className="min-h-screen bg-gray-900 text-gray-100 font-sans antialiased">
+                <ChatWindow userId={testUserId} />
+            </div>
+        );
+    }
 
     useEffect(() => {
         supabase.auth.getSession().then(({ data: { session } }) => {

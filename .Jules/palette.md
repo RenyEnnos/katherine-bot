@@ -24,3 +24,7 @@
 ## 2024-05-28 - [Inline Confirmation Semantics]
 **Learning:** When replacing a trigger button with inline confirmation controls, simply swapping elements can confuse screen readers. Wrapping the confirmation controls in a container with `role="group"` and `aria-label` provides necessary context that a modal would otherwise provide, without the overhead of a full dialog trap.
 **Action:** Wrap inline confirmation actions in a semantic group with a clear label to maintain context for assistive technology.
+
+## 2024-05-29 - [Explicit Feedback for Disabled Inputs]
+**Learning:** Adding the `disabled` attribute to inputs prevents interaction, but without visual cues (like opacity reduction or cursor changes), users may think the interface is broken or unresponsive during async operations like waiting for a chat response.
+**Action:** Always pair `disabled` attributes on inputs (especially textareas) with visual indicators like `disabled:opacity-50` and `disabled:cursor-not-allowed` to provide explicit feedback.

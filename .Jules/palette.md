@@ -24,3 +24,7 @@
 ## 2024-05-28 - [Inline Confirmation Semantics]
 **Learning:** When replacing a trigger button with inline confirmation controls, simply swapping elements can confuse screen readers. Wrapping the confirmation controls in a container with `role="group"` and `aria-label` provides necessary context that a modal would otherwise provide, without the overhead of a full dialog trap.
 **Action:** Wrap inline confirmation actions in a semantic group with a clear label to maintain context for assistive technology.
+
+## 2024-05-29 - [Visual Disabled States & Keyboard Focus]
+**Learning:** It's easy to forget visual cues for `disabled` states on inputs like textareas when relying on default browser behavior. Explicitly adding `disabled:opacity-50` and `disabled:cursor-not-allowed` makes the non-interactive state immediately apparent to users. Additionally, action buttons need distinct `focus-visible` styles (e.g., `ring`, `ring-offset`) for keyboard accessibility, especially when they have complex dynamic styling based on state. Redundant screen reader announcements on icon-only buttons can be avoided by adding `aria-hidden="true"` to the icon element itself when the parent button already has a clear `aria-label`.
+**Action:** Always include explicit `disabled:` utility classes for form inputs, ensure buttons have `focus-visible:` styles, and hide decorative/redundant icons from screen readers using `aria-hidden="true"`.

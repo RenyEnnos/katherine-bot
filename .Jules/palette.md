@@ -24,3 +24,11 @@
 ## 2024-05-28 - [Inline Confirmation Semantics]
 **Learning:** When replacing a trigger button with inline confirmation controls, simply swapping elements can confuse screen readers. Wrapping the confirmation controls in a container with `role="group"` and `aria-label` provides necessary context that a modal would otherwise provide, without the overhead of a full dialog trap.
 **Action:** Wrap inline confirmation actions in a semantic group with a clear label to maintain context for assistive technology.
+
+## 2024-05-29 - [Disabled Input Semantics]
+**Learning:** Textareas and inputs inside stylized container wrappers often rely on the parent wrapper to indicate focus (`focus-within`), but the disabled state of the input itself can be missed visually. Explicitly applying `disabled:opacity-50` and `disabled:cursor-not-allowed` ensures users clearly understand the form cannot be interacted with.
+**Action:** Always add explicit disabled styling directly to the `<textarea>` or `<input>`, even if the outer wrapper changes its border or background color.
+
+## 2024-05-29 - [Icon-Only Button Accessibility in Send Actions]
+**Learning:** The Send button inside a chat input uses an icon (`Send` or `Loader2`). If the button already has `aria-label` or `title`, adding `aria-hidden="true"` to the SVG icons prevents redundant readouts by screen readers, creating a cleaner a11y tree.
+**Action:** Always add `aria-hidden="true"` to SVG elements that are purely decorative or nested inside buttons with adequate `aria-label` attributes.

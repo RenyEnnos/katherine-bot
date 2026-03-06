@@ -24,3 +24,7 @@
 ## 2024-05-28 - [Inline Confirmation Semantics]
 **Learning:** When replacing a trigger button with inline confirmation controls, simply swapping elements can confuse screen readers. Wrapping the confirmation controls in a container with `role="group"` and `aria-label` provides necessary context that a modal would otherwise provide, without the overhead of a full dialog trap.
 **Action:** Wrap inline confirmation actions in a semantic group with a clear label to maintain context for assistive technology.
+
+## 2024-05-29 - [Explicit Disabled States on Text Inputs]
+**Learning:** During async operations (like waiting for an AI response), text inputs that are disabled but visually identical to their active state can cause the app to feel frozen or unresponsive if users attempt to type. Disabled elements should have explicit visual cues.
+**Action:** Always add explicit visual feedback (like `opacity-50` and `cursor-not-allowed`) to disabled textareas and inputs to immediately communicate their non-interactive state.

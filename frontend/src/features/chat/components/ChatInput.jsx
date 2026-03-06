@@ -19,7 +19,7 @@ const ChatInput = ({ input, setInput, handleSend, isLoading, inputRef }) => {
                     onKeyDown={handleKeyDown}
                     placeholder="Escreva aqui sua mensagem..."
                     aria-label="Sua mensagem"
-                    className="w-full bg-transparent text-white placeholder-gray-400 text-base p-2 max-h-32 min-h-[44px] resize-none focus:outline-none scrollbar-hide"
+                    className="w-full bg-transparent text-white placeholder-gray-400 text-base p-2 max-h-32 min-h-[44px] resize-none focus:outline-none scrollbar-hide disabled:opacity-50 disabled:cursor-not-allowed"
                     rows={1}
                     disabled={isLoading}
                     style={{ height: 'auto', minHeight: '44px' }}

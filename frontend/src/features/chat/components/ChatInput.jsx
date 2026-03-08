@@ -38,7 +38,7 @@ const ChatInput = ({ input, setInput, handleSend, isLoading, inputRef }) => {
                         : 'bg-gray-700 text-gray-500 cursor-not-allowed'
                         }`}
                 >
-                    {isLoading ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
+                    {isLoading ? <Loader2 size={20} className="animate-spin" aria-hidden="true" /> : <Send size={20} aria-hidden="true" />}
                 </button>
             </div>
             <div className="text-center text-xs text-gray-500 mt-2">

@@ -28,3 +28,6 @@
 ## 2025-02-12 - [Explicit Focus & Disabled States]
 **Learning:** Dynamic Tailwind class ternaries can sometimes inadvertently miss essential utility classes, especially focus rings. Also, inputs visually behave as enabled during loading states without explicit `disabled:` styles, causing confusion. In dark themes, focus rings require explicit offsets (e.g. `focus-visible:ring-offset-gray-800`).
 **Action:** Always verify `disabled:opacity-50 disabled:cursor-not-allowed` on input elements, and ensure buttons maintain strong, offset `focus-visible` styling regardless of state logic.
+## 2025-02-19 - Improved MessageBubble Copy Button Accessibility
+**Learning:** Copy buttons using dynamic `aria-label` texts fail to reliably announce their updated state (e.g. from "Copiar mensagem" to "Copiado") to screen readers because the label changes instantly and the button loses context.
+**Action:** Used an `aria-live="polite"` region with `.sr-only` permanently mounted next to the button that holds the state announcement, and made the button's `aria-label` static. Also included explicit `focus-visible` classes to ensure visibility for keyboard navigators.

@@ -28,3 +28,7 @@
 ## 2025-02-12 - [Explicit Focus & Disabled States]
 **Learning:** Dynamic Tailwind class ternaries can sometimes inadvertently miss essential utility classes, especially focus rings. Also, inputs visually behave as enabled during loading states without explicit `disabled:` styles, causing confusion. In dark themes, focus rings require explicit offsets (e.g. `focus-visible:ring-offset-gray-800`).
 **Action:** Always verify `disabled:opacity-50 disabled:cursor-not-allowed` on input elements, and ensure buttons maintain strong, offset `focus-visible` styling regardless of state logic.
+
+## 2026-04-15 - [Transient State Feedback Accessibility]
+**Learning:** Mutating the `aria-label` of a button (like 'Copy' to 'Copied!') dynamically is often missed or poorly handled by screen readers, confusing the user about the button's primary function. Adding an adjacent, permanently mounted `aria-live="polite"` region provides a reliable way to announce transient states without losing the primary button description.
+**Action:** Use a permanently mounted, visually hidden `aria-live` region to communicate transient success/error states to screen readers, while keeping the main `aria-label` static and only updating visual/mouse attributes like `title`.

@@ -44,10 +44,13 @@ const MessageBubble = ({ message, isUser }) => {
                 {/* Copy Button - Visible on mobile, hover on desktop */}
                 {!isUser && (
                     <div className="flex flex-col justify-center">
+                        <span aria-live="polite" className="sr-only">
+                            {isCopied ? "Mensagem copiada" : ""}
+                        </span>
                         <button
                             onClick={handleCopy}
-                            className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-all opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100"
-                            aria-label={isCopied ? "Copiado" : "Copiar mensagem"}
+                            className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-all opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
+                            aria-label="Copiar mensagem"
                             title={isCopied ? "Copiado" : "Copiar mensagem"}
                         >
                             {isCopied ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}

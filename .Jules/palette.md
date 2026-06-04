@@ -28,3 +28,11 @@
 ## 2025-02-12 - [Explicit Focus & Disabled States]
 **Learning:** Dynamic Tailwind class ternaries can sometimes inadvertently miss essential utility classes, especially focus rings. Also, inputs visually behave as enabled during loading states without explicit `disabled:` styles, causing confusion. In dark themes, focus rings require explicit offsets (e.g. `focus-visible:ring-offset-gray-800`).
 **Action:** Always verify `disabled:opacity-50 disabled:cursor-not-allowed` on input elements, and ensure buttons maintain strong, offset `focus-visible` styling regardless of state logic.
+
+## 2025-02-12 - [Accessible Transient State Feedback]
+**Learning:** Updating the `aria-label` dynamically for transient states (like changing "Copy" to "Copied!") can be unreliable for screen reader announcements and removes the original button label.
+**Action:** Keep the button's `aria-label` static (e.g., "Copiar mensagem"). Provide transient feedback using an adjacent, permanently mounted `span` with `aria-live="polite"` and `className="sr-only"`, which conditionally displays the text (e.g., "Mensagem copiada!"). Keep the `title` attribute dynamic for sighted users who rely on tooltips.
+
+## 2025-02-12 - [Hover-Revealed Keyboard Accessibility]
+**Learning:** Using `md:opacity-0 md:group-hover:opacity-100` pattern hides the element visually, but doesn't make it clear when an element has focus if you navigate with the keyboard, as it will remain invisible. Using only `focus:opacity-100` might not be enough because of focus rings.
+**Action:** Always combine opacity hover patterns with explicit keyboard focus visibility and rings: `focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-offset-2 outline-none` to ensure the component is clearly highlighted when navigated to by keyboard.

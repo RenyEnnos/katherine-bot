@@ -47,11 +47,14 @@ const MessageBubble = ({ message, isUser }) => {
                         <button
                             onClick={handleCopy}
                             className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-all opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100"
-                            aria-label={isCopied ? "Copiado" : "Copiar mensagem"}
+                            aria-label="Copiar mensagem"
                             title={isCopied ? "Copiado" : "Copiar mensagem"}
                         >
                             {isCopied ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}
                         </button>
+                        <div aria-live="polite" className="sr-only">
+                            {isCopied ? "Mensagem copiada" : ""}
+                        </div>
                     </div>
                 )}
             </div>

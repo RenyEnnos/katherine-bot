@@ -59,7 +59,7 @@ const ChatHeader = ({ clearHistory }) => {
                     </span>
                     <button
                         onClick={handleClear}
-                        className="text-red-400 hover:text-red-300 transition-colors p-2 rounded-md hover:bg-gray-800 focus-visible:ring-2 focus-visible:ring-red-400 focus:outline-none"
+                        className="text-red-400 hover:text-red-300 transition-colors p-2 rounded-md hover:bg-gray-800 focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 focus:outline-none"
                         title="Confirmar limpeza"
                         aria-label="Confirmar limpeza"
                         aria-describedby="confirm-text"
@@ -69,7 +69,7 @@ const ChatHeader = ({ clearHistory }) => {
                     <button
                         onClick={() => setShowConfirm(false)}
                         autoFocus
-                        className="text-gray-500 hover:text-gray-300 transition-colors p-2 rounded-md hover:bg-gray-800 focus-visible:ring-2 focus-visible:ring-gray-400 focus:outline-none"
+                        className="text-gray-500 hover:text-gray-300 transition-colors p-2 rounded-md hover:bg-gray-800 focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 focus:outline-none"
                         title="Cancelar"
                         aria-label="Cancelar"
                     >
@@ -81,7 +81,7 @@ const ChatHeader = ({ clearHistory }) => {
                     onClick={handleTrashClick}
                     ref={trashRef}
                     autoFocus={shouldFocusTrash}
-                    className="text-gray-500 hover:text-red-400 transition-colors p-2 rounded-md hover:bg-gray-800 focus-visible:ring-2 focus-visible:ring-red-400 focus:outline-none"
+                    className="text-gray-500 hover:text-red-400 transition-colors p-2 rounded-md hover:bg-gray-800 focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 focus:outline-none"
                     title="Limpar conversa"
                     aria-label="Limpar conversa"
                 >

@@ -1,7 +1,22 @@
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock, ANY
+
+import sys
+from unittest.mock import MagicMock
+
+
+import os
+os.environ['GROQ_API_KEY'] = 'mock_key'
+os.environ['SUPABASE_URL'] = 'http://mock'
+os.environ['SUPABASE_KEY'] = 'mock_key'
+
+sys.modules['sentence_transformers'] = MagicMock()
+# Mock Supabase directly to prevent local init without keys
+sys.modules['supabase'] = MagicMock()
+
 from backend.main import app, engine
+
 
 client = TestClient(app)
 
@@ -45,7 +60,7 @@ def test_invalid_scheme(mock_supabase):
     assert response.headers.get("WWW-Authenticate") == "Bearer"
 
 def test_invalid_token(mock_supabase, mock_engine_process):
-    mock_supabase.auth.get_user.side_effect = Exception("Internal Mock JWT SDK Error")
+    mock_supabase.auth.get_user.side_effect = AuthApiError("Internal Mock JWT SDK Error", 400, "")
 
     response = client.post(
         "/chat",
@@ -144,3 +159,79 @@ def test_history_legacy_route_removed(mock_supabase):
     )
 
     assert response.status_code == 404
+
+
+from gotrue.errors import AuthApiError, AuthRetryableError
+import logging
+
+def test_credential_rejection_401(mock_supabase, mock_engine_process, caplog):
+    # Simulate an AuthApiError with status 400 (e.g. invalid token format)
+    # AuthApiError expects message, status in constructor
+    error = AuthApiError("SENSITIVE_AUTH_MARKER", 400, "error_code")
+    mock_supabase.auth.get_user.side_effect = error
+
+    with caplog.at_level(logging.ERROR):
+        response = client.post(
+            "/chat",
+            json={"message": "Hello"},
+            headers={"Authorization": "Bearer invalid_token"}
+        )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Authentication failed"
+    # Ensure sensitive marker isn't logged for 401 standard validation failures
+    assert "SENSITIVE_AUTH_MARKER" not in caplog.text
+    assert "SENSITIVE_AUTH_MARKER" not in response.text
+    mock_engine_process.assert_not_called()
+
+def test_transport_timeout_503(mock_supabase, mock_engine_process, caplog):
+    error = AuthRetryableError("SENSITIVE_AUTH_MARKER_TIMEOUT", 503)
+    mock_supabase.auth.get_user.side_effect = error
+
+    with caplog.at_level(logging.ERROR):
+        response = client.post(
+            "/chat",
+            json={"message": "Hello"},
+            headers={"Authorization": "Bearer some_token"}
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Authentication service unavailable"
+    # Even if logged, the marker shouldn't be exposed
+    assert "SENSITIVE_AUTH_MARKER" not in caplog.text
+    assert "SENSITIVE_AUTH_MARKER" not in response.text
+    mock_engine_process.assert_not_called()
+
+def test_service_error_5xx(mock_supabase, mock_engine_process, caplog):
+    error = AuthApiError("SENSITIVE_AUTH_MARKER_500", 500, "error_code")
+    mock_supabase.auth.get_user.side_effect = error
+
+    with caplog.at_level(logging.ERROR):
+        response = client.post(
+            "/chat",
+            json={"message": "Hello"},
+            headers={"Authorization": "Bearer some_token"}
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Authentication service unavailable"
+    assert "SENSITIVE_AUTH_MARKER" not in caplog.text
+    assert "SENSITIVE_AUTH_MARKER" not in response.text
+    mock_engine_process.assert_not_called()
+
+def test_unexpected_error_503(mock_supabase, mock_engine_process, caplog):
+    error = Exception("SENSITIVE_AUTH_MARKER_UNKNOWN")
+    mock_supabase.auth.get_user.side_effect = error
+
+    with caplog.at_level(logging.ERROR):
+        response = client.post(
+            "/chat",
+            json={"message": "Hello"},
+            headers={"Authorization": "Bearer some_token"}
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Authentication service unavailable"
+    assert "SENSITIVE_AUTH_MARKER" not in caplog.text
+    assert "SENSITIVE_AUTH_MARKER" not in response.text
+    mock_engine_process.assert_not_called()

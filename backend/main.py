@@ -2,6 +2,11 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import Depends
 
+import logging
+from gotrue.errors import AuthApiError, AuthRetryableError
+logger = logging.getLogger(__name__)
+
+
 from pydantic import BaseModel, ConfigDict
 from typing import List, Optional
 import uvicorn
@@ -43,8 +48,18 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depen
         return auth_response.user
     except HTTPException:
         raise
+    except AuthApiError as e:
+        # e.status is present in AuthApiError
+        if e.status in (400, 401, 403):
+            raise HTTPException(status_code=401, detail="Authentication failed", headers={"WWW-Authenticate": "Bearer"})
+        logger.error("Authentication service failure: Upstream AuthApiError")
+        raise HTTPException(status_code=503, detail="Authentication service unavailable")
+    except AuthRetryableError:
+        logger.error("Authentication service failure: Transport/Fetch error")
+        raise HTTPException(status_code=503, detail="Authentication service unavailable")
     except Exception:
-        raise HTTPException(status_code=401, detail="Authentication failed", headers={"WWW-Authenticate": "Bearer"})
+        logger.error("Authentication service failure: Unexpected error")
+        raise HTTPException(status_code=503, detail="Authentication service unavailable")
 
 class ChatInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -66,9 +81,7 @@ async def chat_endpoint(
         return ChatResponse(response=response_text, emotion_state=current_emotion)
     except Exception as e:
 
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+                raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.get("/health")
 def health_check():
@@ -90,8 +103,7 @@ def get_history(current_user = Depends(get_current_user)):
             
         return response.data[::-1] if response.data else []
     except Exception as e:
-        print(f"Error fetching history: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+                raise HTTPException(status_code=500, detail="Internal Server Error")
 
 if __name__ == "__main__":
     uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)

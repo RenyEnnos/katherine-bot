@@ -6,33 +6,16 @@ from unittest.mock import patch, MagicMock, ANY
 from fastapi.testclient import TestClient
 from supabase_auth.errors import AuthApiError, AuthRetryableError
 
-# We need to import backend.main, but we must mock sys.modules FIRST.
-# However, to avoid permanent side effects on the test runner, we restore them after import.
-# Using a clean module load via context manager:
-
-_original_modules = dict(sys.modules)
-_original_env = dict(os.environ)
-
+# Mock sys.modules and os.environ before importing backend.main
 mock_env = {
     'GROQ_API_KEY': 'mock_key',
     'SUPABASE_URL': 'http://mock',
     'SUPABASE_KEY': 'mock_key'
 }
-os.environ.update(mock_env)
-sys.modules['sentence_transformers'] = MagicMock()
-sys.modules['supabase'] = MagicMock()
 
-from backend.main import app, engine
-client = TestClient(app)
-
-# Restore environment and modules (excluding what was loaded for backend)
-# This isn't perfect for sys.modules if `backend.main` imported things that got cached, but it cleans the mocked roots.
-del sys.modules['sentence_transformers']
-del sys.modules['supabase']
-os.environ.clear()
-os.environ.update(_original_env)
-
-client = TestClient(app)
+with patch.dict(sys.modules, {'sentence_transformers': MagicMock(), 'supabase': MagicMock()}),      patch.dict(os.environ, mock_env):
+    from backend.main import app, engine
+    client = TestClient(app)
 
 class MockUser:
     def __init__(self, id):
@@ -87,7 +70,6 @@ def test_invalid_token(mock_supabase, mock_engine_process):
     assert response.status_code == 401
     assert response.json()["detail"] == "Authentication failed"
     assert response.headers.get("WWW-Authenticate") == "Bearer"
-    # Ensure raw message is not leaked
     assert "Internal Mock JWT SDK Error" not in response.text
     mock_engine_process.assert_not_called()
     mock_supabase.table.assert_not_called()
@@ -166,8 +148,6 @@ def test_history_valid_token(mock_supabase):
     assert response.status_code == 200
     assert len(response.json()) == 1
     assert response.json()[0]["content"] == "msg1"
-
-    # Verify that it strictly uses current_user.id
     mock_select.eq.assert_called_once_with("user_id", "user123")
 
 def test_history_legacy_route_removed(mock_supabase, mock_engine_process):
@@ -181,11 +161,7 @@ def test_history_legacy_route_removed(mock_supabase, mock_engine_process):
 
     assert response.status_code == 404
 
-
-
 def test_credential_rejection_401(mock_supabase, mock_engine_process, caplog):
-    # Simulate an AuthApiError with status 400 (e.g. invalid token format)
-    # AuthApiError expects message, status in constructor
     error = AuthApiError("SENSITIVE_AUTH_MARKER", 400, "error_code")
     mock_supabase.auth.get_user.side_effect = error
 
@@ -198,7 +174,6 @@ def test_credential_rejection_401(mock_supabase, mock_engine_process, caplog):
 
     assert response.status_code == 401
     assert response.json()["detail"] == "Authentication failed"
-    # Ensure sensitive marker isn't logged for 401 standard validation failures
     assert "SENSITIVE_AUTH_MARKER" not in caplog.text
     assert "SENSITIVE_AUTH_MARKER" not in response.text
     mock_engine_process.assert_not_called()
@@ -217,7 +192,6 @@ def test_transport_timeout_503(mock_supabase, mock_engine_process, caplog):
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Authentication service unavailable"
-    # Even if logged, the marker shouldn't be exposed
     assert "SENSITIVE_AUTH_MARKER" not in caplog.text
     assert "SENSITIVE_AUTH_MARKER" not in response.text
     mock_engine_process.assert_not_called()

@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { sendMessage } from '../services/chatService';
+import api from '../../../shared/services/apiClient';
 import { SYSTEM_MESSAGES } from '../constants';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-
-export const useChat = (userId) => {
+export const useChat = () => {
     const [messages, setMessages] = useState([]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
@@ -12,26 +11,19 @@ export const useChat = (userId) => {
     const messagesEndRef = useRef(null);
     const inputRef = useRef(null);
 
-    // Fetch history on mount or when userId changes
     useEffect(() => {
-        if (!userId) return;
-
         const fetchHistory = async () => {
             try {
-                const response = await fetch(`${API_URL}/history/${userId}`);
-                if (response.ok) {
-                    const history = await response.json();
-                    // Map backend format to frontend format if needed
-                    // Backend returns: [{role: 'user', content: '...'}, ...]
-                    setMessages(history);
-                }
+                // api.get uses the interceptor to add the Bearer token automatically
+                const response = await api.get('/history');
+                setMessages(response.data);
             } catch (error) {
                 console.error("Failed to fetch history:", error);
             }
         };
 
         fetchHistory();
-    }, [userId]);
+    }, []);
 
     // Auto-scroll to bottom
     useEffect(() => {
@@ -50,7 +42,7 @@ export const useChat = (userId) => {
         setIsLoading(true);
 
         try {
-            const data = await sendMessage(userId, userMessageText);
+            const data = await sendMessage(userMessageText);
 
             const botMessage = { role: 'assistant', content: data.response };
             setMessages(prev => [...prev, botMessage]);

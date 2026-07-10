@@ -55,3 +55,43 @@ The project is divided into two main components:
 - **Emotional Intelligence**: Tracks and responds to emotional context.
 - **Memory System**: Persistent memory for context-aware conversations.
 - **Modern UI**: Clean, responsive design using Tailwind CSS.
+
+## CI Commands Reference
+
+The following commands are used in the CI pipeline to ensure reproducible and isolated environments:
+
+### Backend Setup and Tests
+```bash
+# Create and activate environment
+python3 -m venv .venv-ci
+source .venv-ci/bin/activate
+
+# Install runtime dependencies (CPU-only PyTorch)
+pip install -r backend/requirements.txt
+
+# Install development dependencies
+pip install -r backend/requirements-test.txt
+
+# Run backend tests (isolated)
+PYTHONPATH=. HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 pytest backend/tests/test_auth.py
+
+# Run backend smoke test (isolated)
+PYTHONPATH=. HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 pytest backend/tests/test_smoke.py
+```
+
+### Frontend Setup and Verification
+```bash
+cd frontend
+
+# Install dependencies cleanly
+npm ci
+
+# Audit dependencies (generate JSON report without failing CI)
+npm audit --json > audit.json || true
+
+# Run linting
+npm run lint
+
+# Build frontend
+npm run build
+```

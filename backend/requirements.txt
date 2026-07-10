@@ -1,7 +1,9 @@
-fastapi
-uvicorn
-groq
-python-dotenv
-supabase
-sentence-transformers
-pydantic
+--extra-index-url https://download.pytorch.org/whl/cpu
+fastapi==0.111.0
+uvicorn==0.30.0
+groq==0.8.0
+python-dotenv==1.0.1
+supabase==2.5.0
+sentence-transformers==3.0.0
+pydantic==2.7.2
+torch==2.3.0+cpu

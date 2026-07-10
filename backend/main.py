@@ -1,4 +1,7 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends
+
 from pydantic import BaseModel
 from typing import List, Optional
 import uvicorn
@@ -23,8 +26,26 @@ app.add_middleware(
 # Initialize Engine
 engine = ConversationEngine()
 
+
+security = HTTPBearer()
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    try:
+        # If supabase is disabled or missing, we can't authenticate properly
+        if not engine.memory_manager.supabase:
+            raise HTTPException(status_code=500, detail="Supabase client not initialized")
+
+        auth_response = engine.memory_manager.supabase.auth.get_user(token)
+        if not auth_response.user:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return auth_response.user
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise
+        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+
 class ChatInput(BaseModel):
-    user_id: str
     message: str
 
 class ChatResponse(BaseModel):
@@ -32,11 +53,17 @@ class ChatResponse(BaseModel):
     emotion_state: dict
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat_endpoint(input_data: ChatInput, background_tasks: BackgroundTasks):
+async def chat_endpoint(
+    input_data: ChatInput,
+    background_tasks: BackgroundTasks,
+    current_user = Depends(get_current_user)
+):
     try:
-        response_text, current_emotion = await engine.process_turn(input_data.user_id, input_data.message, background_tasks)
+        user_id = current_user.id
+        response_text, current_emotion = await engine.process_turn(user_id, input_data.message, background_tasks)
         return ChatResponse(response=response_text, emotion_state=current_emotion)
     except Exception as e:
+
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -46,7 +73,9 @@ def health_check():
     return {"status": "alive", "engine_status": "ready"}
 
 @app.get("/history/{user_id}")
-async def get_history(user_id: str):
+async def get_history(user_id: str, current_user = Depends(get_current_user)):
+    if current_user.id != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden: You can only access your own history")
     try:
         # Fetch last 50 messages from Supabase
         # We access the supabase client via the engine's memory manager

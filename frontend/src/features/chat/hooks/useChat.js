@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { sendMessage } from '../services/chatService';
+import { supabase } from '../../../lib/supabaseClient';
 import { SYSTEM_MESSAGES } from '../constants';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -18,7 +19,9 @@ export const useChat = (userId) => {
 
         const fetchHistory = async () => {
             try {
-                const response = await fetch(`${API_URL}/history/${userId}`);
+                const { data: { session } } = await supabase.auth.getSession();
+                const headers = session?.access_token ? { 'Authorization': `Bearer ${session.access_token}` } : {};
+                const response = await fetch(`${API_URL}/history/${userId}`, { headers });
                 if (response.ok) {
                     const history = await response.json();
                     // Map backend format to frontend format if needed

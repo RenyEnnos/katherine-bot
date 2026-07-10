@@ -24,7 +24,7 @@
   {"name":"status:blocked","color":"000000","description":"Não pode avançar até resolver uma dependência"},
   {"name":"status:needs-review","color":"0E8A16","description":"Implementação pronta para auditoria"},
   {"name":"status:changes-requested","color":"E99695","description":"Precisa de nova tarefa corretiva antes do merge"},
-  {"name":"status:ready","color":"2CBE4E","description":"Critérios atendidos e pronta para merge"},
+  {"name":"status:ready","color":"2CBE4E","description":"Pronta para avançar na etapa atual do fluxo"},
 
   {"name":"agent:jules","color":"FAD8C7","description":"Trabalho implementado pelo Jules"},
   {"name":"agent:maintainer","color":"BFD4F2","description":"Trabalho de governança/manutenção"},

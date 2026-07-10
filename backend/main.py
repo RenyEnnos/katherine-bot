@@ -27,23 +27,24 @@ app.add_middleware(
 engine = ConversationEngine()
 
 
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     token = credentials.credentials
     try:
-        # If supabase is disabled or missing, we can't authenticate properly
         if not engine.memory_manager.supabase:
-            raise HTTPException(status_code=500, detail="Supabase client not initialized")
+            raise HTTPException(status_code=503, detail="Authentication service unavailable")
 
         auth_response = engine.memory_manager.supabase.auth.get_user(token)
         if not auth_response.user:
-            raise HTTPException(status_code=401, detail="Invalid token")
+            raise HTTPException(status_code=401, detail="Authentication failed")
         return auth_response.user
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise
-        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Authentication failed")
 
 class ChatInput(BaseModel):
     message: str
@@ -66,19 +67,16 @@ async def chat_endpoint(
 
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.get("/health")
 def health_check():
     return {"status": "alive", "engine_status": "ready"}
 
-@app.get("/history/{user_id}")
-async def get_history(user_id: str, current_user = Depends(get_current_user)):
-    if current_user.id != user_id:
-        raise HTTPException(status_code=403, detail="Forbidden: You can only access your own history")
+@app.get("/history")
+def get_history(current_user = Depends(get_current_user)):
+    user_id = current_user.id
     try:
-        # Fetch last 50 messages from Supabase
-        # We access the supabase client via the engine's memory manager
         if not engine.memory_manager.supabase:
             return []
             
@@ -89,11 +87,10 @@ async def get_history(user_id: str, current_user = Depends(get_current_user)):
             .limit(50)\
             .execute()
             
-        # Return reversed (chronological order)
         return response.data[::-1] if response.data else []
     except Exception as e:
         print(f"Error fetching history: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 if __name__ == "__main__":
     uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)

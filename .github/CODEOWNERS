@@ -1,0 +1,10 @@
+# Default maintainer review
+* @RenyEnnos
+
+# Sensitive areas
+/backend/emotional_core.py @RenyEnnos
+/backend/engine.py @RenyEnnos
+/backend/memory.py @RenyEnnos
+/backend/relationship.py @RenyEnnos
+/.github/ @RenyEnnos
+/AGENTS.md @RenyEnnos

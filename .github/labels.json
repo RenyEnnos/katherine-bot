@@ -1,0 +1,37 @@
+[
+  {"name":"priority:P0","color":"B60205","description":"Bloqueador, incidente ou risco crítico; tratar imediatamente"},
+  {"name":"priority:P1","color":"D93F0B","description":"Alta prioridade para a próxima entrega"},
+  {"name":"priority:P2","color":"FBCA04","description":"Prioridade normal do backlog"},
+  {"name":"priority:P3","color":"0E8A16","description":"Baixa prioridade ou melhoria futura"},
+
+  {"name":"type:bug","color":"D73A4A","description":"Comportamento incorreto ou regressão"},
+  {"name":"type:feature","color":"A2EEEF","description":"Nova capacidade de produto"},
+  {"name":"type:refactor","color":"C5DEF5","description":"Mudança interna sem alterar comportamento esperado"},
+  {"name":"type:test","color":"BFDADC","description":"Cobertura, infraestrutura ou correção de testes"},
+  {"name":"type:docs","color":"0075CA","description":"Documentação"},
+  {"name":"type:chore","color":"EDEDED","description":"Manutenção e tarefas operacionais"},
+  {"name":"type:security","color":"8B0000","description":"Autenticação, autorização, privacidade ou vulnerabilidade"},
+
+  {"name":"area:emotional-core","color":"D4C5F9","description":"Modelo, appraisal, transições e regulação emocional"},
+  {"name":"area:relationship","color":"F9D0C4","description":"Vínculo, confiança, afeto e tensão por usuário"},
+  {"name":"area:memory","color":"C2E0C6","description":"Memória curta, episódica, RAG e persistência"},
+  {"name":"area:backend","color":"1D76DB","description":"API e serviços Python"},
+  {"name":"area:frontend","color":"5319E7","description":"Interface React"},
+  {"name":"area:auth","color":"0052CC","description":"Identidade, sessão e autorização"},
+  {"name":"area:infra","color":"006B75","description":"CI, deploy e infraestrutura"},
+  {"name":"area:governance","color":"7057FF","description":"Processo, agentes, templates e manutenção"},
+
+  {"name":"status:blocked","color":"000000","description":"Não pode avançar até resolver uma dependência"},
+  {"name":"status:needs-review","color":"0E8A16","description":"Implementação pronta para auditoria"},
+  {"name":"status:changes-requested","color":"E99695","description":"Precisa de nova tarefa corretiva antes do merge"},
+  {"name":"status:ready","color":"2CBE4E","description":"Critérios atendidos e pronta para merge"},
+
+  {"name":"agent:jules","color":"FAD8C7","description":"Trabalho implementado pelo Jules"},
+  {"name":"agent:maintainer","color":"BFD4F2","description":"Trabalho de governança/manutenção"},
+
+  {"name":"size:XS","color":"C7DEF8","description":"Mudança mínima"},
+  {"name":"size:S","color":"BFDADC","description":"Mudança pequena"},
+  {"name":"size:M","color":"FEF2C0","description":"Mudança média"},
+  {"name":"size:L","color":"F9D0C4","description":"Mudança grande; considerar divisão"},
+  {"name":"size:XL","color":"D73A4A","description":"Grande demais para uma PR; deve ser dividida"}
+]

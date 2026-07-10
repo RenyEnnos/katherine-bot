@@ -1,22 +1,36 @@
-import pytest
-from fastapi.testclient import TestClient
-from unittest.mock import patch, MagicMock, ANY
-
-import sys
-from unittest.mock import MagicMock
-
-
 import os
-os.environ['GROQ_API_KEY'] = 'mock_key'
-os.environ['SUPABASE_URL'] = 'http://mock'
-os.environ['SUPABASE_KEY'] = 'mock_key'
+import sys
+import logging
+import pytest
+from unittest.mock import patch, MagicMock, ANY
+from fastapi.testclient import TestClient
+from supabase_auth.errors import AuthApiError, AuthRetryableError
 
+# We need to import backend.main, but we must mock sys.modules FIRST.
+# However, to avoid permanent side effects on the test runner, we restore them after import.
+# Using a clean module load via context manager:
+
+_original_modules = dict(sys.modules)
+_original_env = dict(os.environ)
+
+mock_env = {
+    'GROQ_API_KEY': 'mock_key',
+    'SUPABASE_URL': 'http://mock',
+    'SUPABASE_KEY': 'mock_key'
+}
+os.environ.update(mock_env)
 sys.modules['sentence_transformers'] = MagicMock()
-# Mock Supabase directly to prevent local init without keys
 sys.modules['supabase'] = MagicMock()
 
 from backend.main import app, engine
+client = TestClient(app)
 
+# Restore environment and modules (excluding what was loaded for backend)
+# This isn't perfect for sys.modules if `backend.main` imported things that got cached, but it cleans the mocked roots.
+del sys.modules['sentence_transformers']
+del sys.modules['supabase']
+os.environ.clear()
+os.environ.update(_original_env)
 
 client = TestClient(app)
 
@@ -49,8 +63,9 @@ def test_missing_token(mock_supabase, mock_engine_process):
     assert "Not authenticated" in response.json()["detail"]
     assert response.headers.get("WWW-Authenticate") == "Bearer"
     mock_engine_process.assert_not_called()
+    mock_supabase.table.assert_not_called()
 
-def test_invalid_scheme(mock_supabase):
+def test_invalid_scheme(mock_supabase, mock_engine_process):
     response = client.post(
         "/chat",
         json={"message": "Hello"},
@@ -58,6 +73,8 @@ def test_invalid_scheme(mock_supabase):
     )
     assert response.status_code == 401
     assert response.headers.get("WWW-Authenticate") == "Bearer"
+    mock_engine_process.assert_not_called()
+    mock_supabase.table.assert_not_called()
 
 def test_invalid_token(mock_supabase, mock_engine_process):
     mock_supabase.auth.get_user.side_effect = AuthApiError("Internal Mock JWT SDK Error", 400, "")
@@ -73,6 +90,7 @@ def test_invalid_token(mock_supabase, mock_engine_process):
     # Ensure raw message is not leaked
     assert "Internal Mock JWT SDK Error" not in response.text
     mock_engine_process.assert_not_called()
+    mock_supabase.table.assert_not_called()
 
 def test_user_is_none(mock_supabase, mock_engine_process):
     mock_supabase.auth.get_user.return_value = MockAuthResponse(user=None)
@@ -81,13 +99,15 @@ def test_user_is_none(mock_supabase, mock_engine_process):
     assert response.json()["detail"] == "Authentication failed"
     assert response.headers.get("WWW-Authenticate") == "Bearer"
     mock_engine_process.assert_not_called()
+    mock_supabase.table.assert_not_called()
 
-def test_service_unavailable(mock_engine_process):
+def test_service_unavailable(mock_supabase, mock_engine_process):
     with patch.object(engine.memory_manager, 'supabase', None):
         response = client.post("/chat", json={"message": "Hi"}, headers={"Authorization": "Bearer t"})
         assert response.status_code == 503
         assert response.json()["detail"] == "Authentication service unavailable"
         mock_engine_process.assert_not_called()
+    mock_supabase.table.assert_not_called()
 
 def test_valid_token(mock_supabase, mock_engine_process):
     mock_user = MockUser(id="user123")
@@ -115,6 +135,7 @@ def test_spoofing_user_id_in_chat(mock_supabase, mock_engine_process):
 
     assert response.status_code == 422
     mock_engine_process.assert_not_called()
+    mock_supabase.table.assert_not_called()
 
 def test_history_valid_token(mock_supabase):
     mock_user = MockUser(id="user123")
@@ -149,7 +170,7 @@ def test_history_valid_token(mock_supabase):
     # Verify that it strictly uses current_user.id
     mock_select.eq.assert_called_once_with("user_id", "user123")
 
-def test_history_legacy_route_removed(mock_supabase):
+def test_history_legacy_route_removed(mock_supabase, mock_engine_process):
     mock_user = MockUser(id="user123")
     mock_supabase.auth.get_user.return_value = MockAuthResponse(user=mock_user)
 
@@ -161,8 +182,6 @@ def test_history_legacy_route_removed(mock_supabase):
     assert response.status_code == 404
 
 
-from gotrue.errors import AuthApiError, AuthRetryableError
-import logging
 
 def test_credential_rejection_401(mock_supabase, mock_engine_process, caplog):
     # Simulate an AuthApiError with status 400 (e.g. invalid token format)
@@ -183,6 +202,7 @@ def test_credential_rejection_401(mock_supabase, mock_engine_process, caplog):
     assert "SENSITIVE_AUTH_MARKER" not in caplog.text
     assert "SENSITIVE_AUTH_MARKER" not in response.text
     mock_engine_process.assert_not_called()
+    mock_supabase.table.assert_not_called()
 
 def test_transport_timeout_503(mock_supabase, mock_engine_process, caplog):
     error = AuthRetryableError("SENSITIVE_AUTH_MARKER_TIMEOUT", 503)
@@ -201,6 +221,7 @@ def test_transport_timeout_503(mock_supabase, mock_engine_process, caplog):
     assert "SENSITIVE_AUTH_MARKER" not in caplog.text
     assert "SENSITIVE_AUTH_MARKER" not in response.text
     mock_engine_process.assert_not_called()
+    mock_supabase.table.assert_not_called()
 
 def test_service_error_5xx(mock_supabase, mock_engine_process, caplog):
     error = AuthApiError("SENSITIVE_AUTH_MARKER_500", 500, "error_code")
@@ -218,6 +239,7 @@ def test_service_error_5xx(mock_supabase, mock_engine_process, caplog):
     assert "SENSITIVE_AUTH_MARKER" not in caplog.text
     assert "SENSITIVE_AUTH_MARKER" not in response.text
     mock_engine_process.assert_not_called()
+    mock_supabase.table.assert_not_called()
 
 def test_unexpected_error_503(mock_supabase, mock_engine_process, caplog):
     error = Exception("SENSITIVE_AUTH_MARKER_UNKNOWN")
@@ -235,3 +257,4 @@ def test_unexpected_error_503(mock_supabase, mock_engine_process, caplog):
     assert "SENSITIVE_AUTH_MARKER" not in caplog.text
     assert "SENSITIVE_AUTH_MARKER" not in response.text
     mock_engine_process.assert_not_called()
+    mock_supabase.table.assert_not_called()

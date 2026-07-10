@@ -3,7 +3,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import Depends
 
 import logging
-from gotrue.errors import AuthApiError, AuthRetryableError
+from supabase_auth.errors import AuthApiError, AuthRetryableError
 logger = logging.getLogger(__name__)
 
 
@@ -79,9 +79,8 @@ async def chat_endpoint(
         user_id = current_user.id
         response_text, current_emotion = await engine.process_turn(user_id, input_data.message, background_tasks)
         return ChatResponse(response=response_text, emotion_state=current_emotion)
-    except Exception as e:
-
-                raise HTTPException(status_code=500, detail="Internal Server Error")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.get("/health")
 def health_check():
@@ -102,8 +101,8 @@ def get_history(current_user = Depends(get_current_user)):
             .execute()
             
         return response.data[::-1] if response.data else []
-    except Exception as e:
-                raise HTTPException(status_code=500, detail="Internal Server Error")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 if __name__ == "__main__":
     uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)

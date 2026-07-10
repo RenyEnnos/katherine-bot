@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import Depends
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import List, Optional
 import uvicorn
 import os
@@ -31,7 +31,7 @@ security = HTTPBearer(auto_error=False)
 
 def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
     if not credentials:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail="Not authenticated", headers={"WWW-Authenticate": "Bearer"})
     token = credentials.credentials
     try:
         if not engine.memory_manager.supabase:
@@ -39,14 +39,15 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depen
 
         auth_response = engine.memory_manager.supabase.auth.get_user(token)
         if not auth_response.user:
-            raise HTTPException(status_code=401, detail="Authentication failed")
+            raise HTTPException(status_code=401, detail="Authentication failed", headers={"WWW-Authenticate": "Bearer"})
         return auth_response.user
     except HTTPException:
         raise
     except Exception:
-        raise HTTPException(status_code=401, detail="Authentication failed")
+        raise HTTPException(status_code=401, detail="Authentication failed", headers={"WWW-Authenticate": "Bearer"})
 
 class ChatInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     message: str
 
 class ChatResponse(BaseModel):

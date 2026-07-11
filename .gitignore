@@ -28,3 +28,4 @@ Thumbs.db
 core_memory.json
 .agent/
 *.log
+.venv-ci/

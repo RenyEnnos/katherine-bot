@@ -1,13 +1,14 @@
 import asyncio
 import pytest
 import time
+import threading
 from unittest.mock import MagicMock, patch
 from backend.engine import ConversationEngine
 from backend.emotional_core import EmotionalState, AffectiveEngine
 from backend.relationship import UserRelationship
+from backend.memory import StatePersistenceError
 
-@pytest.mark.asyncio
-async def test_deterministic_transition():
+def test_deterministic_transition():
     """
     The transition with same inputs and same time produces the same result.
     """
@@ -22,8 +23,7 @@ async def test_deterministic_transition():
     assert res1 == res2
     assert inst1 == inst2
 
-@pytest.mark.asyncio
-async def test_no_mutation():
+def test_no_mutation():
     """
     The previous state is not mutated.
     """
@@ -37,162 +37,201 @@ async def test_no_mutation():
     assert state.to_dict() == initial_dict
     assert new_state != state
 
-@pytest.mark.asyncio
-async def test_user_isolation():
+def test_user_isolation():
     """
     Interleaved messages from A and B don't contaminate each other.
     """
-    engine = ConversationEngine()
+    async def run_test():
+        engine = ConversationEngine()
 
-    # Mock everything external
-    engine.groq_manager.chat_completion = MagicMock(return_value=MagicMock(choices=[MagicMock(message=MagicMock(content="Hi"))]))
-    engine.memory_manager.sync_state = MagicMock()
-    engine.memory_manager.save_turn = MagicMock()
-
-    # Custom load_user_state to return different states for A and B
-    states = {
-        "A": {"emotional_state": EmotionalState(pleasure=0.5).to_dict(), "relationship_state": {}},
-        "B": {"emotional_state": EmotionalState(pleasure=-0.5).to_dict(), "relationship_state": {}}
-    }
-    engine.memory_manager.load_user_state = MagicMock(side_effect=lambda uid: states.get(uid, {}))
-
-    # Mock perceive to be neutral
-    engine._perceive = MagicMock(return_value={"valence": 0, "arousal_shift": 0, "dominance_shift": 0})
-
-    # Process A
-    resp_a, state_a = await engine.process_turn("A", "Hello A")
-    # Process B
-    resp_b, state_b = await engine.process_turn("B", "Hello B")
-
-    assert state_a["pleasure"] > 0
-    assert state_b["pleasure"] < 0
-
-    # Check that engine itself doesn't hold either state
-    assert not hasattr(engine.affective_engine, 'state')
-
-@pytest.mark.asyncio
-async def test_concurrent_requests_serialization():
-    """
-    Two simultaneous calls from the same user accumulate both transitions without loss.
-    """
-    engine = ConversationEngine()
-    user_id = "test_user"
-
-    # We'll use a shared dictionary to simulate the DB
-    db = {
-        user_id: {
-            "emotional_state": EmotionalState(pleasure=0.0).to_dict(),
-            "relationship_state": UserRelationship(user_id=user_id).to_dict()
-        }
-    }
-
-    def mock_load(uid):
-        return db[uid].copy()
-
-    def mock_sync(uid, state, rel, profile=None):
-        # Simulate some delay to encourage race condition if no lock
-        time.sleep(0.1)
-        db[uid]["emotional_state"] = state.to_dict()
-        db[uid]["relationship_state"] = rel.to_dict()
-
-    engine.memory_manager.load_user_state = MagicMock(side_effect=mock_load)
-    engine.memory_manager.sync_state = MagicMock(side_effect=mock_sync)
-    engine.memory_manager.save_turn = MagicMock()
-
-    # Mock LLM to be slow and return positive valence
-    async def slow_chat(*args, **kwargs):
-        await asyncio.sleep(0.2)
+        # Mock everything external
         m = MagicMock()
         m.choices = [MagicMock()]
-        m.choices[0].message.content = "Response"
-        return m
+        m.choices[0].message.content = "Hi"
+        engine.groq_manager.chat_completion = MagicMock(return_value=m)
+        engine.memory_manager.sync_state = MagicMock()
+        engine.memory_manager.save_turn = MagicMock()
 
-    engine.groq_manager.chat_completion = MagicMock(side_effect=slow_chat)
-    engine._perceive = MagicMock(return_value={"valence": 0.1, "arousal_shift": 0, "dominance_shift": 0})
+        # Custom load_user_state to return different states for A and B
+        states = {
+            "A": {"emotional_state": EmotionalState(pleasure=0.5).to_dict(), "relationship_state": {}},
+            "B": {"emotional_state": EmotionalState(pleasure=-0.5).to_dict(), "relationship_state": {}}
+        }
+        engine.memory_manager.load_user_state = MagicMock(side_effect=lambda uid: states.get(uid, {}))
 
-    # Trigger two concurrent turns
-    t1 = asyncio.create_task(engine.process_turn(user_id, "Turn 1"))
-    t2 = asyncio.create_task(engine.process_turn(user_id, "Turn 2"))
+        # Mock perceive to be neutral
+        engine._perceive = MagicMock(return_value={"valence": 0, "arousal_shift": 0, "dominance_shift": 0})
 
-    await asyncio.gather(t1, t2)
+        # Process A
+        _, state_a_dict = await engine.process_turn("A", "Hello A")
+        # Process B
+        _, state_b_dict = await engine.process_turn("B", "Hello B")
 
-    # Each turn adds 0.1 valence. If serialized, total pleasure should be ~0.2
-    # Note: there is some decay, so it might be slightly less than 0.2, but definitely > 0.1
-    final_pleasure = db[user_id]["emotional_state"]["pleasure"]
-    print(f"Final pleasure: {final_pleasure}")
-    assert final_pleasure > 0.15
+        assert state_a_dict["pleasure"] > 0
+        assert state_b_dict["pleasure"] < 0
+        assert not hasattr(engine.affective_engine, 'state')
 
-@pytest.mark.asyncio
-async def test_no_global_lock():
+    asyncio.run(run_test())
+
+def test_concurrent_requests_serialization():
     """
-    Different users are NOT serialized by a global lock.
+    Two simultaneous calls from the same user serialize load -> transition -> persist and preserve both updates.
     """
-    engine = ConversationEngine()
+    async def run_test():
+        engine = ConversationEngine()
+        user_id = "test_user"
 
-    # Mock LLM to be very slow
-    async def slow_chat(*args, **kwargs):
-        await asyncio.sleep(1.0)
-        return MagicMock(choices=[MagicMock(message=MagicMock(content="Done"))])
+        db = {
+            user_id: {
+                "emotional_state": EmotionalState(pleasure=0.0).to_dict(),
+                "relationship_state": UserRelationship(user_id=user_id).to_dict()
+            }
+        }
 
-    engine.groq_manager.chat_completion = MagicMock(side_effect=slow_chat)
-    engine.memory_manager.load_user_state = MagicMock(return_value={})
-    engine.memory_manager.sync_state = MagicMock()
-    engine.memory_manager.save_turn = MagicMock()
-    engine._perceive = MagicMock(return_value={})
+        def mock_load(uid):
+            return db[uid].copy()
 
-    start_time = time.time()
+        def mock_sync(uid, state, rel, profile=None):
+            db[uid]["emotional_state"] = state.to_dict()
+            db[uid]["relationship_state"] = rel.to_dict()
 
-    # Run two different users concurrently
-    t1 = asyncio.create_task(engine.process_turn("User_A", "Msg A"))
-    t2 = asyncio.create_task(engine.process_turn("User_B", "Msg B"))
+        engine.memory_manager.load_user_state = MagicMock(side_effect=mock_load)
+        engine.memory_manager.sync_state = MagicMock(side_effect=mock_sync)
+        engine.memory_manager.save_turn = MagicMock()
 
-    await asyncio.gather(t1, t2)
+        # For the SAME user, requests are serialized by the lock.
+        # Request 1 enters lock, Request 2 blocks.
+        # We'll use an event to coordinate.
+        req1_in_critical = threading.Event()
+        req2_waiting = threading.Event()
 
-    duration = time.time() - start_time
-    # If they were serialized, it would take > 2 seconds.
-    # If concurrent, ~1 second.
-    assert duration < 1.5
+        def sync_chat_mock(*args, **kwargs):
+            req1_in_critical.set()
+            # Wait for Request 2 to at least have started and be waiting for the lock
+            # We can't easily detect Request 2 waiting, but we can give it time.
+            time.sleep(0.5)
+            m = MagicMock()
+            m.choices = [MagicMock()]
+            m.choices[0].message.content = "Response"
+            return m
 
-@pytest.mark.asyncio
-async def test_persistence_before_return():
+        engine.groq_manager.chat_completion = MagicMock(side_effect=sync_chat_mock)
+        engine._perceive = MagicMock(return_value={"valence": 0.1, "arousal_shift": 0, "dominance_shift": 0})
+
+        # Trigger two concurrent turns
+        t1 = asyncio.create_task(engine.process_turn(user_id, "Turn 1"))
+        # Ensure T1 starts first
+        await asyncio.sleep(0.1)
+        t2 = asyncio.create_task(engine.process_turn(user_id, "Turn 2"))
+
+        await asyncio.gather(t1, t2)
+
+        # If serialized, it should be > 0.15 (0.0 -> 0.1 -> 0.2 approx)
+        final_pleasure = db[user_id]["emotional_state"]["pleasure"]
+        assert final_pleasure > 0.15
+
+    asyncio.run(run_test())
+
+def test_no_global_lock():
     """
-    Persistence occurs before return.
+    Different users can perform blocking work concurrently.
     """
-    engine = ConversationEngine()
-    persistence_called = False
+    async def run_test():
+        engine = ConversationEngine()
 
-    def mock_sync(uid, state, rel, profile=None):
-        nonlocal persistence_called
-        persistence_called = True
+        # Barrier to ensure both threads reach the blocking work concurrently
+        barrier = threading.Barrier(2)
 
-    engine.memory_manager.sync_state = MagicMock(side_effect=mock_sync)
-    engine.memory_manager.load_user_state = MagicMock(return_value={})
-    engine.memory_manager.save_turn = MagicMock()
-    engine.groq_manager.chat_completion = MagicMock(return_value=MagicMock(choices=[MagicMock(message=MagicMock(content="Hi"))]))
-    engine._perceive = MagicMock(return_value={})
+        def slow_chat(*args, **kwargs):
+            barrier.wait(timeout=2) # Will fail if they don't reach here concurrently
+            return MagicMock(choices=[MagicMock(message=MagicMock(content="Done"))])
 
-    await engine.process_turn("User", "Msg")
+        engine.groq_manager.chat_completion = MagicMock(side_effect=slow_chat)
+        engine.memory_manager.load_user_state = MagicMock(return_value={})
+        engine.memory_manager.sync_state = MagicMock()
+        engine.memory_manager.save_turn = MagicMock()
+        engine._perceive = MagicMock(return_value={})
 
-    assert persistence_called is True
+        # Run two different users concurrently
+        t1 = asyncio.create_task(engine.process_turn("User_A", "Msg A"))
+        t2 = asyncio.create_task(engine.process_turn("User_B", "Msg B"))
 
-@pytest.mark.asyncio
-async def test_persistence_failure():
+        await asyncio.gather(t1, t2)
+
+    asyncio.run(run_test())
+
+def test_persistence_failure_sanitization():
     """
-    Persistence failure raises explicit error.
+    Persistence failure propagates as sanitized exception and cleans up.
     """
-    engine = ConversationEngine()
-    engine.memory_manager.sync_state = MagicMock(side_effect=Exception("DB DOWN"))
-    engine.memory_manager.load_user_state = MagicMock(return_value={})
-    engine.memory_manager.save_turn = MagicMock()
-    engine.groq_manager.chat_completion = MagicMock(return_value=MagicMock(choices=[MagicMock(message=MagicMock(content="Hi"))]))
-    engine._perceive = MagicMock(return_value={})
+    async def run_test():
+        engine = ConversationEngine()
+        user_id = "error_user"
 
-    with pytest.raises(Exception, match="DB DOWN"):
-        await engine.process_turn("User", "Msg")
+        # Mock load_user_state to avoid falling back to default and calling execute
+        engine.memory_manager.load_user_state = MagicMock(return_value={
+            "emotional_state": EmotionalState().to_dict(),
+            "relationship_state": UserRelationship(user_id=user_id).to_dict()
+        })
 
-def test_engine_no_global_state():
+        # Mock internal supabase client behavior
+        engine.memory_manager.supabase = MagicMock()
+        # Mock table().update().eq().execute()
+        engine.memory_manager.supabase.table.return_value.update.return_value.eq.return_value.execute.side_effect = Exception("SECRET_TOKEN_123")
+
+        with pytest.raises(StatePersistenceError) as excinfo:
+            await engine.process_turn(user_id, "Msg")
+
+        # Verify sanitization
+        assert "SECRET_TOKEN_123" not in str(excinfo.value)
+        assert "error_user" not in str(excinfo.value)
+
+        # Verify cleanup: entry should be removed from lock manager
+        async with engine.lock_manager._dict_lock:
+            assert user_id not in engine.lock_manager._locks
+
+    asyncio.run(run_test())
+
+def test_lock_cleanup_on_cancellation():
     """
-    ConversationEngine does not possess turn_count or current_adaptation_strategy.
+    Lock entries are cleaned after cancellation.
+    """
+    async def run_test():
+        engine = ConversationEngine()
+        user_id = "cancel_user"
+
+        reached_point = asyncio.Event()
+
+        def blocking_load(uid):
+            reached_point.set()
+            time.sleep(10)
+            return {}
+
+        engine.memory_manager.load_user_state = MagicMock(side_effect=blocking_load)
+
+        task = asyncio.create_task(engine.process_turn(user_id, "Msg"))
+        # wait_for to avoid hanging forever if it fails
+        await asyncio.wait_for(reached_point.wait(), timeout=2)
+
+        # Check that it exists in registry
+        async with engine.lock_manager._dict_lock:
+            assert user_id in engine.lock_manager._locks
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        # Check that it is removed
+        async with engine.lock_manager._dict_lock:
+            assert user_id not in engine.lock_manager._locks
+
+    asyncio.run(run_test())
+
+def test_engine_structure():
+    """
+    Final checks on engine/affective state.
     """
     engine = ConversationEngine()
     assert not hasattr(engine, "turn_count")

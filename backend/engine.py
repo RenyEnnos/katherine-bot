@@ -18,13 +18,11 @@ class ConversationEngine:
         self.model_fast = "llama-3.1-8b-instant"
 
     async def process_turn(self, user_id: str, user_message: str, background_tasks=None):
-        print(f"DEBUG: Processing turn for {user_id}", flush=True)
-        
         async with self.lock_manager.lock(user_id):
             current_time = time.time()
             
-            # 1. Load State from Supabase (Memory Server)
-            user_state = self.memory_manager.load_user_state(user_id)
+            # 1. Load State from Supabase (Offloaded to thread)
+            user_state = await asyncio.to_thread(self.memory_manager.load_user_state, user_id)
 
             # Hydrate Emotional State
             emotional_state = EmotionalState.from_dict(user_state.get("emotional_state", {}))
@@ -35,17 +33,13 @@ class ConversationEngine:
             else:
                 relationship = UserRelationship(user_id=user_id)
 
-            print("DEBUG: State loaded locally", flush=True)
+            # 2. Perception & Memory Retrieval (Context retrieval offloaded to thread)
+            context = await asyncio.to_thread(self.memory_manager.get_context, user_id, user_message, user_state)
 
-            # 2. Perception & Memory Retrieval
-            context = self.memory_manager.get_context(user_id, user_message, user_state)
-            print("DEBUG: Context retrieved", flush=True)
+            # 3. Analyze Intent & Sentiment (LLM Perception - offloaded to thread)
+            perception = await asyncio.to_thread(self._perceive, user_message)
 
-            # 3. Analyze Intent & Sentiment (LLM Perception)
-            perception = self._perceive(user_message)
-            print("DEBUG: Perception done", flush=True)
-
-            # 4. Update Emotional State & Relationship
+            # 4. Update Emotional State & Relationship (Local computations)
             new_state, coping_instruction = self.affective_engine.update_state(
                 emotional_state,
                 user_message,
@@ -53,17 +47,16 @@ class ConversationEngine:
                 perception_override=perception
             )
             relationship = self.relationship_manager.update_relationship(relationship, perception)
-            print("DEBUG: State transitioned locally", flush=True)
 
             # 5. Meta-Cognition: DEACTIVATED as per P0 instructions
             adaptation_strategy = ""
 
-            # 6. Generate Response
+            # 6. Generate Response (LLM call offloaded to thread)
             system_prompt = self._build_system_prompt(new_state, context, relationship, adaptation_strategy, coping_instruction)
 
             try:
-                print("DEBUG: Calling chat_completion", flush=True)
-                chat_completion = self.groq_manager.chat_completion(
+                chat_completion = await asyncio.to_thread(
+                    self.groq_manager.chat_completion,
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_message}
@@ -73,27 +66,23 @@ class ConversationEngine:
                     max_tokens=200,
                 )
                 response_text = chat_completion.choices[0].message.content
-                print("DEBUG: chat_completion success", flush=True)
-            except Exception as e:
-                print(f"Error generating response: {e}", flush=True)
+            except Exception:
                 response_text = "*suspiro cansado* Sinto que minha mente está um pouco nublada agora... Podemos tentar de novo em alguns segundos?"
 
-            # 7. Post-processing & Storage (Synchronous for State Persistence)
-            print("DEBUG: Saving turn & Syncing State (Synchronous)", flush=True)
-
-            # Chat logs and Facts extraction can still be backgrounded if they don't affect current state
+            # 7. Post-processing & Storage (Offloaded to thread)
+            # save_turn is non-critical for current state, but sync_state is CRITICAL.
             if background_tasks:
                 background_tasks.add_task(self.memory_manager.save_turn, user_id, user_message, response_text)
             else:
-                self.memory_manager.save_turn(user_id, user_message, response_text)
+                await asyncio.to_thread(self.memory_manager.save_turn, user_id, user_message, response_text)
 
-            # CRITICAL: Sync state MUST be completed before releasing lock and returning
-            self.memory_manager.sync_state(user_id, new_state, relationship)
+            # CRITICAL: sync_state MUST complete before releasing lock.
+            await asyncio.to_thread(self.memory_manager.sync_state, user_id, new_state, relationship)
 
             return response_text, new_state.to_dict()
 
     def _perceive(self, message: str):
-        # Analyze message for emotional impact
+        # Analyze message for emotional impact (Synchronous Groq call)
         prompt = f"""
         Analyze the emotional impact of this message on the listener (Katherine).
         Return JSON ONLY:
@@ -114,7 +103,7 @@ class ConversationEngine:
                 response_format={"type": "json_object"}
             )
             return json.loads(completion.choices[0].message.content)
-        except:
+        except Exception:
             return {"valence": 0, "arousal_shift": 0, "dominance_shift": 0, "triggered_emotions": {}}
 
     def _build_system_prompt(self, emotion_state, context, relationship, adaptation_strategy="", coping_instruction=""):

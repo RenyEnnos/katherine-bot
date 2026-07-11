@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 from datetime import datetime
 from supabase import create_client, Client
 from sentence_transformers import SentenceTransformer
@@ -7,23 +8,31 @@ from .groq_manager import GroqClientManager
 from .relationship import UserRelationship
 from .emotional_core import EmotionalState
 
+logger = logging.getLogger(__name__)
+
+class StatePersistenceError(Exception):
+    """Exception raised when user state cannot be persisted safely."""
+    def __init__(self, message="Falha ao persistir estado do usuário"):
+        self.message = message
+        super().__init__(self.message)
+
 class MemoryManager:
     def __init__(self):
         # 1. Initialize Supabase
         url: str = os.environ.get("SUPABASE_URL")
         key: str = os.environ.get("SUPABASE_KEY")
         if not url or not key:
-            print("WARNING: SUPABASE_URL or SUPABASE_KEY not found. Persistence will fail.")
             self.supabase: Client = None
         else:
-            self.supabase: Client = create_client(url, key)
+            try:
+                self.supabase: Client = create_client(url, key)
+            except Exception:
+                self.supabase = None
 
         # 2. Initialize Embeddings Model (Local)
-        # We use a lightweight model compatible with the 384-dim vector in Supabase
         try:
             self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-        except Exception as e:
-            print(f"Error loading embedding model: {e}")
+        except Exception:
             self.embedding_model = None
 
         # 3. Short-term memory (Working Context)
@@ -32,11 +41,6 @@ class MemoryManager:
         # 4. LLM Manager
         self.groq_manager = GroqClientManager()
         self.model_fast = "llama-3.1-8b-instant"
-
-        # Cache for current session state
-        self.current_user_profile = {}
-        self.current_relationship = None
-        self.current_emotional_state = None
 
     def load_user_state(self, user_id: str) -> dict:
         """
@@ -68,8 +72,7 @@ class MemoryManager:
                 "relationship_state": data.get("relationship_state") or {},
                 "emotional_state": data.get("emotional_state") or {}
             }
-        except Exception as e:
-            print(f"Error loading user state: {e}")
+        except Exception:
             return self._get_default_state(user_id)
 
     def _get_default_state(self, user_id: str):
@@ -83,10 +86,10 @@ class MemoryManager:
     def sync_state(self, user_id: str, emotional_state: EmotionalState, relationship: UserRelationship, user_profile: dict = None):
         """
         Persists the current state to Supabase.
-        Raises Exception if persistence fails.
+        Raises StatePersistenceError if persistence fails.
         """
         if not self.supabase:
-            return
+            raise StatePersistenceError("Serviço de persistência não configurado.")
 
         update_data = {
             "emotional_state": emotional_state.to_dict(),
@@ -99,12 +102,18 @@ class MemoryManager:
 
         try:
             response = self.supabase.table("profiles").update(update_data).eq("user_id", user_id).execute()
-            # In some versions of supabase-py, we might need to check for errors in response
+            # If response is empty or has error attribute (depending on supabase version)
+            if response is None:
+                raise StatePersistenceError()
+
             if hasattr(response, 'error') and response.error:
-                raise Exception(f"Supabase error syncing state: {response.error}")
+                raise StatePersistenceError()
+
+        except StatePersistenceError:
+            raise
         except Exception as e:
-            print(f"CRITICAL: Error syncing state for {user_id}: {e}")
-            raise Exception(f"Failed to persist user state: {str(e)}")
+            # Chain the original exception for internal debugging but don't leak it in the message
+            raise StatePersistenceError() from e
 
     def get_context(self, user_id: str, current_message: str, user_state: dict):
         # 1. Get Short Term History
@@ -144,8 +153,8 @@ class MemoryManager:
                     {"user_id": user_id, "role": "user", "content": user_msg},
                     {"user_id": user_id, "role": "assistant", "content": bot_msg}
                 ]).execute()
-            except Exception as e:
-                print(f"Error saving chat logs: {e}")
+            except Exception:
+                pass
 
         # 3. Check for compression
         if len(self.short_term_memory[user_id]) > 20:
@@ -186,9 +195,8 @@ class MemoryManager:
             
             # Store in Supabase
             self._store_memory(user_id, summary, tags=["episodic", "summary"], importance=0.8)
-            print(f"Compressed episodes into: {summary}")
-        except Exception as e:
-            print(f"Error compressing episodes: {e}")
+        except Exception:
+            pass
 
     def _retrieve_relevant(self, user_id: str, query: str):
         if not self.supabase or not self.embedding_model:
@@ -201,7 +209,7 @@ class MemoryManager:
             # Call RPC function
             params = {
                 "query_embedding": query_embedding,
-                "match_threshold": 0.5, # Adjust threshold as needed
+                "match_threshold": 0.5,
                 "match_count": 3,
                 "filter_user_id": user_id
             }
@@ -216,8 +224,7 @@ class MemoryManager:
                 formatted.append(f"- {doc['content']} (Tags: {meta.get('tags', '')})")
                 
             return "\n".join(formatted)
-        except Exception as e:
-            print(f"Error retrieving memory: {e}")
+        except Exception:
             return ""
 
     def _analyze_and_store(self, user_id: str, text: str):
@@ -252,13 +259,6 @@ class MemoryManager:
             # Update Core Memory
             update_text = data.get('core_memory_update')
             if update_text:
-                # We need to fetch current profile first (or rely on cached if we trust it)
-                # Ideally, we fetch fresh to avoid race conditions, but for now we append to what we have or fetch
-                # For simplicity, let's fetch fresh state in next turn or just append to a list in DB?
-                # We'll rely on the fact that we sync state at end of turn. 
-                # BUT, this runs async. So we should probably fetch-update-push.
-                
-                # Fetch current profile specifically
                 if self.supabase:
                     resp = self.supabase.table("profiles").select("user_profile").eq("user_id", user_id).execute()
                     if resp.data:
@@ -269,10 +269,9 @@ class MemoryManager:
                         if update_text not in current_profile["notes"]:
                             current_profile["notes"].append(update_text)
                             self.supabase.table("profiles").update({"user_profile": current_profile}).eq("user_id", user_id).execute()
-                            print(f"Updated Core Memory Profile: {update_text}")
 
-        except Exception as e:
-            print(f"Error analyzing memory: {e}")
+        except Exception:
+            pass
 
     def _store_memory(self, user_id: str, content: str, tags: list, importance: float):
         if not self.supabase or not self.embedding_model:
@@ -291,6 +290,5 @@ class MemoryManager:
                     "timestamp": str(datetime.now())
                 }
             }).execute()
-            print(f"Saved Archival Memory: {content}")
-        except Exception as e:
-            print(f"Error storing memory: {e}")
+        except Exception:
+            pass

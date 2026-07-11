@@ -21,9 +21,18 @@ def test_imports():
 
         assert backend.main.app is not None
     finally:
-        modules_to_remove = [k for k in sys.modules if k not in _original_modules]
-        for k in modules_to_remove:
-            del sys.modules[k]
+        # Restore environment and modules directionally
+        if 'backend.main' in sys.modules:
+            del sys.modules['backend.main']
+        if 'sentence_transformers' in sys.modules:
+            del sys.modules['sentence_transformers']
+        if 'supabase' in sys.modules:
+            del sys.modules['supabase']
+
+        # Restore what was actually added during the test
+        for k in list(sys.modules.keys()):
+            if k.startswith('backend.'):
+                del sys.modules[k]
 
         os.environ.clear()
         os.environ.update(_original_env)

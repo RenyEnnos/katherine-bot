@@ -16,27 +16,34 @@ jobs:
         with:
           python-version: "3.12"
           cache: 'pip'
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-test.txt
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -r backend/requirements-test.txt
+          python -m pip install -r backend/requirements.txt
+          python -m pip install -r backend/requirements-test.txt
+          python -m pip check
 
-      - name: Run Smoke Tests
-        env:
-          HF_HUB_OFFLINE: "1"
-          TRANSFORMERS_OFFLINE: "1"
+      - name: Verify CPU-only Torch
         run: |
-          PYTHONPATH=. pytest backend/tests/test_smoke.py
+          python -c "import torch; assert '+cpu' in torch.__version__, 'Torch is not CPU-only variant'"
+          python -c "import torch; assert torch.cuda.is_available() is False, 'CUDA is available'"
+          python -m pip freeze > installed.txt
+          ! grep -iE 'nvidia-|cuda-|nvidia-cublas-|nvidia-cudnn-|nvidia-nccl-' installed.txt
+
+      - name: Compile Backend
+        run: |
+          python -m compileall -q backend
 
       - name: Run Tests
         env:
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
+          PYTHONPATH: "."
         run: |
-          PYTHONPATH=. pytest backend/tests/test_auth.py
+          python -m pytest backend/tests
 
   frontend:
     runs-on: ubuntu-latest
@@ -56,17 +63,16 @@ jobs:
 
       - name: Audit dependencies
         working-directory: ./frontend
-        run: npm audit --json > audit.json || true
+        run: |
+          npm audit --json > audit.json || true
+          jq '.metadata.vulnerabilities' audit.json
 
       - name: Archive Audit Report
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: npm-audit-report
           path: frontend/audit.json
-
-      - name: Show Audit Report
-        working-directory: ./frontend
-        run: cat audit.json
 
       - name: Lint
         working-directory: ./frontend

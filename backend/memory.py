@@ -83,8 +83,10 @@ class MemoryManager:
     def sync_state(self, user_id: str, emotional_state: EmotionalState, relationship: UserRelationship, user_profile: dict = None):
         """
         Persists the current state to Supabase.
+        Raises Exception if persistence fails.
         """
-        if not self.supabase: return
+        if not self.supabase:
+            return
 
         update_data = {
             "emotional_state": emotional_state.to_dict(),
@@ -96,10 +98,13 @@ class MemoryManager:
             update_data["user_profile"] = user_profile
 
         try:
-            self.supabase.table("profiles").update(update_data).eq("user_id", user_id).execute()
-            # print(f"DEBUG: Synced state for {user_id}")
+            response = self.supabase.table("profiles").update(update_data).eq("user_id", user_id).execute()
+            # In some versions of supabase-py, we might need to check for errors in response
+            if hasattr(response, 'error') and response.error:
+                raise Exception(f"Supabase error syncing state: {response.error}")
         except Exception as e:
-            print(f"Error syncing state: {e}")
+            print(f"CRITICAL: Error syncing state for {user_id}: {e}")
+            raise Exception(f"Failed to persist user state: {str(e)}")
 
     def get_context(self, user_id: str, current_message: str, user_state: dict):
         # 1. Get Short Term History

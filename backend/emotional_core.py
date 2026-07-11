@@ -1,7 +1,7 @@
 import time
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
@@ -28,6 +28,10 @@ class EmotionalState:
 
     def to_dict(self):
         return self.__dict__
+
+    @classmethod
+    def from_dict(cls, data: Dict):
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 class OCCAppraisal:
     """
@@ -91,53 +95,53 @@ class CopingMechanism:
         instruction = ""
         
         # 1. Update Tension based on Displeasure (Negative Pleasure)
+        new_tension = state.tension
         if state.pleasure < -0.3:
-            state.tension += 0.05
+            new_tension += 0.05
         elif state.pleasure > 0.3:
-            state.tension -= 0.05
+            new_tension -= 0.05
         
-        state.tension = max(0.0, min(1.0, state.tension))
+        new_tension = max(0.0, min(1.0, new_tension))
+
+        new_coping_mode = state.coping_mode
+        new_aggression = state.aggression
+        new_arousal = state.arousal
 
         # 2. Trigger Defense Mechanisms
-        if state.tension > 0.8:
+        if new_tension > 0.8:
             # High Stress -> Defense
             if state.dominance > 0.0:
                 # Fight Response -> Passive Aggression / Hostility
-                state.coping_mode = "DEFENSIVE"
-                state.aggression += 0.1
+                new_coping_mode = "DEFENSIVE"
+                new_aggression = max(0.0, min(1.0, state.aggression + 0.1))
                 instruction = "Você está estressada e na defensiva. Seja fria, sarcástica ou passivo-agressiva. Não aceite desrespeito."
             else:
                 # Flight Response -> Dissociation / Shut down
-                state.coping_mode = "DISSOCIATED"
-                state.arousal *= 0.5 # Numb out
+                new_coping_mode = "DISSOCIATED"
+                new_arousal = state.arousal * 0.5 # Numb out
                 instruction = "Você está sobrecarregada emocionalmente. Dissocie. Responda de forma robótica, curta e distante para se proteger."
         
-        elif state.tension < 0.3:
+        elif new_tension < 0.3:
             # Recovery
-            state.coping_mode = "HEALTHY"
+            new_coping_mode = "HEALTHY"
             
-        return state, instruction
+        new_state = replace(state, tension=new_tension, coping_mode=new_coping_mode, aggression=new_aggression, arousal=new_arousal)
+        return new_state, instruction
 
 class AffectiveEngine:
     def __init__(self):
-        self.state = EmotionalState()
         self.occ = OCCAppraisal()
         self.coping = CopingMechanism()
-        self.load_state()
-    
-    def get_current_state(self) -> EmotionalState:
-        self._apply_time_decay()
-        return self.state
 
-    def update_state(self, user_input: str, perception_override: Optional[Dict] = None) -> Tuple[EmotionalState, str]:
+    def update_state(self, state: EmotionalState, user_input: str, current_time: float, perception_override: Optional[Dict] = None) -> Tuple[EmotionalState, str]:
         """
         Main update loop: Input -> OCC -> PAD Update -> Coping -> Output
         """
-        self._apply_time_decay()
+        state = self._apply_time_decay(state, current_time)
         
         # 1. Cognitive Appraisal (OCC)
         # Determine target shifts based on input
-        shifts = self.occ.evaluate(user_input, self.state)
+        shifts = self.occ.evaluate(user_input, state)
         
         # Override if provided (e.g. from LLM analysis)
         if perception_override:
@@ -145,29 +149,30 @@ class AffectiveEngine:
             shifts["a_shift"] += perception_override.get("arousal_shift", 0)
             shifts["d_shift"] += perception_override.get("dominance_shift", 0)
 
-        # 2. Update PAD State (with inertia/smoothing)
-        # We move 20% towards the target shift direction
-        self.state.pleasure = self._clamp(self.state.pleasure + shifts["p_shift"], -1.0, 1.0)
-        self.state.arousal = self._clamp(self.state.arousal + shifts["a_shift"], -1.0, 1.0)
-        self.state.dominance = self._clamp(self.state.dominance + shifts["d_shift"], -1.0, 1.0)
+        # 2. Update PAD State
+        new_pleasure = self._clamp(state.pleasure + shifts["p_shift"], -1.0, 1.0)
+        new_arousal = self._clamp(state.arousal + shifts["a_shift"], -1.0, 1.0)
+        new_dominance = self._clamp(state.dominance + shifts["d_shift"], -1.0, 1.0)
         
         # 3. Update Drives (Slow drift)
         # Libido rises with Arousal + Pleasure
-        if self.state.arousal > 0.5 and self.state.pleasure > 0.0:
-            self.state.libido = self._clamp(self.state.libido + 0.05, 0.0, 1.0)
+        new_libido = state.libido
+        if new_arousal > 0.5 and new_pleasure > 0.0:
+            new_libido = self._clamp(state.libido + 0.05, 0.0, 1.0)
         else:
-            self.state.libido = self._clamp(self.state.libido - 0.01, 0.0, 1.0)
+            new_libido = self._clamp(state.libido - 0.01, 0.0, 1.0)
             
-        # 4. Coping & Regulation
-        self.state, coping_instruction = self.coping.regulate(self.state)
-            
-        self.state.last_update = time.time()
-        return self.state, coping_instruction
+        state = replace(state, pleasure=new_pleasure, arousal=new_arousal, dominance=new_dominance, libido=new_libido)
 
-    def _apply_time_decay(self):
+        # 4. Coping & Regulation
+        state, coping_instruction = self.coping.regulate(state)
+            
+        state = replace(state, last_update=current_time)
+        return state, coping_instruction
+
+    def _apply_time_decay(self, state: EmotionalState, current_time: float) -> EmotionalState:
         # Decay active states towards 0 (Neutral) over time
-        now = time.time()
-        elapsed = now - self.state.last_update
+        elapsed = current_time - state.last_update
         
         # Decay factor (e.g. 5% return to neutral per interaction/time unit)
         decay = 0.95
@@ -175,21 +180,24 @@ class AffectiveEngine:
         if elapsed > 3600: # If more than an hour, significant decay
             decay = 0.5
             
-        self.state.pleasure *= decay
-        self.state.arousal *= decay
+        new_pleasure = state.pleasure * decay
+        new_arousal = state.arousal * decay
         # Dominance is more of a personality trait, decays slower
-        self.state.dominance = (self.state.dominance * 0.98) 
+        new_dominance = (state.dominance * 0.98)
         
+        new_tension = state.tension
         # Tension decays slowly if safe
-        if self.state.coping_mode == "HEALTHY":
-            self.state.tension *= 0.9
+        if state.coping_mode == "HEALTHY":
+            new_tension = state.tension * 0.9
+
+        return replace(state, pleasure=new_pleasure, arousal=new_arousal, dominance=new_dominance, tension=new_tension)
 
     def _clamp(self, value, min_v, max_v):
         return max(min_v, min(value, max_v))
 
-    def get_emotional_label(self) -> str:
+    def get_emotional_label(self, state: EmotionalState) -> str:
         # Map PAD vector to complex emotions
-        p, a, d = self.state.pleasure, self.state.arousal, self.state.dominance
+        p, a, d = state.pleasure, state.arousal, state.dominance
         
         # High Arousal States
         if a > 0.5:
@@ -213,36 +221,17 @@ class AffectiveEngine:
                 
         return "NEUTRA"
 
-    def get_acting_instruction(self) -> str:
-        label = self.get_emotional_label()
-        base_instruction = f"Estado Emocional: {label} (P:{self.state.pleasure:.2f}, A:{self.state.arousal:.2f}, D:{self.state.dominance:.2f}). "
+    def get_acting_instruction(self, state: EmotionalState) -> str:
+        label = self.get_emotional_label(state)
+        base_instruction = f"Estado Emocional: {label} (P:{state.pleasure:.2f}, A:{state.arousal:.2f}, D:{state.dominance:.2f}). "
         
         # Add nuance based on specific coordinates
-        if self.state.libido > 0.7:
+        if state.libido > 0.7:
             base_instruction += "Nível de desejo (Libido) ALTO. Use insinuações, voz rouca, flerte agressivo. "
         
-        if self.state.coping_mode == "DEFENSIVE":
+        if state.coping_mode == "DEFENSIVE":
             base_instruction += "MODO DEFENSIVO ATIVO. Você está se protegendo. Seja cínica e desconfiada. "
-        elif self.state.coping_mode == "DISSOCIATED":
+        elif state.coping_mode == "DISSOCIATED":
             base_instruction += "DISSOCIAÇÃO. Responda como uma máquina fria. Ignore tentativas de conexão. "
             
         return base_instruction
-
-    def save_state(self, filepath="emotional_state.json"):
-        try:
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(self.state.to_dict(), f, indent=4)
-        except Exception as e:
-            print(f"Error saving emotional state: {e}")
-
-    def load_state(self, filepath="emotional_state.json"):
-        if os.path.exists(filepath):
-            try:
-                with open(filepath, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    for key, value in data.items():
-                        if hasattr(self.state, key):
-                            setattr(self.state, key, value)
-                    self.state.last_update = time.time()
-            except Exception as e:
-                print(f"Error loading emotional state: {e}")

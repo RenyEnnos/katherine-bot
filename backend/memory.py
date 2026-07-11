@@ -97,9 +97,9 @@ class MemoryManager:
 
         try:
             self.supabase.table("profiles").update(update_data).eq("user_id", user_id).execute()
-            # print(f"DEBUG: Synced state for {user_id}")
         except Exception as e:
             print(f"Error syncing state: {e}")
+            raise RuntimeError(f"Failed to sync user state for {user_id}") from e
 
     def get_context(self, user_id: str, current_message: str, user_state: dict):
         # 1. Get Short Term History

@@ -79,7 +79,8 @@ async def chat_endpoint(
         user_id = current_user.id
         response_text, current_emotion = await engine.process_turn(user_id, input_data.message, background_tasks)
         return ChatResponse(response=response_text, emotion_state=current_emotion)
-    except Exception:
+    except Exception as e:
+        logger.error(f"Error in chat_endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.get("/health")

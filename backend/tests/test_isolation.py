@@ -237,3 +237,12 @@ def test_engine_structure():
     assert not hasattr(engine, "turn_count")
     assert not hasattr(engine, "current_adaptation_strategy")
     assert not hasattr(engine.affective_engine, "state")
+
+def test_relational_identity_adulterated():
+    from backend.relationship import UserRelationship
+    # Simulated state has B, but authenticated user is A
+    raw_data = {"user_id": "user-B", "trust": 0.8, "affection": 0.9}
+    rel = UserRelationship.from_dict(raw_data, user_id="user-A")
+    assert rel.user_id == "user-A"
+    assert rel.trust == 0.8
+

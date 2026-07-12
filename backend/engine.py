@@ -29,8 +29,9 @@ class ConversationEngine:
 
             # Hydrate Relationship State
             if user_state.get("relationship_state"):
-                relationship = UserRelationship.from_dict(user_state["relationship_state"])
+                relationship = UserRelationship.from_dict(user_state["relationship_state"], user_id=user_id)
             else:
+
                 relationship = UserRelationship(user_id=user_id)
 
             # 2. Perception & Memory Retrieval (Context retrieval offloaded to thread)

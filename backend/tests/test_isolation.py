@@ -246,3 +246,42 @@ def test_relational_identity_adulterated():
     assert rel.user_id == "user-A"
     assert rel.trust == 0.8
 
+def test_read_failure_raises_stateloaderror():
+    from backend.memory import MemoryManager, StateLoadError
+    from unittest.mock import MagicMock
+    import pytest
+    
+    mgr = MemoryManager()
+    mgr.supabase = MagicMock()
+    # Mock execute() to raise an exception with sensitive info
+    mgr.supabase.table.return_value.select.return_value.eq.return_value.execute.side_effect = Exception("SECRET_API_KEY_123_sensitive_data")
+    
+    with pytest.raises(StateLoadError) as excinfo:
+        mgr.load_user_state("user-A")
+        
+    assert "SECRET_API_KEY_123_sensitive_data" not in str(excinfo.value)
+    assert "user-A" not in str(excinfo.value)
+
+def test_read_non_existent_profile_creates_default():
+    from backend.memory import MemoryManager
+    from unittest.mock import MagicMock
+    
+    mgr = MemoryManager()
+    mgr.supabase = MagicMock()
+    
+    # Mock select response with data=[]
+    mock_select = MagicMock()
+    mock_select.data = []
+    mgr.supabase.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_select
+    
+    # Mock insert response
+    mock_insert = MagicMock()
+    mock_insert.data = [{"user_id": "user-A"}]
+    mgr.supabase.table.return_value.insert.return_value.execute.return_value = mock_insert
+    
+    state = mgr.load_user_state("user-A")
+    assert state["emotional_state"]["pleasure"] == 0.0
+    assert state["relationship_state"]["user_id"] == "user-A"
+
+
+

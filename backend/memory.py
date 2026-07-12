@@ -16,6 +16,12 @@ class StatePersistenceError(Exception):
         self.message = message
         super().__init__(self.message)
 
+class StateLoadError(Exception):
+    """Exception raised when user state cannot be loaded safely."""
+    def __init__(self, message="Falha ao carregar estado do usuário"):
+        self.message = message
+        super().__init__(self.message)
+
 class MemoryManager:
     def __init__(self):
         # 1. Initialize Supabase
@@ -48,23 +54,35 @@ class MemoryManager:
         If not found, creates a default profile.
         """
         if not self.supabase:
-            return self._get_default_state(user_id)
+            raise StateLoadError("Serviço de persistência indisponível.")
 
         try:
             response = self.supabase.table("profiles").select("*").eq("user_id", user_id).execute()
-            
-            if not response.data:
-                # Create default profile
-                default_state = self._get_default_state(user_id)
-                self.supabase.table("profiles").insert({
+        except Exception as e:
+            raise StateLoadError("Erro ao recuperar perfil do banco de dados.") from e
+
+        if response is None or not hasattr(response, "data") or response.data is None:
+            raise StateLoadError("Resposta inválida do serviço de persistência.")
+
+        if len(response.data) == 0:
+            # Create default profile
+            default_state = self._get_default_state(user_id)
+            try:
+                insert_resp = self.supabase.table("profiles").insert({
                     "user_id": user_id,
                     "persona_config": default_state["persona_config"],
                     "user_profile": default_state["user_profile"],
                     "relationship_state": default_state["relationship_state"],
                     "emotional_state": default_state["emotional_state"]
                 }).execute()
-                return default_state
-            
+            except Exception as e:
+                raise StateLoadError("Falha ao inicializar perfil padrão.") from e
+
+            if insert_resp is None or not hasattr(insert_resp, "data") or not insert_resp.data:
+                raise StateLoadError("Falha ao salvar perfil padrão criado.")
+            return default_state
+
+        try:
             data = response.data[0]
             return {
                 "persona_config": data.get("persona_config"),
@@ -72,8 +90,8 @@ class MemoryManager:
                 "relationship_state": data.get("relationship_state") or {},
                 "emotional_state": data.get("emotional_state") or {}
             }
-        except Exception:
-            return self._get_default_state(user_id)
+        except Exception as e:
+            raise StateLoadError("Erro ao processar dados de perfil.") from e
 
     def _get_default_state(self, user_id: str):
         return {
@@ -82,6 +100,7 @@ class MemoryManager:
             "relationship_state": UserRelationship(user_id=user_id).to_dict(),
             "emotional_state": EmotionalState().to_dict()
         }
+
 
     def sync_state(self, user_id: str, emotional_state: EmotionalState, relationship: UserRelationship, user_profile: dict = None):
         """

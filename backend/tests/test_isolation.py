@@ -301,6 +301,28 @@ def test_zero_rows_updated_raises_statepersistenceerror():
     with pytest.raises(StatePersistenceError):
         mgr.sync_state("user-123", EmotionalState(), UserRelationship(user_id="user-123"))
 
+def test_normalize_perception():
+    from backend.engine import _normalize_perception
+    
+    # None payload
+    res = _normalize_perception(None)
+    assert res["valence"] == 0.0
+    assert res["triggered_emotions"]["joy"] == 0.0
+    
+    # Malformed valence types (bool, string, nan, inf)
+    res = _normalize_perception({"valence": True, "arousal_shift": "invalid", "dominance_shift": float('nan')})
+    assert res["valence"] == 0.0
+    assert res["arousal_shift"] == 0.0
+    assert res["dominance_shift"] == 0.0
+    
+    # Out of bounds
+    res = _normalize_perception({"valence": 2.5, "triggered_emotions": {"joy": -0.5, "sadness": 1.5, "invalid_emotion": 0.5}})
+    assert res["valence"] == 1.0
+    assert res["triggered_emotions"]["joy"] == 0.0
+    assert res["triggered_emotions"]["sadness"] == 1.0
+    assert "invalid_emotion" not in res["triggered_emotions"]
+
+
 
 
 

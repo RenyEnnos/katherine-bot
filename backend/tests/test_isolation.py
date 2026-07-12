@@ -174,6 +174,13 @@ def test_persistence_failure_sanitization():
             "relationship_state": UserRelationship(user_id=user_id).to_dict()
         })
 
+        # Mock perceive and chat_completion to be fully hermetic
+        engine._perceive = MagicMock(return_value={"valence": 0, "arousal_shift": 0, "dominance_shift": 0})
+        m = MagicMock()
+        m.choices = [MagicMock()]
+        m.choices[0].message.content = "Sanitized response"
+        engine.groq_manager.chat_completion = MagicMock(return_value=m)
+
         # Mock internal supabase client behavior
         engine.memory_manager.supabase = MagicMock()
         # Mock table().update().eq().execute()
@@ -200,18 +207,33 @@ def test_lock_cleanup_on_cancellation():
         engine = ConversationEngine()
         user_id = "cancel_user"
 
-        reached_point = asyncio.Event()
+        # Mock perceive and chat_completion to be fully hermetic
+        engine._perceive = MagicMock(return_value={"valence": 0, "arousal_shift": 0, "dominance_shift": 0})
+        m = MagicMock()
+        m.choices = [MagicMock()]
+        m.choices[0].message.content = "Sanitized response"
+        engine.groq_manager.chat_completion = MagicMock(return_value=m)
+
+        reached_point = threading.Event()
+        release_point = threading.Event()
 
         def blocking_load(uid):
             reached_point.set()
-            time.sleep(10)
-            return {}
+            release_point.wait(timeout=2)
+            return {
+                "emotional_state": EmotionalState().to_dict(),
+                "relationship_state": UserRelationship(user_id=uid).to_dict()
+            }
 
         engine.memory_manager.load_user_state = MagicMock(side_effect=blocking_load)
 
         task = asyncio.create_task(engine.process_turn(user_id, "Msg"))
-        # wait_for to avoid hanging forever if it fails
-        await asyncio.wait_for(reached_point.wait(), timeout=2)
+
+        # Wait for worker thread to reach the load function
+        for _ in range(40):
+            if reached_point.is_set():
+                break
+            await asyncio.sleep(0.05)
 
         # Check that it exists in registry
         async with engine.lock_manager._dict_lock:
@@ -223,11 +245,15 @@ def test_lock_cleanup_on_cancellation():
         except asyncio.CancelledError:
             pass
 
+        # Release the blocking thread
+        release_point.set()
+
         # Check that it is removed
         async with engine.lock_manager._dict_lock:
             assert user_id not in engine.lock_manager._locks
 
     asyncio.run(run_test())
+
 
 def test_engine_structure():
     """

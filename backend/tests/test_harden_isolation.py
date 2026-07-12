@@ -18,6 +18,7 @@ def test_relational_identity_adulterated_integration():
         })
 
         # Mock other external calls
+        engine._perceive = MagicMock(return_value={"valence": 0, "arousal_shift": 0, "dominance_shift": 0})
         m = MagicMock()
         m.choices = [MagicMock()]
         m.choices[0].message.content = "Hi"
@@ -45,6 +46,7 @@ def test_read_failure_integration():
         # Mock select to throw exception containing sensitive info
         engine.memory_manager.supabase.table.return_value.select.return_value.eq.return_value.execute.side_effect = Exception("SECRET_API_KEY_999")
 
+        engine._perceive = MagicMock(return_value={"valence": 0, "arousal_shift": 0, "dominance_shift": 0})
         engine.memory_manager.sync_state = MagicMock()
         engine.groq_manager.chat_completion = MagicMock()
 
@@ -74,6 +76,8 @@ def test_failed_default_profile_insert_raises_error():
         engine.memory_manager.supabase.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_select
 
         # Mock insert to raise error
+        engine._perceive = MagicMock(return_value={"valence": 0, "arousal_shift": 0, "dominance_shift": 0})
+        engine.groq_manager.chat_completion = MagicMock()
         engine.memory_manager.supabase.table.return_value.insert.return_value.execute.side_effect = Exception("INSERT_FAILED_DB_ERROR")
 
         with pytest.raises(StateLoadError) as excinfo:
@@ -104,6 +108,7 @@ def test_zero_rows_updated_integration():
         engine.memory_manager.supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = mock_response
 
         # Mock generate
+        engine._perceive = MagicMock(return_value={"valence": 0, "arousal_shift": 0, "dominance_shift": 0})
         m = MagicMock()
         m.choices = [MagicMock()]
         m.choices[0].message.content = "Hi"
@@ -134,6 +139,7 @@ def test_lock_cleanup_after_success():
         mock_response.error = None
         engine.memory_manager.supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = mock_response
 
+        engine._perceive = MagicMock(return_value={"valence": 0, "arousal_shift": 0, "dominance_shift": 0})
         m = MagicMock()
         m.choices = [MagicMock()]
         m.choices[0].message.content = "Hi"
@@ -180,6 +186,7 @@ def test_persistence_before_return():
             "relationship_state": UserRelationship(user_id=user_id).to_dict()
         })
 
+        engine._perceive = MagicMock(return_value={"valence": 0, "arousal_shift": 0, "dominance_shift": 0})
         m = MagicMock()
         m.choices = [MagicMock()]
         m.choices[0].message.content = "Hi"

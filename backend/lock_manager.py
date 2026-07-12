@@ -35,4 +35,3 @@ class UserLockManager:
                         self._locks[user_id][1] -= 1
                         if self._locks[user_id][1] <= 0:
                             del self._locks[user_id]
-

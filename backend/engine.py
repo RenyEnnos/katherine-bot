@@ -20,7 +20,7 @@ class ConversationEngine:
     async def process_turn(self, user_id: str, user_message: str, background_tasks=None):
         async with self.lock_manager.lock(user_id):
             current_time = time.time()
-            
+
             # 1. Load State from Supabase (Offloaded to thread)
             user_state = await asyncio.to_thread(self.memory_manager.load_user_state, user_id)
 
@@ -98,7 +98,7 @@ class ConversationEngine:
             "dominance_shift": -1.0 (intimidating) to 1.0 (empowering),
             "triggered_emotions": {{ "joy": 0.0-1.0, "sadness": 0.0-1.0, "anger": 0.0-1.0, "fear": 0.0-1.0, "disgust": 0.0-1.0, "surprise": 0.0-1.0, "tenderness": 0.0-1.0, "guilt": 0.0-1.0, "pride": 0.0-1.0, "jealousy": 0.0-1.0, "gratitude": 0.0-1.0 }}
         }}
-        
+
         Message: "{message}"
         """
         try:
@@ -115,31 +115,31 @@ class ConversationEngine:
     def _build_system_prompt(self, emotion_state, context, relationship, adaptation_strategy="", coping_instruction=""):
         acting_instruction = self.affective_engine.get_acting_instruction(emotion_state)
         mood_label = self.affective_engine.get_emotional_label(emotion_state)
-        
+
         prompt = f"""
         {context}
-        
+
         === SEU ESTADO INTERNO (PAD Bipolar -1.0 a +1.0) ===
         HUMOR: {mood_label}
         Prazer: {emotion_state.pleasure:.2f} | Excitação: {emotion_state.arousal:.2f} | Dominância: {emotion_state.dominance:.2f}
-        
+
         === IMPULSOS E NECESSIDADES (DRIVES) ===
         Libido (Desejo): {emotion_state.libido:.2f}
         Agressividade: {emotion_state.aggression:.2f}
         Conexão: {emotion_state.connection:.2f}
         Modo de Enfrentamento: {emotion_state.coping_mode}
-        
+
         === SEU RELACIONAMENTO COM O USUÁRIO ===
         VÍNCULO: {relationship.bond_label}
         Confiança: {relationship.trust:.2f} | Afeto: {relationship.affection:.2f} | Tensão/Mágoa: {relationship.tension:.2f}
-        
+
         === INSTRUÇÃO DE ATUAÇÃO (IMPORTANTE) ===
         {acting_instruction}
         {coping_instruction}
-        
+
         === ESTRATÉGIA DE ADAPTAÇÃO (META-COGNITION) ===
         {adaptation_strategy if adaptation_strategy else "Seja você mesma."}
-        
+
         === DIRETRIZES DE RESPOSTA (EMOTION PROMPT) ===
         1. Responda com profundidade emocional genuína.
         2. USE LINGUAGEM SENSORIAL: Descreva o que você "sente", "vê" ou "ouve" internamente.
@@ -171,10 +171,10 @@ def _normalize_perception(payload) -> dict:
         "dominance_shift": 0.0,
         "triggered_emotions": default_emotions
     }
-    
+
     if not isinstance(payload, dict):
         return normalized
-        
+
     normalized = {
         "valence": 0.0,
         "arousal_shift": 0.0,
@@ -208,4 +208,3 @@ def _normalize_perception(payload) -> dict:
             normalized["triggered_emotions"][emo] = clean_val
 
     return normalized
-

@@ -250,35 +250,35 @@ def test_read_failure_raises_stateloaderror():
     from backend.memory import MemoryManager, StateLoadError
     from unittest.mock import MagicMock
     import pytest
-    
+
     mgr = MemoryManager()
     mgr.supabase = MagicMock()
     # Mock execute() to raise an exception with sensitive info
     mgr.supabase.table.return_value.select.return_value.eq.return_value.execute.side_effect = Exception("SECRET_API_KEY_123_sensitive_data")
-    
+
     with pytest.raises(StateLoadError) as excinfo:
         mgr.load_user_state("user-A")
-        
+
     assert "SECRET_API_KEY_123_sensitive_data" not in str(excinfo.value)
     assert "user-A" not in str(excinfo.value)
 
 def test_read_non_existent_profile_creates_default():
     from backend.memory import MemoryManager
     from unittest.mock import MagicMock
-    
+
     mgr = MemoryManager()
     mgr.supabase = MagicMock()
-    
+
     # Mock select response with data=[]
     mock_select = MagicMock()
     mock_select.data = []
     mgr.supabase.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_select
-    
+
     # Mock insert response
     mock_insert = MagicMock()
     mock_insert.data = [{"user_id": "user-A"}]
     mgr.supabase.table.return_value.insert.return_value.execute.return_value = mock_insert
-    
+
     state = mgr.load_user_state("user-A")
     assert state["emotional_state"]["pleasure"] == 0.0
     assert state["relationship_state"]["user_id"] == "user-A"
@@ -289,13 +289,13 @@ def test_zero_rows_updated_raises_statepersistenceerror():
     import pytest
     mgr = MemoryManager()
     mgr.supabase = MagicMock()
-    
+
     # Mock update return with empty data list (data=[])
     mock_response = MagicMock()
     mock_response.data = []
     mock_response.error = None
     mgr.supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = mock_response
-    
+
     from backend.emotional_core import EmotionalState
     from backend.relationship import UserRelationship
     with pytest.raises(StatePersistenceError):
@@ -303,18 +303,18 @@ def test_zero_rows_updated_raises_statepersistenceerror():
 
 def test_normalize_perception():
     from backend.engine import _normalize_perception
-    
+
     # None payload
     res = _normalize_perception(None)
     assert res["valence"] == 0.0
     assert res["triggered_emotions"]["joy"] == 0.0
-    
+
     # Malformed valence types (bool, string, nan, inf)
     res = _normalize_perception({"valence": True, "arousal_shift": "invalid", "dominance_shift": float('nan')})
     assert res["valence"] == 0.0
     assert res["arousal_shift"] == 0.0
     assert res["dominance_shift"] == 0.0
-    
+
     # Out of bounds
     res = _normalize_perception({"valence": 2.5, "triggered_emotions": {"joy": -0.5, "sadness": 1.5, "invalid_emotion": 0.5}})
     assert res["valence"] == 1.0
@@ -326,11 +326,11 @@ def test_affective_engine_defensiveness():
     from backend.emotional_core import AffectiveEngine, EmotionalState
     engine = AffectiveEngine()
     state = EmotionalState()
-    
+
     # Call update_state with unsafe override shifts (None, bool, NaN)
     override = {"valence": None, "arousal_shift": True, "dominance_shift": float('inf')}
     new_state, _ = engine.update_state(state, "Hello", 1000.0, perception_override=override)
-    
+
     assert isinstance(new_state.pleasure, float)
     assert new_state.pleasure == 0.0
     assert new_state.arousal == 0.0
@@ -342,47 +342,40 @@ def test_lock_cleanup_on_cancellation_during_wait():
         import asyncio
         mgr = UserLockManager()
         user_id = "test_cancel_user"
-        
+
         task1_entered = asyncio.Event()
         task2_started = asyncio.Event()
-        
+
         async def t1():
             async with mgr.lock(user_id):
                 task1_entered.set()
                 await asyncio.sleep(5)
-                
+
         async def t2():
             task2_started.set()
             async with mgr.lock(user_id):
                 pass
-                
+
         task1 = asyncio.create_task(t1())
         await task1_entered.wait()
-        
+
         task2 = asyncio.create_task(t2())
         await task2_started.wait()
         await asyncio.sleep(0.1) # Let task2 wait on user_lock
-        
+
         task2.cancel()
         try:
             await task2
         except asyncio.CancelledError:
             pass
-            
+
         task1.cancel()
         try:
             await task1
         except asyncio.CancelledError:
             pass
-            
+
         async with mgr._dict_lock:
             assert user_id not in mgr._locks
 
     asyncio.run(run_test())
-
-
-
-
-
-
-

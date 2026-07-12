@@ -1,8 +1,8 @@
 # Design Spec: Isolate Emotional State Per User (PR #228)
 
-**Date**: 2026-07-12  
-**Issue**: #206 — P0: isolar estado emocional por usuário e remover mutabilidade global do ConversationEngine  
-**PR**: #228  
+**Date**: 2026-07-12
+**Issue**: #206 — P0: isolar estado emocional por usuário e remover mutabilidade global do ConversationEngine
+**PR**: #228
 
 ## Overview
 This design spec addresses the remaining blockers in PR #228 of Katherine Bot. It provides concrete guarantees for emotional state isolation, fail-closed reading/writing, robust local concurrency lock management, input/perception validation, and strict error sanitization.

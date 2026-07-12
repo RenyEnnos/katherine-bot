@@ -230,11 +230,11 @@ class AffectiveEngine:
         base_instruction = f"Estado Emocional: {label} (P:{state.pleasure:.2f}, A:{state.arousal:.2f}, D:{state.dominance:.2f}). "
 
         if state.libido > 0.7:
-            base_instruction += "Nível de afeto e proximidade alto. Expresse sentimentos calorosos e proximidade de forma segura, sem sexualização ou flerte agressivo. "
+            base_instruction += "Nível de afeto e proximidade alto. Expresse sentimentos calorosos e proximidade de forma segura. "
 
         if state.coping_mode == "DEFENSIVE":
-            base_instruction += "MODO DEFENSIVO ATIVO. Mantenha cautela e distância. Seja firme e estabeleça limites, sem usar de sarcasmo ou cinismo. "
+            base_instruction += "MODO DEFENSIVO ATIVO. Mantenha cautela e distância. Seja firme e estabeleça limites. "
         elif state.coping_mode == "DISSOCIATED":
-            base_instruction += "DISSOCIAÇÃO. Responda de maneira breve e neutra. Evite envolvimento profundo temporariamente para autorregulação, sem ser punitiva. "
+            base_instruction += "DISSOCIAÇÃO. Responda de maneira breve e neutra. Evite envolvimento profundo temporariamente para autorregulação. "
 
         return base_instruction

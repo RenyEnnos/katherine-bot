@@ -20,7 +20,7 @@ class ConversationEngine:
         self.model_fast = "llama-3.1-8b-instant"
 
     async def process_turn(self, user_id: str, user_message: str, background_tasks=None):
-        async with self.lock_manager.lock(user_id):
+        async def run_under_lock():
             current_time = time.time()
 
             # 1. Load State from Supabase (Offloaded to thread)
@@ -86,6 +86,19 @@ class ConversationEngine:
 
             return response_text, new_state.to_dict()
 
+        async with self.lock_manager.lock(user_id):
+            task = asyncio.create_task(run_under_lock())
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # Wait for the background worker thread to finish completely before releasing the lock
+                try:
+                    await task
+                except Exception:
+                    pass
+                raise
+
+
     def _perceive(self, message: str):
         # Analyze message for emotional impact (Synchronous Groq call)
         prompt = f"""
@@ -116,11 +129,17 @@ class ConversationEngine:
         Normalizes and sanitizes LLM perception output.
         Fails closed to neutral defaults for malformed input.
         """
+        allowed_emotions = [
+            "joy", "sadness", "anger", "fear", "disgust", "surprise",
+            "tenderness", "guilt", "pride", "jealousy", "gratitude"
+        ]
+
+        default_emotions = {emo: 0.0 for emo in allowed_emotions}
         default = {
             "valence": 0.0,
             "arousal_shift": 0.0,
             "dominance_shift": 0.0,
-            "triggered_emotions": {}
+            "triggered_emotions": default_emotions
         }
 
         if not isinstance(raw, dict):
@@ -139,21 +158,14 @@ class ConversationEngine:
             "valence": clean_num(raw.get("valence"), -1.0, 1.0),
             "arousal_shift": clean_num(raw.get("arousal_shift"), -1.0, 1.0),
             "dominance_shift": clean_num(raw.get("dominance_shift"), -1.0, 1.0),
-            "triggered_emotions": {}
-        }
-
-        allowed_emotions = {
-            "joy", "sadness", "anger", "fear", "disgust", "surprise",
-            "tenderness", "guilt", "pride", "jealousy", "gratitude"
+            "triggered_emotions": default_emotions.copy()
         }
 
         raw_emotions = raw.get("triggered_emotions")
         if isinstance(raw_emotions, dict):
             for emo in allowed_emotions:
-                if emo in raw_emotions:
-                    val = clean_num(raw_emotions[emo], 0.0, 1.0)
-                    if val != 0.0:
-                        normalized["triggered_emotions"][emo] = val
+                val = raw_emotions.get(emo)
+                normalized["triggered_emotions"][emo] = clean_num(val, 0.0, 1.0)
 
         return normalized
 

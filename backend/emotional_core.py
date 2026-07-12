@@ -13,17 +13,17 @@ class EmotionalState:
     pleasure: float = 0.0  # -1.0 (Agony) to +1.0 (Ecstasy)
     arousal: float = 0.0   # -1.0 (Sleep) to +1.0 (Frenzy)
     dominance: float = 0.0 # -1.0 (Submissive) to +1.0 (Dominant)
-    
+
     # 2. Internal Drives (0.0 to 1.0)
     libido: float = 0.0    # Desire for sexual/romantic intensity
     aggression: float = 0.0 # Desire for conflict/dominance
     connection: float = 0.5 # Desire for emotional bonding
-    
+
     # 3. System State
     energy: float = 0.8    # Circadian rhythm
     tension: float = 0.0   # 0.0 to 1.0 (Stress accumulator)
     coping_mode: str = "HEALTHY" # HEALTHY, DEFENSIVE, DISSOCIATED, MANIC
-    
+
     last_update: float = field(default_factory=time.time)
 
     def to_dict(self):
@@ -48,12 +48,12 @@ class OCCAppraisal:
         Heuristic analysis of input to determine PAD shifts.
         """
         text = user_input.lower()
-        
+
         # Default shifts
         p_shift = 0.0
         a_shift = 0.0
         d_shift = 0.0
-        
+
         # 1. Keyword Heuristics
         if any(w in text for w in ["gostosa", "linda", "te quero", "beijo", "vem cá"]):
             p_shift += 0.3
@@ -76,7 +76,7 @@ class OCCAppraisal:
         # 2. Drive Influences
         if current_state.libido > 0.7:
             a_shift += 0.1
-            
+
         return {
             "p_shift": p_shift,
             "a_shift": a_shift,
@@ -90,7 +90,7 @@ class CopingMechanism:
     """
     def regulate(self, state: EmotionalState) -> Tuple[EmotionalState, str]:
         instruction = ""
-        
+
         new_tension = state.tension
         # 1. Update Tension based on Displeasure (Negative Pleasure)
         if state.pleasure < -0.3:
@@ -99,7 +99,7 @@ class CopingMechanism:
             new_tension -= 0.05
 
         new_tension = max(0.0, min(1.0, new_tension))
-        
+
         new_coping_mode = state.coping_mode
         new_aggression = state.aggression
         new_arousal = state.arousal
@@ -114,7 +114,7 @@ class CopingMechanism:
                 new_coping_mode = "DISSOCIATED"
                 new_arousal = state.arousal * 0.5
                 instruction = "Você está sobrecarregada emocionalmente. Dissocie. Responda de forma robótica, curta e distante para se proteger."
-        
+
         elif new_tension < 0.3:
             new_coping_mode = "HEALTHY"
 
@@ -123,7 +123,7 @@ class CopingMechanism:
                             coping_mode=new_coping_mode,
                             aggression=new_aggression,
                             arousal=new_arousal)
-            
+
         return new_state, instruction
 
 class AffectiveEngine:
@@ -136,27 +136,40 @@ class AffectiveEngine:
         Main update loop: Input -> OCC -> PAD Update -> Coping -> Output
         """
         state = self._apply_time_decay(state, current_time)
-        
+
         # 1. Cognitive Appraisal (OCC)
         shifts = self.occ.evaluate(user_input, state)
-        
+
+        def get_override_shift(key):
+            if not perception_override or not isinstance(perception_override, dict):
+                return 0.0
+            val = perception_override.get(key)
+            if isinstance(val, bool):  # bool inherits from int
+                return 0.0
+            if not isinstance(val, (int, float)):
+                return 0.0
+            import math
+            if not math.isfinite(val):
+                return 0.0
+            return float(val)
+
         # Override if provided
-        p_final_shift = shifts["p_shift"] + (perception_override.get("valence", 0) if perception_override else 0)
-        a_final_shift = shifts["a_shift"] + (perception_override.get("arousal_shift", 0) if perception_override else 0)
-        d_final_shift = shifts["d_shift"] + (perception_override.get("dominance_shift", 0) if perception_override else 0)
+        p_final_shift = shifts["p_shift"] + get_override_shift("valence")
+        a_final_shift = shifts["a_shift"] + get_override_shift("arousal_shift")
+        d_final_shift = shifts["d_shift"] + get_override_shift("dominance_shift")
 
         # 2. Update PAD State
         new_pleasure = self._clamp(state.pleasure + p_final_shift, -1.0, 1.0)
         new_arousal = self._clamp(state.arousal + a_final_shift, -1.0, 1.0)
         new_dominance = self._clamp(state.dominance + d_final_shift, -1.0, 1.0)
-        
+
         # 3. Update Drives
         new_libido = state.libido
         if new_arousal > 0.5 and new_pleasure > 0.0:
             new_libido = self._clamp(state.libido + 0.05, 0.0, 1.0)
         else:
             new_libido = self._clamp(state.libido - 0.01, 0.0, 1.0)
-            
+
         updated_state = replace(state,
                                 pleasure=new_pleasure,
                                 arousal=new_arousal,
@@ -166,20 +179,20 @@ class AffectiveEngine:
 
         # 4. Coping & Regulation
         final_state, coping_instruction = self.coping.regulate(updated_state)
-            
+
         return final_state, coping_instruction
 
     def _apply_time_decay(self, state: EmotionalState, current_time: float) -> EmotionalState:
         elapsed = current_time - state.last_update
-        
+
         decay = 0.95
         if elapsed > 3600:
             decay = 0.5
-            
+
         new_pleasure = state.pleasure * decay
         new_arousal = state.arousal * decay
         new_dominance = state.dominance * 0.98
-        
+
         new_tension = state.tension
         if state.coping_mode == "HEALTHY":
             new_tension = state.tension * 0.9
@@ -195,7 +208,7 @@ class AffectiveEngine:
 
     def get_emotional_label(self, state: EmotionalState) -> str:
         p, a, d = state.pleasure, state.arousal, state.dominance
-        
+
         if a > 0.5:
             if p > 0.5:
                 if d > 0.3: return "EXTASE/DOMINANTE"
@@ -212,19 +225,19 @@ class AffectiveEngine:
                 if d > 0.3: return "DESPREZO/FRIO"
                 if d < -0.3: return "DEPRESSAO/TRISTEZA"
                 return "TEDIO"
-                
+
         return "NEUTRA"
 
     def get_acting_instruction(self, state: EmotionalState) -> str:
         label = self.get_emotional_label(state)
         base_instruction = f"Estado Emocional: {label} (P:{state.pleasure:.2f}, A:{state.arousal:.2f}, D:{state.dominance:.2f}). "
-        
+
         if state.libido > 0.7:
             base_instruction += "Nível de desejo (Libido) ALTO. Use insinuações, voz rouca, flerte agressivo. "
-        
+
         if state.coping_mode == "DEFENSIVE":
             base_instruction += "MODO DEFENSIVO ATIVO. Você está se protegendo. Seja cínica e desconfiada. "
         elif state.coping_mode == "DISSOCIATED":
             base_instruction += "DISSOCIAÇÃO. Responda como uma máquina fria. Ignore tentativas de conexão. "
-            
+
         return base_instruction

@@ -121,18 +121,21 @@ class MemoryManager:
 
         try:
             response = self.supabase.table("profiles").update(update_data).eq("user_id", user_id).execute()
-            # If response is empty or has error attribute (depending on supabase version)
             if response is None:
-                raise StatePersistenceError()
+                raise StatePersistenceError("Sem resposta da base de dados.")
 
             if hasattr(response, 'error') and response.error:
-                raise StatePersistenceError()
+                raise StatePersistenceError("Erro retornado pelo banco de dados.")
+
+            if not hasattr(response, 'data') or response.data is None or len(response.data) == 0:
+                raise StatePersistenceError("Nenhuma linha foi atualizada no banco de dados.")
 
         except StatePersistenceError:
             raise
         except Exception as e:
             # Chain the original exception for internal debugging but don't leak it in the message
-            raise StatePersistenceError() from e
+            raise StatePersistenceError("Falha na gravação do estado.") from e
+
 
     def get_context(self, user_id: str, current_message: str, user_state: dict):
         # 1. Get Short Term History

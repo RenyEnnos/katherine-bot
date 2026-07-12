@@ -283,5 +283,24 @@ def test_read_non_existent_profile_creates_default():
     assert state["emotional_state"]["pleasure"] == 0.0
     assert state["relationship_state"]["user_id"] == "user-A"
 
+def test_zero_rows_updated_raises_statepersistenceerror():
+    from backend.memory import MemoryManager, StatePersistenceError
+    from unittest.mock import MagicMock
+    import pytest
+    mgr = MemoryManager()
+    mgr.supabase = MagicMock()
+    
+    # Mock update return with empty data list (data=[])
+    mock_response = MagicMock()
+    mock_response.data = []
+    mock_response.error = None
+    mgr.supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = mock_response
+    
+    from backend.emotional_core import EmotionalState
+    from backend.relationship import UserRelationship
+    with pytest.raises(StatePersistenceError):
+        mgr.sync_state("user-123", EmotionalState(), UserRelationship(user_id="user-123"))
+
+
 
 

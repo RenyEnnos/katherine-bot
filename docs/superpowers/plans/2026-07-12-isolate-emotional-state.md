@@ -81,14 +81,14 @@
   Add these to `backend/tests/test_isolation.py`:
   ```python
   from backend.memory import StateLoadError
-  
+
   def test_read_failure_raises_stateloaderror():
       from backend.memory import MemoryManager
       from unittest.mock import MagicMock
       mgr = MemoryManager()
       mgr.supabase = MagicMock()
       mgr.supabase.table.return_value.select.return_value.eq.return_value.execute.side_effect = Exception("SECRET_TOKEN")
-      
+
       with pytest.raises(StateLoadError) as exc_info:
           mgr.load_user_state("user-123")
       assert "SECRET_TOKEN" not in str(exc_info.value)
@@ -115,10 +115,10 @@
               response = self.supabase.table("profiles").select("*").eq("user_id", user_id).execute()
           except Exception as e:
               raise StateLoadError("Erro ao recuperar perfil do banco de dados.") from e
-  
+
           if response is None or not hasattr(response, "data") or response.data is None:
               raise StateLoadError("Resposta inválida do serviço de persistência.")
-  
+
           if len(response.data) == 0:
               default_state = self._get_default_state(user_id)
               try:
@@ -131,11 +131,11 @@
                   }).execute()
               except Exception as e:
                   raise StateLoadError("Falha ao inicializar perfil padrão.") from e
-  
+
               if insert_resp is None or not hasattr(insert_resp, "data") or not insert_resp.data:
                   raise StateLoadError("Falha ao salvar perfil padrão criado.")
               return default_state
-  
+
           try:
               data = response.data[0]
               return {
@@ -172,13 +172,13 @@
       from unittest.mock import MagicMock
       mgr = MemoryManager()
       mgr.supabase = MagicMock()
-      
+
       # Mock update return with empty data list (data=[])
       mock_response = MagicMock()
       mock_response.data = []
       mock_response.error = None
       mgr.supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = mock_response
-      
+
       from backend.emotional_core import EmotionalState
       from backend.relationship import UserRelationship
       with pytest.raises(StatePersistenceError):
@@ -193,7 +193,7 @@
       def sync_state(self, user_id: str, emotional_state: EmotionalState, relationship: UserRelationship, user_profile: dict = None):
           if not self.supabase:
               raise StatePersistenceError("Serviço de persistência não configurado.")
-  
+
           update_data = {
               "emotional_state": emotional_state.to_dict(),
               "relationship_state": relationship.to_dict(),
@@ -201,7 +201,7 @@
           }
           if user_profile:
               update_data["user_profile"] = user_profile
-  
+
           try:
               response = self.supabase.table("profiles").update(update_data).eq("user_id", user_id).execute()
               if response is None:
@@ -238,18 +238,18 @@
   def test_normalize_perception():
       from backend.engine import _normalize_perception
       import math
-      
+
       # None payload
       res = _normalize_perception(None)
       assert res["valence"] == 0.0
       assert res["triggered_emotions"]["joy"] == 0.0
-      
+
       # Malformed valence types (bool, string, nan, inf)
       res = _normalize_perception({"valence": True, "arousal_shift": "invalid", "dominance_shift": float('nan')})
       assert res["valence"] == 0.0
       assert res["arousal_shift"] == 0.0
       assert res["dominance_shift"] == 0.0
-      
+
       # Out of bounds
       res = _normalize_perception({"valence": 2.5, "triggered_emotions": {"joy": -0.5, "sadness": 1.5}})
       assert res["valence"] == 1.0
@@ -263,24 +263,24 @@
   Add to `backend/engine.py` as a standalone helper or module-level function:
   ```python
   import math
-  
+
   def _normalize_perception(payload) -> dict:
       emotions_list = ["joy", "sadness", "anger", "fear", "disgust", "surprise", "tenderness", "guilt", "pride", "jealousy", "gratitude"]
       default_emotions = {emo: 0.0 for emo in emotions_list}
-      
+
       default_res = {
           "valence": 0.0,
           "arousal_shift": 0.0,
           "dominance_shift": 0.0,
           "triggered_emotions": default_emotions
       }
-      
+
       if not isinstance(payload, dict):
           return default_res
-          
+
       res = default_res.copy()
       res["triggered_emotions"] = default_emotions.copy()
-      
+
       def clean_shift(val):
           if isinstance(val, bool): # bool inherits from int
               return 0.0
@@ -289,11 +289,11 @@
           if not math.isfinite(val):
               return 0.0
           return max(-1.0, min(1.0, float(val)))
-          
+
       res["valence"] = clean_shift(payload.get("valence"))
       res["arousal_shift"] = clean_shift(payload.get("arousal_shift"))
       res["dominance_shift"] = clean_shift(payload.get("dominance_shift"))
-      
+
       raw_emotions = payload.get("triggered_emotions")
       if isinstance(raw_emotions, dict):
           for emo in emotions_list:
@@ -305,7 +305,7 @@
               else:
                   clean_val = 0.0
               res["triggered_emotions"][emo] = clean_val
-              
+
       return res
   ```
   And update `backend/engine.py` line 40:
@@ -338,11 +338,11 @@
       from backend.emotional_core import AffectiveEngine, EmotionalState
       engine = AffectiveEngine()
       state = EmotionalState()
-      
+
       # Call update_state with unsafe override shifts (None, bool, NaN)
       override = {"valence": None, "arousal_shift": True, "dominance_shift": float('inf')}
       new_state, _ = engine.update_state(state, "Hello", time.time(), perception_override=override)
-      
+
       assert isinstance(new_state.pleasure, float)
       assert new_state.pleasure == 0.0
       assert new_state.arousal == 0.0
@@ -357,7 +357,7 @@
       def update_state(self, state: EmotionalState, user_input: str, current_time: float, perception_override: Optional[Dict] = None) -> Tuple[EmotionalState, str]:
           state = self._apply_time_decay(state, current_time)
           shifts = self.occ.evaluate(user_input, state)
-          
+
           def get_override_shift(key):
               if not perception_override:
                   return 0.0
@@ -370,7 +370,7 @@
               if not math.isfinite(val):
                   return 0.0
               return float(val)
-  
+
           p_final_shift = shifts["p_shift"] + get_override_shift("valence")
           a_final_shift = shifts["a_shift"] + get_override_shift("arousal_shift")
           d_final_shift = shifts["d_shift"] + get_override_shift("dominance_shift")
@@ -401,42 +401,42 @@
           import asyncio
           mgr = UserLockManager()
           user_id = "test_cancel_user"
-          
+
           task1_entered = asyncio.Event()
           task2_started = asyncio.Event()
-          
+
           async def t1():
               async with mgr.lock(user_id):
                   task1_entered.set()
                   await asyncio.sleep(5)
-                  
+
           async def t2():
               task2_started.set()
               async with mgr.lock(user_id):
                   pass
-                  
+
           task1 = asyncio.create_task(t1())
           await task1_entered.wait()
-          
+
           task2 = asyncio.create_task(t2())
           await task2_started.wait()
           await asyncio.sleep(0.1) # Let task2 wait on user_lock
-          
+
           task2.cancel()
           try:
               await task2
           except asyncio.CancelledError:
               pass
-              
+
           task1.cancel()
           try:
               await task1
           except asyncio.CancelledError:
               pass
-              
+
           async with mgr._dict_lock:
               assert user_id not in mgr._locks
-  
+
       asyncio.run(run_test())
   ```
 - [ ] **Step 2: Run test to verify it fails**
@@ -456,7 +456,7 @@
                   self._locks[user_id][1] += 1
                   user_lock = self._locks[user_id][0]
                   registered = True
-  
+
               async with user_lock:
                   yield
           finally:

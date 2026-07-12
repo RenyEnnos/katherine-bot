@@ -322,6 +322,21 @@ def test_normalize_perception():
     assert res["triggered_emotions"]["sadness"] == 1.0
     assert "invalid_emotion" not in res["triggered_emotions"]
 
+def test_affective_engine_defensiveness():
+    from backend.emotional_core import AffectiveEngine, EmotionalState
+    engine = AffectiveEngine()
+    state = EmotionalState()
+    
+    # Call update_state with unsafe override shifts (None, bool, NaN)
+    override = {"valence": None, "arousal_shift": True, "dominance_shift": float('inf')}
+    new_state, _ = engine.update_state(state, "Hello", 1000.0, perception_override=override)
+    
+    assert isinstance(new_state.pleasure, float)
+    assert new_state.pleasure == 0.0
+    assert new_state.arousal == 0.0
+    assert new_state.dominance == 0.0
+
+
 
 
 

@@ -140,24 +140,10 @@ class AffectiveEngine:
         # 1. Cognitive Appraisal (OCC)
         shifts = self.occ.evaluate(user_input, state)
         
-        def get_override_shift(key):
-            if not perception_override:
-                return 0.0
-            val = perception_override.get(key)
-            if isinstance(val, bool):  # bool inherits from int
-                return 0.0
-            if not isinstance(val, (int, float)):
-                return 0.0
-            import math
-            if not math.isfinite(val):
-                return 0.0
-            return float(val)
-
         # Override if provided
-        p_final_shift = shifts["p_shift"] + get_override_shift("valence")
-        a_final_shift = shifts["a_shift"] + get_override_shift("arousal_shift")
-        d_final_shift = shifts["d_shift"] + get_override_shift("dominance_shift")
-
+        p_final_shift = shifts["p_shift"] + (perception_override.get("valence", 0) if perception_override else 0)
+        a_final_shift = shifts["a_shift"] + (perception_override.get("arousal_shift", 0) if perception_override else 0)
+        d_final_shift = shifts["d_shift"] + (perception_override.get("dominance_shift", 0) if perception_override else 0)
 
         # 2. Update PAD State
         new_pleasure = self._clamp(state.pleasure + p_final_shift, -1.0, 1.0)

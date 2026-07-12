@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, UTC
 from supabase import create_client, Client
 from sentence_transformers import SentenceTransformer
 from .groq_manager import GroqClientManager
@@ -52,37 +52,38 @@ class MemoryManager:
         """
         Loads the full user state from Supabase 'profiles' table.
         If not found, creates a default profile.
+        Raises StateLoadError on transient database failures.
         """
         if not self.supabase:
-            raise StateLoadError("Serviço de persistência indisponível.")
+            return self._get_default_state(user_id)
 
         try:
             response = self.supabase.table("profiles").select("*").eq("user_id", user_id).execute()
-        except Exception as e:
-            raise StateLoadError("Erro ao recuperar perfil do banco de dados.") from e
 
-        if response is None or not hasattr(response, "data") or response.data is None:
-            raise StateLoadError("Resposta inválida do serviço de persistência.")
+            # Check for error in response if client supports it
+            if hasattr(response, 'error') and response.error:
+                raise StateLoadError()
 
-        if len(response.data) == 0:
-            # Create default profile
-            default_state = self._get_default_state(user_id)
-            try:
-                insert_resp = self.supabase.table("profiles").insert({
-                    "user_id": user_id,
-                    "persona_config": default_state["persona_config"],
-                    "user_profile": default_state["user_profile"],
-                    "relationship_state": default_state["relationship_state"],
-                    "emotional_state": default_state["emotional_state"]
-                }).execute()
-            except Exception as e:
-                raise StateLoadError("Falha ao inicializar perfil padrão.") from e
+            if not response.data:
+                # Create default profile
+                default_state = self._get_default_state(user_id)
+                try:
+                    insert_response = self.supabase.table("profiles").insert({
+                        "user_id": user_id,
+                        "persona_config": default_state["persona_config"],
+                        "user_profile": default_state["user_profile"],
+                        "relationship_state": default_state["relationship_state"],
+                        "emotional_state": default_state["emotional_state"]
+                    }).execute()
 
-            if insert_resp is None or not hasattr(insert_resp, "data") or not insert_resp.data:
-                raise StateLoadError("Falha ao salvar perfil padrão criado.")
-            return default_state
+                    if hasattr(insert_response, 'error') and insert_response.error:
+                        raise StateLoadError()
+                except StateLoadError:
+                    raise
+                except Exception as e:
+                    raise StateLoadError() from e
+                return default_state
 
-        try:
             data = response.data[0]
             return {
                 "persona_config": data.get("persona_config"),
@@ -90,8 +91,10 @@ class MemoryManager:
                 "relationship_state": data.get("relationship_state") or {},
                 "emotional_state": data.get("emotional_state") or {}
             }
+        except StateLoadError:
+            raise
         except Exception as e:
-            raise StateLoadError("Erro ao processar dados de perfil.") from e
+            raise StateLoadError() from e
 
     def _get_default_state(self, user_id: str):
         return {
@@ -100,7 +103,6 @@ class MemoryManager:
             "relationship_state": UserRelationship(user_id=user_id).to_dict(),
             "emotional_state": EmotionalState().to_dict()
         }
-
 
     def sync_state(self, user_id: str, emotional_state: EmotionalState, relationship: UserRelationship, user_profile: dict = None):
         """
@@ -113,7 +115,7 @@ class MemoryManager:
         update_data = {
             "emotional_state": emotional_state.to_dict(),
             "relationship_state": relationship.to_dict(),
-            "updated_at": datetime.utcnow().isoformat()
+            "updated_at": datetime.now(UTC).isoformat()
         }
         
         if user_profile:
@@ -121,21 +123,21 @@ class MemoryManager:
 
         try:
             response = self.supabase.table("profiles").update(update_data).eq("user_id", user_id).execute()
+
             if response is None:
-                raise StatePersistenceError("Sem resposta da base de dados.")
+                raise StatePersistenceError()
 
             if hasattr(response, 'error') and response.error:
-                raise StatePersistenceError("Erro retornado pelo banco de dados.")
+                raise StatePersistenceError()
 
-            if not hasattr(response, 'data') or response.data is None or len(response.data) == 0:
-                raise StatePersistenceError("Nenhuma linha foi atualizada no banco de dados.")
+            # Check for zero updated rows (response.data is empty list)
+            if not response.data:
+                raise StatePersistenceError()
 
         except StatePersistenceError:
             raise
         except Exception as e:
-            # Chain the original exception for internal debugging but don't leak it in the message
-            raise StatePersistenceError("Falha na gravação do estado.") from e
-
+            raise StatePersistenceError() from e
 
     def get_context(self, user_id: str, current_message: str, user_state: dict):
         # 1. Get Short Term History

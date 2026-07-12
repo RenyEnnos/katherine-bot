@@ -1,6 +1,8 @@
 import json
 import asyncio
 import time
+import math
+from typing import Dict, Any
 from .groq_manager import GroqClientManager
 from .emotional_core import AffectiveEngine, EmotionalState
 from .memory import MemoryManager
@@ -22,30 +24,27 @@ class ConversationEngine:
             current_time = time.time()
 
             # 1. Load State from Supabase (Offloaded to thread)
+            # Raises StateLoadError on DB failure
             user_state = await asyncio.to_thread(self.memory_manager.load_user_state, user_id)
 
             # Hydrate Emotional State
             emotional_state = EmotionalState.from_dict(user_state.get("emotional_state", {}))
 
-            # Hydrate Relationship State
-            if user_state.get("relationship_state"):
-                relationship = UserRelationship.from_dict(user_state["relationship_state"], user_id=user_id)
+            # Hydrate Relationship State - Enforce authenticated user_id
+            rel_data = user_state.get("relationship_state")
+            if rel_data:
+                relationship = UserRelationship.from_dict(rel_data, expected_user_id=user_id)
             else:
-
                 relationship = UserRelationship(user_id=user_id)
 
-            # 2. Perception & Memory Retrieval (Context retrieval offloaded to thread)
+            # 2. Perception & Memory Retrieval
             context = await asyncio.to_thread(self.memory_manager.get_context, user_id, user_message, user_state)
 
-            # 3. Analyze Intent & Sentiment (LLM Perception - offloaded to thread)
-            try:
-                raw_perception = await asyncio.to_thread(self._perceive, user_message)
-            except Exception:
-                raw_perception = None
-            perception = _normalize_perception(raw_perception)
+            # 3. Analyze Intent & Sentiment (LLM Perception)
+            raw_perception = await asyncio.to_thread(self._perceive, user_message)
+            perception = self._normalize_perception(raw_perception)
 
             # 4. Update Emotional State & Relationship (Local computations)
-
             new_state, coping_instruction = self.affective_engine.update_state(
                 emotional_state,
                 user_message,
@@ -76,13 +75,13 @@ class ConversationEngine:
                 response_text = "*suspiro cansado* Sinto que minha mente está um pouco nublada agora... Podemos tentar de novo em alguns segundos?"
 
             # 7. Post-processing & Storage (Offloaded to thread)
-            # save_turn is non-critical for current state, but sync_state is CRITICAL.
             if background_tasks:
                 background_tasks.add_task(self.memory_manager.save_turn, user_id, user_message, response_text)
             else:
                 await asyncio.to_thread(self.memory_manager.save_turn, user_id, user_message, response_text)
 
             # CRITICAL: sync_state MUST complete before releasing lock.
+            # Raises StatePersistenceError on failure.
             await asyncio.to_thread(self.memory_manager.sync_state, user_id, new_state, relationship)
 
             return response_text, new_state.to_dict()
@@ -110,7 +109,53 @@ class ConversationEngine:
             )
             return json.loads(completion.choices[0].message.content)
         except Exception:
-            return {"valence": 0, "arousal_shift": 0, "dominance_shift": 0, "triggered_emotions": {}}
+            return {}
+
+    def _normalize_perception(self, raw: Any) -> Dict[str, Any]:
+        """
+        Normalizes and sanitizes LLM perception output.
+        Fails closed to neutral defaults for malformed input.
+        """
+        default = {
+            "valence": 0.0,
+            "arousal_shift": 0.0,
+            "dominance_shift": 0.0,
+            "triggered_emotions": {}
+        }
+
+        if not isinstance(raw, dict):
+            return default
+
+        def clean_num(val, min_v, max_v, default_v=0.0):
+            if isinstance(val, bool): # bool is subclass of int/float but not desired here
+                return default_v
+            if not isinstance(val, (int, float)):
+                return default_v
+            if not math.isfinite(val):
+                return default_v
+            return max(min_v, min(float(val), max_v))
+
+        normalized = {
+            "valence": clean_num(raw.get("valence"), -1.0, 1.0),
+            "arousal_shift": clean_num(raw.get("arousal_shift"), -1.0, 1.0),
+            "dominance_shift": clean_num(raw.get("dominance_shift"), -1.0, 1.0),
+            "triggered_emotions": {}
+        }
+
+        allowed_emotions = {
+            "joy", "sadness", "anger", "fear", "disgust", "surprise",
+            "tenderness", "guilt", "pride", "jealousy", "gratitude"
+        }
+
+        raw_emotions = raw.get("triggered_emotions")
+        if isinstance(raw_emotions, dict):
+            for emo in allowed_emotions:
+                if emo in raw_emotions:
+                    val = clean_num(raw_emotions[emo], 0.0, 1.0)
+                    if val != 0.0:
+                        normalized["triggered_emotions"][emo] = val
+
+        return normalized
 
     def _build_system_prompt(self, emotion_state, context, relationship, adaptation_strategy="", coping_instruction=""):
         acting_instruction = self.affective_engine.get_acting_instruction(emotion_state)
@@ -154,57 +199,3 @@ class ConversationEngine:
         11. LEVE EM CONTA O RELACIONAMENTO: Se a Tensão for alta, seja distante ou defensiva. Se o Afeto for alto, seja mais calorosa e vulnerável.
         """
         return prompt
-
-
-
-
-def _normalize_perception(payload) -> dict:
-    import math
-    emotions_list = [
-        "joy", "sadness", "anger", "fear", "disgust", "surprise",
-        "tenderness", "guilt", "pride", "jealousy", "gratitude"
-    ]
-    default_emotions = {emo: 0.0 for emo in emotions_list}
-    normalized = {
-        "valence": 0.0,
-        "arousal_shift": 0.0,
-        "dominance_shift": 0.0,
-        "triggered_emotions": default_emotions
-    }
-
-    if not isinstance(payload, dict):
-        return normalized
-
-    normalized = {
-        "valence": 0.0,
-        "arousal_shift": 0.0,
-        "dominance_shift": 0.0,
-        "triggered_emotions": default_emotions.copy()
-    }
-
-    def clean_shift(val):
-        if isinstance(val, bool):  # bool inherits from int
-            return 0.0
-        if not isinstance(val, (int, float)):
-            return 0.0
-        if not math.isfinite(val):
-            return 0.0
-        return max(-1.0, min(1.0, float(val)))
-
-    normalized["valence"] = clean_shift(payload.get("valence"))
-    normalized["arousal_shift"] = clean_shift(payload.get("arousal_shift"))
-    normalized["dominance_shift"] = clean_shift(payload.get("dominance_shift"))
-
-    raw_emotions = payload.get("triggered_emotions")
-    if isinstance(raw_emotions, dict):
-        for emo in emotions_list:
-            val = raw_emotions.get(emo)
-            if isinstance(val, bool):
-                clean_val = 0.0
-            elif isinstance(val, (int, float)) and math.isfinite(val):
-                clean_val = max(0.0, min(1.0, float(val)))
-            else:
-                clean_val = 0.0
-            normalized["triggered_emotions"][emo] = clean_val
-
-    return normalized

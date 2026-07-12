@@ -13,23 +13,22 @@ class UserLockManager:
 
     @asynccontextmanager
     async def lock(self, user_id: str):
-        registered = False
-        user_lock = None
+        incremented = False
         try:
-            # 1. Get or create lock and increment reference count inside protected region
+            # 1. Get or create lock and increment reference count
             async with self._dict_lock:
                 if user_id not in self._locks:
                     self._locks[user_id] = [asyncio.Lock(), 0]
                 self._locks[user_id][1] += 1
                 user_lock = self._locks[user_id][0]
-                registered = True
+                incremented = True
 
             # 2. Wait for the user-specific lock
             async with user_lock:
                 yield
         finally:
-            # 3. Decrement reference count and cleanup if registered
-            if registered:
+            # 3. Decrement reference count and cleanup if zero
+            if incremented:
                 async with self._dict_lock:
                     if user_id in self._locks:
                         self._locks[user_id][1] -= 1

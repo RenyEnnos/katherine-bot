@@ -19,7 +19,8 @@ class UserRelationship:
         return self.__dict__
 
     @staticmethod
-    def from_dict(data: Dict, user_id: str):
+    def from_dict(data: Dict, expected_user_id: str = None):
+        user_id = expected_user_id or data["user_id"]
         rel = UserRelationship(user_id=user_id)
         rel.trust = data.get("trust", 0.5)
         rel.affection = data.get("affection", 0.3)
@@ -28,7 +29,6 @@ class UserRelationship:
         rel.triggers = data.get("triggers", [])
         rel.last_interaction = data.get("last_interaction", time.time())
         return rel
-
 
 class RelationshipManager:
     def __init__(self):

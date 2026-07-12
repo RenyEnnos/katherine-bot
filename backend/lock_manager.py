@@ -13,25 +13,26 @@ class UserLockManager:
 
     @asynccontextmanager
     async def lock(self, user_id: str):
-        # 1. Get or create lock and increment reference count
-        async with self._dict_lock:
-            if user_id not in self._locks:
-                self._locks[user_id] = [asyncio.Lock(), 0]
-            self._locks[user_id][1] += 1
-            user_lock = self._locks[user_id][0]
-
+        registered = False
+        user_lock = None
         try:
+            # 1. Get or create lock and increment reference count inside protected region
+            async with self._dict_lock:
+                if user_id not in self._locks:
+                    self._locks[user_id] = [asyncio.Lock(), 0]
+                self._locks[user_id][1] += 1
+                user_lock = self._locks[user_id][0]
+                registered = True
+
             # 2. Wait for the user-specific lock
-            # We use a try-finally block here specifically to handle
-            # cancellations and errors during 'yield'
             async with user_lock:
                 yield
         finally:
-            # 3. Decrement reference count and cleanup if zero
-            # This 'finally' block is critical: it runs even if 'yield'
-            # was cancelled or raised an exception.
-            async with self._dict_lock:
-                if user_id in self._locks:
-                    self._locks[user_id][1] -= 1
-                    if self._locks[user_id][1] <= 0:
-                        del self._locks[user_id]
+            # 3. Decrement reference count and cleanup if registered
+            if registered:
+                async with self._dict_lock:
+                    if user_id in self._locks:
+                        self._locks[user_id][1] -= 1
+                        if self._locks[user_id][1] <= 0:
+                            del self._locks[user_id]
+

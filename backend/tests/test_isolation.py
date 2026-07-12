@@ -336,6 +336,51 @@ def test_affective_engine_defensiveness():
     assert new_state.arousal == 0.0
     assert new_state.dominance == 0.0
 
+def test_lock_cleanup_on_cancellation_during_wait():
+    async def run_test():
+        from backend.lock_manager import UserLockManager
+        import asyncio
+        mgr = UserLockManager()
+        user_id = "test_cancel_user"
+        
+        task1_entered = asyncio.Event()
+        task2_started = asyncio.Event()
+        
+        async def t1():
+            async with mgr.lock(user_id):
+                task1_entered.set()
+                await asyncio.sleep(5)
+                
+        async def t2():
+            task2_started.set()
+            async with mgr.lock(user_id):
+                pass
+                
+        task1 = asyncio.create_task(t1())
+        await task1_entered.wait()
+        
+        task2 = asyncio.create_task(t2())
+        await task2_started.wait()
+        await asyncio.sleep(0.1) # Let task2 wait on user_lock
+        
+        task2.cancel()
+        try:
+            await task2
+        except asyncio.CancelledError:
+            pass
+            
+        task1.cancel()
+        try:
+            await task1
+        except asyncio.CancelledError:
+            pass
+            
+        async with mgr._dict_lock:
+            assert user_id not in mgr._locks
+
+    asyncio.run(run_test())
+
+
 
 
 

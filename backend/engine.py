@@ -33,7 +33,7 @@ class ConversationEngine:
             # Hydrate Relationship State - Enforce authenticated user_id
             rel_data = user_state.get("relationship_state")
             if rel_data:
-                relationship = UserRelationship.from_dict(rel_data, expected_user_id=user_id)
+                relationship = UserRelationship.from_dict(rel_data, user_id=user_id)
             else:
                 relationship = UserRelationship(user_id=user_id)
 
@@ -91,11 +91,18 @@ class ConversationEngine:
             try:
                 return await asyncio.shield(task)
             except asyncio.CancelledError:
-                # Wait for the background worker thread to finish completely before releasing the lock
-                try:
-                    await task
-                except Exception:
-                    pass
+                # If we get CancelledError, the caller cancelled process_turn.
+                # We must wait for task to complete, shielding it even against subsequent cancellations.
+                while not task.done():
+                    try:
+                        # Shield the task again to prevent cancellations from stopping this await
+                        await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        # A second/subsequent cancel arrived. Consume it, but keep waiting until task is done.
+                        pass
+                    except Exception:
+                        # Other exceptions from the task are caught and ignored here because we want to propagate CancelledError
+                        break
                 raise
 
 

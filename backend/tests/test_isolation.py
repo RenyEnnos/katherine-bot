@@ -365,3 +365,82 @@ def test_lock_cleanup_on_cancellation_during_waiting():
             assert user_id not in engine.lock_manager._locks
 
     asyncio.run(run_test())
+
+def test_lock_cleanup_on_repeated_cancellation_during_thread_work():
+    async def run_test():
+        engine = ConversationEngine()
+        user_id = "repeated_cancel_user"
+
+        import threading
+        load_reached = threading.Event()
+        load_release = threading.Event()
+        load_finished = False
+
+        def mock_load(uid):
+            load_reached.set()
+            load_release.wait(timeout=2)
+            nonlocal load_finished
+            load_finished = True
+            return {
+                "emotional_state": EmotionalState().to_dict(),
+                "relationship_state": UserRelationship(user_id=uid).to_dict()
+            }
+
+        engine.memory_manager.load_user_state = MagicMock(side_effect=mock_load)
+        engine.memory_manager.sync_state = MagicMock()
+        engine.memory_manager.save_turn = MagicMock()
+        engine._perceive = MagicMock(return_value={"valence": 0.0})
+        m = MagicMock(); m.choices = [MagicMock()]; m.choices[0].message.content = "Hi"
+        engine.groq_manager.chat_completion = MagicMock(return_value=m)
+
+        # 1. Start request 1 (task1)
+        task1 = asyncio.create_task(engine.process_turn(user_id, "Msg 1"))
+
+        # Wait for task1 to reach mock_load in the worker thread
+        for _ in range(40):
+            if load_reached.is_set():
+                break
+            await asyncio.sleep(0.05)
+        assert load_reached.is_set()
+
+        # 2. Start request 2 (task2) for the same user
+        task2_started = False
+        task2_done = False
+        async def run_task2():
+            nonlocal task2_started, task2_done
+            task2_started = True
+            await engine.process_turn(user_id, "Msg 2")
+            task2_done = True
+
+        task2 = asyncio.create_task(run_task2())
+        await asyncio.sleep(0.1) # Let task2 queue up/block on lock
+
+        # 3. Call cancel() twice on task1 while the thread is blocked
+        task1.cancel()
+        await asyncio.sleep(0.05)
+        task1.cancel()
+        await asyncio.sleep(0.05)
+
+        # 4. Prove that neither task1 nor task2 advance before release
+        assert not task1.done()
+        assert not task2_done
+
+        # 5. Release the thread block
+        load_release.set()
+
+        # Now task1 should complete and propagate CancelledError
+        try:
+            await task1
+        except asyncio.CancelledError:
+            pass
+
+        # Task 2 can now acquire the lock and finish
+        await task2
+        assert task2_done
+        assert load_finished
+
+        # Lock entry is cleaned up
+        async with engine.lock_manager._dict_lock:
+            assert user_id not in engine.lock_manager._locks
+
+    asyncio.run(run_test())

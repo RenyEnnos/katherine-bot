@@ -19,8 +19,7 @@ class UserRelationship:
         return self.__dict__
 
     @staticmethod
-    def from_dict(data: Dict, expected_user_id: str = None):
-        user_id = expected_user_id or data["user_id"]
+    def from_dict(data: Dict, user_id: str):
         rel = UserRelationship(user_id=user_id)
         rel.trust = data.get("trust", 0.5)
         rel.affection = data.get("affection", 0.3)

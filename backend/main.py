@@ -77,9 +77,13 @@ async def chat_endpoint(
 ):
     try:
         user_id = current_user.id
+        # Note: background_tasks is still passed for non-critical logging/extraction tasks
+        # but critical state persistence is now synchronous inside process_turn.
         response_text, current_emotion = await engine.process_turn(user_id, input_data.message, background_tasks)
         return ChatResponse(response=response_text, emotion_state=current_emotion)
     except Exception:
+        # Sanitize logging: avoid logging raw exceptions that might contain secrets or tracebacks
+        logger.error("Event: Chat Turn Failure")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.get("/health")

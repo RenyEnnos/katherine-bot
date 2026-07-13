@@ -3,7 +3,7 @@ import threading
 import time
 import pytest
 import httpx
-from groq import RateLimitError, APIStatusError, AuthenticationError
+from groq import RateLimitError, APIStatusError, AuthenticationError, APIConnectionError
 from backend.groq_manager import (
     GroqClientManager,
     GroqConfigurationError,
@@ -125,16 +125,15 @@ def test_concurrent_deactivation(caplog):
 
 # 5. Slow call does not block other threads
 def test_slow_client_does_not_hold_lock():
-    start_barrier = threading.Barrier(2)
+    slow_entered_event = threading.Event()
     slow_done_event = threading.Event()
     
     def slow_create(*args, **kwargs):
-        start_barrier.wait()
+        slow_entered_event.set()
         slow_done_event.wait(timeout=5.0)
         return MockCompletion("slow")
         
     def fast_create(*args, **kwargs):
-        start_barrier.wait()
         return MockCompletion("fast")
         
     def make_client(key):
@@ -149,15 +148,22 @@ def test_slow_client_does_not_hold_lock():
     
     results = {}
     
-    def run_thread(name):
+    def run_thread_1():
         res = manager.chat_completion(messages=[], model="test")
-        results[name] = res.choices[0].message.content
+        results["t1"] = res.choices[0].message.content
         
-    t1 = threading.Thread(target=run_thread, args=("t1",))
-    t2 = threading.Thread(target=run_thread, args=("t2",))
+    def run_thread_2():
+        res = manager.chat_completion(messages=[], model="test")
+        results["t2"] = res.choices[0].message.content
+        
+    t1 = threading.Thread(target=run_thread_1)
+    t2 = threading.Thread(target=run_thread_2)
     
     t1.start()
-    time.sleep(0.05)
+    
+    # Wait deterministically until Thread 1 has selected key-one and entered slow_create
+    assert slow_entered_event.wait(timeout=2.0)
+    
     t2.start()
     
     # Thread 2 should finish quickly since it got key-two and is not blocked by the lock
@@ -334,3 +340,109 @@ def test_unexpected_error_sanitization(caplog):
     # Assert logs are sanitized
     assert "event=groq_request_failed" in caplog.text
     assert_sanitized(caplog.text)
+
+# 13. APIConnectionError on first key rotates to the second key and returns success
+def test_transient_connection_error_rotation():
+    calls = []
+    def make_client(key):
+        def create(*args, **kwargs):
+            calls.append(key)
+            if "one" in key:
+                mock_request = httpx.Request("POST", "https://api.groq.com")
+                raise APIConnectionError(request=mock_request)
+            return MockCompletion("success")
+        return MockClient(create)
+
+    manager = GroqClientManager(
+        keys=["key-one-11111111", "key-two-22222222"],
+        client_factory=make_client
+    )
+
+    res = manager.chat_completion(messages=[], model="test")
+    assert res.choices[0].message.content == "success"
+    assert calls == ["key-one-11111111", "key-two-22222222"]
+
+# 14. APIStatusError 5xx on first key rotates to the second key and returns success
+def test_transient_5xx_status_error_rotation():
+    calls = []
+    def make_client(key):
+        def create(*args, **kwargs):
+            calls.append(key)
+            if "one" in key:
+                mock_request = httpx.Request("POST", "https://api.groq.com")
+                response_503 = httpx.Response(503, request=mock_request)
+                raise APIStatusError("503 Service Unavailable", response=response_503, body=None)
+            return MockCompletion("success")
+        return MockClient(create)
+
+    manager = GroqClientManager(
+        keys=["key-one-11111111", "key-two-22222222"],
+        client_factory=make_client
+    )
+
+    res = manager.chat_completion(messages=[], model="test")
+    assert res.choices[0].message.content == "success"
+    assert calls == ["key-one-11111111", "key-two-22222222"]
+
+# 15. All keys failing with connection/5xx errors raise GroqPoolExhaustedError (sanitized)
+def test_all_keys_failing_transient():
+    calls = []
+    def make_client(key):
+        def create(*args, **kwargs):
+            calls.append(key)
+            mock_request = httpx.Request("POST", "https://api.groq.com")
+            response_500 = httpx.Response(500, request=mock_request)
+            raise APIStatusError("500 Internal Error", response=response_500, body=None)
+        return MockClient(create)
+
+    manager = GroqClientManager(
+        keys=["key-one-11111111", "key-two-22222222"],
+        client_factory=make_client
+    )
+
+    with pytest.raises(GroqPoolExhaustedError) as excinfo:
+        manager.chat_completion(messages=[], model="test")
+
+    assert len(calls) == 2
+    assert "key-one" not in str(excinfo.value)
+
+# 16. Client factory throwing exception with sensitive token is caught, logged safely, and raises GroqRequestError
+def test_client_factory_leak_sanitization(caplog):
+    caplog.set_level(logging.ERROR)
+    def failing_factory(key):
+        raise ValueError("very-secret-error-marker inside key-one-11111111 with token secret-token")
+
+    manager = GroqClientManager(
+        keys=["key-one-11111111"],
+        client_factory=failing_factory
+    )
+
+    with pytest.raises(GroqRequestError) as excinfo:
+        manager.chat_completion(messages=[], model="test")
+
+    assert "Falha ao executar requisição Groq" in str(excinfo.value)
+    assert "very-secret-error-marker" not in str(excinfo.value)
+    assert "event=groq_request_failed" in caplog.text
+    assert_sanitized(caplog.text)
+
+# 17. Non-retryable HTTP error (e.g., 400 Bad Request) fails immediately without retry/rotation loop
+def test_non_retryable_http_error_fails_immediately():
+    calls = []
+    def make_client(key):
+        def create(*args, **kwargs):
+            calls.append(key)
+            mock_request = httpx.Request("POST", "https://api.groq.com")
+            response_400 = httpx.Response(400, request=mock_request)
+            raise APIStatusError("400 Bad Request", response=response_400, body=None)
+        return MockClient(create)
+
+    manager = GroqClientManager(
+        keys=["key-one-11111111", "key-two-22222222"],
+        client_factory=make_client
+    )
+
+    with pytest.raises(GroqRequestError):
+        manager.chat_completion(messages=[], model="test")
+
+    assert len(calls) == 1
+    assert calls == ["key-one-11111111"]

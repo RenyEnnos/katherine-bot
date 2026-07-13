@@ -2,7 +2,14 @@ import logging
 import threading
 import time
 from typing import List, Optional, Any, Callable, Set
-from groq import Groq, RateLimitError, APIError, APIStatusError, AuthenticationError
+from groq import (
+    Groq,
+    RateLimitError,
+    APIStatusError,
+    AuthenticationError,
+    APIConnectionError,
+    APITimeoutError,
+)
 from .groq_keys import GROQ_API_KEYS
 
 # Configure logging without basicConfig to satisfy "remova logging.basicConfig(...)"
@@ -100,7 +107,12 @@ class GroqClientManager:
                 # Re-raise sanitised domain exception
                 raise e
                 
-            client = self._client_factory(api_key)
+            try:
+                # Factory call protected against leakage and exceptions escaping
+                client = self._client_factory(api_key)
+            except Exception as e:
+                logger.error("event=groq_request_failed")
+                raise GroqRequestError("Falha ao executar requisição Groq.") from e
             
             try:
                 # Execution happens outside of the lock
@@ -115,9 +127,15 @@ class GroqClientManager:
             except AuthenticationError:
                 self._deactivate_key(api_key)
                 tried_keys.add(api_key)
+            except (APIConnectionError, APITimeoutError):
+                logger.error("event=groq_request_failed")
+                tried_keys.add(api_key)
             except APIStatusError as e:
                 if e.status_code == 401:
                     self._deactivate_key(api_key)
+                    tried_keys.add(api_key)
+                elif e.status_code >= 500:
+                    logger.error("event=groq_request_failed")
                     tried_keys.add(api_key)
                 else:
                     logger.error("event=groq_request_failed")

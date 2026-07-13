@@ -150,8 +150,8 @@ def test_coping_mechanism_regulate_safety():
 
 def test_regression_state_transitions():
     engine = AffectiveEngine()
-    state = EmotionalState(pleasure=0.1, arousal=0.2, dominance=0.3)
     current_time = 1000.0
+    state = EmotionalState(pleasure=0.1, arousal=0.2, dominance=0.3, last_update=current_time - 10.0)
     
     res1, inst1 = engine.update_state(state, "Hello", current_time)
     res2, inst2 = engine.update_state(state, "Hello", current_time)

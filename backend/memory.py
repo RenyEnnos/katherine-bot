@@ -8,6 +8,8 @@ from .emotional_core import EmotionalState
 
 logger = logging.getLogger(__name__)
 
+MAX_MESSAGE_LENGTH = 10000  # Limite máximo de caracteres por mensagem no histórico para evitar sobrecarga de contexto
+
 class StatePersistenceError(Exception):
     """Exception raised when user state cannot be persisted safely."""
     def __init__(self, message="Falha ao persistir estado do usuário"):
@@ -171,7 +173,31 @@ class MemoryManager:
                 raise ContextLoadError("Erro retornado pelo banco de dados na leitura do histórico.")
             if not hasattr(response, 'data') or response.data is None:
                 raise ContextLoadError("Resposta inválida do banco de dados na leitura do histórico.")
-            return response.data[::-1]
+            if not isinstance(response.data, list):
+                raise ContextLoadError("Resposta do banco de dados não é uma lista.")
+
+            normalized = []
+            for item in response.data:
+                if not isinstance(item, dict):
+                    raise ContextLoadError("Item do histórico não é um dicionário.")
+                if "role" not in item or "content" not in item:
+                    raise ContextLoadError("Item do histórico não possui as chaves obrigatórias 'role' e 'content'.")
+                role = item["role"]
+                content = item["content"]
+                if role not in ("user", "assistant"):
+                    raise ContextLoadError("Role inválida no histórico recente.")
+                if not isinstance(content, str):
+                    raise ContextLoadError("Conteúdo da mensagem não é uma string.")
+                if len(content) > MAX_MESSAGE_LENGTH:
+                    raise ContextLoadError("Mensagem no histórico excede o limite máximo de caracteres permitido.")
+                
+                # Normalize: keep only role and content
+                normalized.append({
+                    "role": role,
+                    "content": content
+                })
+
+            return normalized[::-1]
         except ContextLoadError as e:
             logger.error(f"Erro ao carregar histórico: {type(e).__name__}")
             raise

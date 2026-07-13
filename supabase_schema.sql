@@ -59,3 +59,26 @@ begin
   limit match_count;
 end;
 $$;
+
+-- 5. ARCHIVAL EXTRACTIONS TABLE
+create table if not exists archival_extractions (
+  user_id text references profiles(user_id) on delete cascade,
+  source_chat_log_id bigint references chat_logs(id) on delete cascade,
+  extractor_version integer not null,
+  schema_version integer not null,
+  idempotency_key text not null,
+  facts jsonb not null,
+  created_at timestamp with time zone default timezone('utc'::text, now()),
+  primary key (source_chat_log_id, extractor_version)
+);
+
+create unique index if not exists archival_extractions_idempotency_key_idx on archival_extractions(idempotency_key);
+create index if not exists archival_extractions_user_id_idx on archival_extractions(user_id);
+
+alter table archival_extractions enable row level security;
+
+create policy "Users can access their own archival extractions"
+  on archival_extractions
+  for all
+  using (auth.uid() = user_id);
+

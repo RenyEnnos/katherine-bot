@@ -215,7 +215,10 @@ def test_save_turn_exactly_at_limit():
     mm = MemoryManager()
     mm.supabase = MagicMock()
     mock_resp = MagicMock()
-    mock_resp.data = [{"id": 1}, {"id": 2}]
+    mock_resp.data = [
+        {"id": 1, "user_id": "user123", "role": "user", "content": "a"},
+        {"id": 2, "user_id": "user123", "role": "assistant", "content": "b"}
+    ]
     mock_resp.error = None
     mm.supabase.table.return_value.insert.return_value.execute.return_value = mock_resp
 

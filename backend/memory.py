@@ -5,6 +5,7 @@ from supabase import create_client, Client
 from sentence_transformers import SentenceTransformer
 from .relationship import UserRelationship
 from .emotional_core import EmotionalState
+from .archival_memory import PersistedTurnRef, ArchivalExtractionEnvelope
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +225,7 @@ class MemoryManager:
         """
         return context_str
 
-    def save_turn(self, user_id: str, user_msg: str, bot_msg: str):
+    def save_turn(self, user_id: str, user_msg: str, bot_msg: str) -> PersistedTurnRef:
         if not self.supabase:
             raise TurnPersistenceError("Serviço de persistência indisponível.")
         try:
@@ -240,12 +241,90 @@ class MemoryManager:
                 raise TurnPersistenceError("Erro retornado pelo banco de dados ao salvar turno.")
             if not hasattr(response, 'data') or response.data is None or len(response.data) != 2:
                 raise TurnPersistenceError("Falha na gravação do turno: registros inseridos incompletos.")
+            
+            # Validate roles and IDs
+            records = response.data
+            user_rec = None
+            assistant_rec = None
+            for rec in records:
+                if "id" not in rec or "role" not in rec or "user_id" not in rec:
+                    raise TurnPersistenceError("Campos estruturais ausentes nas linhas persistidas.")
+                if rec["user_id"] != user_id:
+                    raise TurnPersistenceError("Divergência de usuário no turno persistido.")
+                if rec["role"] == "user":
+                    user_rec = rec
+                elif rec["role"] == "assistant":
+                    assistant_rec = rec
+            
+            if not user_rec or not assistant_rec:
+                raise TurnPersistenceError("Roles inválidas nas linhas persistidas do turno.")
+            
+            return PersistedTurnRef(
+                user_id=user_id,
+                source_chat_log_id=user_rec["id"],
+                assistant_chat_log_id=assistant_rec["id"]
+            )
         except TurnPersistenceError as e:
             logger.error(f"Erro ao persistir turno: {type(e).__name__}")
             raise
         except Exception as e:
             logger.error(f"Erro ao persistir turno: {type(e).__name__}")
             raise TurnPersistenceError("Falha ao persistir turno de conversação.") from None
+
+    def load_persisted_user_message(self, user_id: str, source_chat_log_id: int) -> str:
+        if not self.supabase:
+            raise KeyError("Serviço de persistência indisponível.")
+        try:
+            response = self.supabase.table("chat_logs")\
+                .select("role, content, user_id")\
+                .eq("id", source_chat_log_id)\
+                .eq("user_id", user_id)\
+                .execute()
+            if not response or not hasattr(response, 'data') or not response.data:
+                raise KeyError("Mensagem persistida não encontrada.")
+            
+            record = response.data[0]
+            if record.get("role") != "user":
+                raise KeyError("A mensagem encontrada não é do usuário.")
+            
+            return record.get("content", "")
+        except Exception as e:
+            if isinstance(e, KeyError):
+                raise
+            raise KeyError("Falha ao carregar mensagem persistida por ID.") from None
+
+    def store_archival_extraction(self, user_id: str, source_chat_log_id: int, idempotency_key: str, envelope: ArchivalExtractionEnvelope):
+        if not self.supabase:
+            raise RuntimeError("Serviço de persistência indisponível.")
+        
+        facts_data = [
+            {
+                "content": fact.content,
+                "importance": fact.importance,
+                "tags": fact.tags
+            }
+            for fact in envelope.facts
+        ]
+
+        payload = {
+            "user_id": user_id,
+            "source_chat_log_id": source_chat_log_id,
+            "extractor_version": envelope.extractor_version,
+            "schema_version": envelope.schema_version,
+            "idempotency_key": idempotency_key,
+            "facts": facts_data
+        }
+
+        try:
+            self.supabase.table("archival_extractions").insert(payload).execute()
+        except Exception as e:
+            # Check for postgrest PostgreSQL 23505 uniqueness constraint violation
+            err_code = getattr(e, "code", None)
+            if err_code == "23505":
+                # Treat as successful idempotency
+                return
+            raise RuntimeError("Falha ao gravar extração arquivística.") from e
+
 
     def _retrieve_relevant(self, user_id: str, query: str):
         if not self.supabase or not self.embedding_model:

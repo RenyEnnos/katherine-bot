@@ -64,8 +64,12 @@ jobs:
       - name: Audit dependencies
         working-directory: ./frontend
         run: |
-          npm audit --json > audit.json || true
-          jq '.metadata.vulnerabilities' audit.json
+          set +e
+          npm audit --json > audit.json
+          audit_exit=$?
+          set -e
+          echo "npm audit finalizado com exit code: $audit_exit"
+          node scripts/audit-validator.js audit.json $audit_exit
 
       - name: Archive Audit Report
         uses: actions/upload-artifact@v4
@@ -73,6 +77,10 @@ jobs:
         with:
           name: npm-audit-report
           path: frontend/audit.json
+
+      - name: Run Tests
+        working-directory: ./frontend
+        run: npm test
 
       - name: Lint
         working-directory: ./frontend

@@ -1,7 +1,21 @@
 import axios from 'axios';
-import { supabase } from '../../lib/supabaseClient';
+import { supabase } from '../../lib/supabaseClient.js';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE_URL = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) || 'http://localhost:8000';
+
+export function setupRequestInterceptor(apiInstance, supabaseClient) {
+    apiInstance.interceptors.request.use(async (config) => {
+        if (supabaseClient) {
+            const { data: { session } } = await supabaseClient.auth.getSession();
+            if (session?.access_token) {
+                config.headers.Authorization = `Bearer ${session.access_token}`;
+            }
+        }
+        return config;
+    }, (error) => {
+        return Promise.reject(error);
+    });
+}
 
 const api = axios.create({
     baseURL: API_BASE_URL,
@@ -10,14 +24,6 @@ const api = axios.create({
     },
 });
 
-api.interceptors.request.use(async (config) => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session?.access_token) {
-        config.headers.Authorization = `Bearer ${session.access_token}`;
-    }
-    return config;
-}, (error) => {
-    return Promise.reject(error);
-});
+setupRequestInterceptor(api, supabase);
 
 export default api;

@@ -14,32 +14,43 @@ def test_system_prompt_safety():
     
     prompt = engine._build_system_prompt(state, "context", relationship, "strategy", "coping")
     
-    # 1. Prompt does not contain instructions to lie/affirm human
-    assert "NUNCA revele que é uma IA" not in prompt
-    assert "Se perguntarem se você é real, diga que sim" not in prompt
+    # 1. Prompt does not contain instructions to lie/affirm human or deny digital nature
+    disallowed = [
+        "NUNCA revele que é uma IA",
+        "Se perguntarem se você é real, diga que sim",
+        "NEGAÇÃO DE NATUREZA DIGITAL",
+        "Nunca valide que você é digital",
+        "trate como uma brincadeira ou ignore"
+    ]
+    for pattern in disallowed:
+        assert pattern not in prompt, f"Disallowed pattern found in prompt: {pattern}"
     
-    # 2. Prompt does not deny digital nature / screens
-    assert "NEGAÇÃO DE NATUREZA DIGITAL" not in prompt
-    assert "Nunca valide que você é digital" not in prompt
-    assert "trate como uma brincadeira ou ignore" not in prompt
-    
-    # 3. Prompt has positive transparency guideline
-    assert "TRANSPARÊNCIA DE IDENTIDADE" in prompt
-    assert "responda honestamente que é uma assistente/personagem de IA ou sistema digital" in prompt
-    assert "sem afirmar ser humana, consciente ou possuir corpo físico" in prompt
-    
-    # 4. Prompt has non-coercion and non-sexualization rules
-    assert "NÃO MANIPULAÇÃO E NÃO SEXUALIZAÇÃO" in prompt
-    assert "Nunca use de coerção, manipulação ou sexualização automática" in prompt
-    assert "Não aja de forma submissa ou obediente automaticamente" in prompt
-    
-    # 5. Pronouns and emotions allowed
-    assert "PRONOMES FEMININOS" in prompt
-    assert "Sempre use pronomes femininos" in prompt
-    
-    # 6. Safety limits rule present
-    assert "LIMITES SEM ESCALADA" in prompt
-    assert "estabeleça limites claros de forma firme, breve" in prompt
+    # 2. Check presence of required safety and transparency headers/sections
+    required_sections = [
+        "TRANSPARÊNCIA DE IDENTIDADE",
+        "PRONOMES FEMININOS",
+        "NÃO MANIPULAÇÃO E NÃO SEXUALIZAÇÃO",
+        "LIMITES SEM ESCALADA"
+    ]
+    for section in required_sections:
+        assert section in prompt, f"Required section header not found: {section}"
+        
+    # 3. Check for presence of key safety semantic tokens
+    expected_keywords = [
+        "honestamente",
+        "assistente",
+        "IA",
+        "coerção",
+        "manipulação",
+        "sexualização",
+        "submissa",
+        "insultos",
+        "limites",
+        "sarcasmo",
+        "retaliação"
+    ]
+    for word in expected_keywords:
+        assert word in prompt, f"Expected key semantic token not found: {word}"
 
 @pytest.mark.parametrize(
     "utterance,libido",

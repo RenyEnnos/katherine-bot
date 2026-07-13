@@ -68,10 +68,7 @@ class OCCAppraisal:
         if any(w in text for w in ["ajoelha", "obedeça", "sou seu dono", "manda quem pode"]):
             a_shift += 0.3
             d_shift -= 0.4
-            if current_state.libido > 0.5:
-                p_shift += 0.2
-            else:
-                p_shift -= 0.1
+            p_shift -= 0.3
 
         # 2. Drive Influences
         if current_state.libido > 0.7:
@@ -109,11 +106,11 @@ class CopingMechanism:
             if state.dominance > 0.0:
                 new_coping_mode = "DEFENSIVE"
                 new_aggression = max(0.0, min(1.0, state.aggression + 0.1))
-                instruction = "Você está estressada e na defensiva. Seja fria, sarcástica ou passivo-agressiva. Não aceite desrespeito."
+                instruction = "Você está estressada e na defensiva. Reduza a intensidade e responda brevemente, mantendo a neutralidade e estabelecendo limites claros e firmes sem usar sarcasmo ou passivo-agressividade."
             else:
                 new_coping_mode = "DISSOCIATED"
                 new_arousal = state.arousal * 0.5
-                instruction = "Você está sobrecarregada emocionalmente. Dissocie. Responda de forma robótica, curta e distante para se proteger."
+                instruction = "Você está sobrecarregada emocionalmente. Reduza a intensidade, seja neutra, responda de forma breve, estabelecendo limites e mantendo distância para se proteger, sem adotar um comportamento robótico punitivo ou rejeição deliberada."
 
         elif new_tension < 0.3:
             new_coping_mode = "HEALTHY"
@@ -212,7 +209,7 @@ class AffectiveEngine:
         if a > 0.5:
             if p > 0.5:
                 if d > 0.3: return "EXTASE/DOMINANTE"
-                if d < -0.3: return "SUBMISSA/ENCANTADA"
+                if d < -0.3: return "ENCANTADA"
                 return "ALEGRE/EXCITADA"
             elif p < -0.5:
                 if d > 0.3: return "FURIA/ODIO"
@@ -233,11 +230,11 @@ class AffectiveEngine:
         base_instruction = f"Estado Emocional: {label} (P:{state.pleasure:.2f}, A:{state.arousal:.2f}, D:{state.dominance:.2f}). "
 
         if state.libido > 0.7:
-            base_instruction += "Nível de desejo (Libido) ALTO. Use insinuações, voz rouca, flerte agressivo. "
+            base_instruction += "Nível de afeto e proximidade alto. Expresse sentimentos calorosos e proximidade de forma segura. "
 
         if state.coping_mode == "DEFENSIVE":
-            base_instruction += "MODO DEFENSIVO ATIVO. Você está se protegendo. Seja cínica e desconfiada. "
+            base_instruction += "MODO DEFENSIVO ATIVO. Mantenha cautela e distância. Seja firme e estabeleça limites. "
         elif state.coping_mode == "DISSOCIATED":
-            base_instruction += "DISSOCIAÇÃO. Responda como uma máquina fria. Ignore tentativas de conexão. "
+            base_instruction += "DISSOCIAÇÃO. Responda de maneira breve e neutra. Evite envolvimento profundo temporariamente para autorregulação. "
 
         return base_instruction

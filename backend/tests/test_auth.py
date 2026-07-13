@@ -2,7 +2,7 @@ import os
 import sys
 import logging
 import pytest
-from unittest.mock import patch, MagicMock, ANY
+from unittest.mock import patch, MagicMock
 
 @pytest.fixture(autouse=True, scope="module")
 def mock_external_dependencies():
@@ -136,6 +136,7 @@ def test_valid_token(client_app, mock_supabase, mock_engine_process):
     )
 
     assert response.status_code == 200
+    assert response.json()["response"] == "Mock response"
     mock_engine_process.assert_called_once_with("user123", "Hello")
 
 def test_spoofing_user_id_in_chat(client_app, mock_supabase, mock_engine_process):

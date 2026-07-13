@@ -2,7 +2,7 @@ import os
 import sys
 import logging
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, ANY
 
 @pytest.fixture(autouse=True, scope="module")
 def mock_external_dependencies():
@@ -137,7 +137,7 @@ def test_valid_token(client_app, mock_supabase, mock_engine_process):
 
     assert response.status_code == 200
     assert response.json()["response"] == "Mock response"
-    mock_engine_process.assert_called_once_with("user123", "Hello")
+    mock_engine_process.assert_called_once_with("user123", "Hello", ANY)
 
 def test_spoofing_user_id_in_chat(client_app, mock_supabase, mock_engine_process):
     mock_user = MockUser(id="user123")
@@ -346,7 +346,7 @@ def test_chat_message_exactly_at_limit(client_app, mock_supabase, mock_engine_pr
 
     assert response.status_code == 200
     assert response.json()["response"] == "Mock response"
-    mock_engine_process.assert_called_once_with("user123", "a" * MAX_MESSAGE_LENGTH)
+    mock_engine_process.assert_called_once_with("user123", "a" * MAX_MESSAGE_LENGTH, ANY)
 
 def test_chat_message_exceeds_limit(client_app, mock_supabase, mock_engine_process):
     from backend.memory import MAX_MESSAGE_LENGTH

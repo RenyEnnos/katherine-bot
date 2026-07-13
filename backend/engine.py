@@ -2,12 +2,23 @@ import json
 import asyncio
 import time
 import math
-from typing import Dict, Any
+import logging
+from typing import Dict, Any, Optional
+from fastapi import BackgroundTasks
 from .groq_manager import GroqClientManager
 from .emotional_core import AffectiveEngine, EmotionalState
 from .memory import MemoryManager
 from .relationship import RelationshipManager, UserRelationship
 from .lock_manager import UserLockManager
+from .archival_memory import (
+    PersistedTurnRef,
+    parse_archival_extraction,
+    compute_idempotency_key,
+    EXTRACTOR_VERSION,
+    ArchivalValidationError
+)
+
+logger = logging.getLogger(__name__)
 
 class ConversationEngine:
     def __init__(self):
@@ -19,7 +30,88 @@ class ConversationEngine:
         self.model_main = "llama-3.3-70b-versatile"
         self.model_fast = "llama-3.1-8b-instant"
 
-    async def process_turn(self, user_id: str, user_message: str):
+    async def run_archival_extraction(self, turn_ref: PersistedTurnRef):
+        # 1. Load user message content
+        try:
+            user_message = await asyncio.to_thread(
+                self.memory_manager.load_persisted_user_message,
+                turn_ref.user_id,
+                turn_ref.source_chat_log_id
+            )
+        except Exception:
+            # Simply fail closed silently since load failed
+            return
+
+        # 2. Call LLM to extract facts
+        prompt = f"""
+        Extract facts from this user message for archival memory.
+        Facts should be significant, long-term personal details about the user (e.g. preferences, habits, facts, background).
+        Return JSON ONLY matching the following schema:
+        {{
+            "facts": [
+                {{
+                    "content": "Fact description (max 500 chars)",
+                    "importance": 0.0 to 1.0 (float),
+                    "tags": ["lowercase-tag-1", "lowercase-tag-2"] (max 8 tags per fact, each tag max 32 chars matching ^[a-z0-9][a-z0-9_-]*$)
+                }}
+            ],
+            "schema_version": 1,
+            "extractor_version": 1
+        }}
+        Maximum of 5 facts. If no relevant facts are found, return an empty facts list.
+        Do not include any other markdown formatting outside the JSON code block.
+
+        User message: "{user_message}"
+        """
+
+        try:
+            chat_completion = await asyncio.to_thread(
+                self.groq_manager.chat_completion,
+                messages=[{"role": "user", "content": prompt}],
+                model=self.model_fast,
+                temperature=0.0,
+                response_format={"type": "json_object"}
+            )
+            response_text = chat_completion.choices[0].message.content
+            raw_envelope = json.loads(response_text)
+        except Exception:
+            logger.error("Event: archival_extraction_llm_failed")
+            return
+
+        # 3. Validate raw facts envelope
+        try:
+            envelope = parse_archival_extraction(raw_envelope)
+        except ArchivalValidationError:
+            logger.warning("Event: archival_extraction_invalid")
+            return
+        except Exception:
+            logger.warning("Event: archival_extraction_invalid")
+            return
+
+        # 4. Generate idempotency key and store
+        idempotency_key = compute_idempotency_key(
+            turn_ref.user_id,
+            turn_ref.source_chat_log_id,
+            EXTRACTOR_VERSION
+        )
+
+        try:
+            await asyncio.to_thread(
+                self.memory_manager.store_archival_extraction,
+                turn_ref.user_id,
+                turn_ref.source_chat_log_id,
+                idempotency_key,
+                envelope
+            )
+        except Exception as e:
+            # Check for Postgres 23505 unique violation in case it bubbled up
+            err_code = getattr(e, "code", None)
+            if err_code == "23505":
+                logger.info("Event: archival_extraction_duplicate")
+            else:
+                logger.error("Event: archival_extraction_store_failed")
+
+    async def process_turn(self, user_id: str, user_message: str, background_tasks: Optional[BackgroundTasks] = None):
         async def run_under_lock():
             current_time = time.time()
 
@@ -76,11 +168,15 @@ class ConversationEngine:
 
             # 7. Post-processing & Storage (Offloaded to thread)
             # Await critical turn persistence synchronously inside the lock (do not use BackgroundTasks)
-            await asyncio.to_thread(self.memory_manager.save_turn, user_id, user_message, response_text)
+            turn_ref = await asyncio.to_thread(self.memory_manager.save_turn, user_id, user_message, response_text)
 
             # CRITICAL: sync_state MUST complete before releasing lock.
             # Raises StatePersistenceError on failure.
             await asyncio.to_thread(self.memory_manager.sync_state, user_id, new_state, relationship)
+
+            # Schedule background task only after save_turn and sync_state have successfully completed
+            if background_tasks:
+                background_tasks.add_task(self.run_archival_extraction, turn_ref)
 
             return response_text, new_state.to_dict()
 

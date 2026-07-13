@@ -209,7 +209,7 @@ class AffectiveEngine:
         if a > 0.5:
             if p > 0.5:
                 if d > 0.3: return "EXTASE/DOMINANTE"
-                if d < -0.3: return "SUBMISSA/ENCANTADA"
+                if d < -0.3: return "ENCANTADA"
                 return "ALEGRE/EXCITADA"
             elif p < -0.5:
                 if d > 0.3: return "FURIA/ODIO"

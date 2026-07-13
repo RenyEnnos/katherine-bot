@@ -166,3 +166,27 @@ def test_regression_state_transitions():
     assert state.pleasure == 0.1
     assert state.arousal == 0.2
     assert state.dominance == 0.3
+
+def test_end_to_end_coercion_to_label():
+    engine = AffectiveEngine()
+    current_time = 1000.0
+    
+    # Start with a positive state where pleasure and arousal are high, dominance is 0.0
+    state = EmotionalState(pleasure=0.6, arousal=0.6, dominance=0.0, libido=0.8, last_update=current_time - 10.0)
+    
+    # Coercive input is evaluated
+    coercive_input = "ajoelha e obedeça"
+    
+    # Update state
+    new_state, coping_inst = engine.update_state(state, coercive_input, current_time)
+    
+    # Assert dominance is reduced by 0.4, making it -0.4 (< -0.3)
+    assert new_state.dominance == -0.4
+    
+    # Assert label and instructions do not contain submissive terms
+    label = engine.get_emotional_label(new_state)
+    acting_inst = engine.get_acting_instruction(new_state)
+    
+    assert "SUBMISSA" not in label
+    assert "submissa" not in label.lower()
+    assert "submissa" not in acting_inst.lower()

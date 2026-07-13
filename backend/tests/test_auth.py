@@ -2,7 +2,7 @@ import os
 import sys
 import logging
 import pytest
-from unittest.mock import patch, MagicMock, ANY
+from unittest.mock import patch, MagicMock
 
 @pytest.fixture(autouse=True, scope="module")
 def mock_external_dependencies():
@@ -137,7 +137,7 @@ def test_valid_token(client_app, mock_supabase, mock_engine_process):
 
     assert response.status_code == 200
     assert response.json()["response"] == "Mock response"
-    mock_engine_process.assert_called_once_with("user123", "Hello", ANY)
+    mock_engine_process.assert_called_once_with("user123", "Hello")
 
 def test_spoofing_user_id_in_chat(client_app, mock_supabase, mock_engine_process):
     mock_user = MockUser(id="user123")
@@ -332,3 +332,32 @@ def test_http_chat_persistence_failure_sanitization(client_app, mock_supabase, c
     assert "SENSITIVE_DB_SYNC_ERROR" not in caplog.text
     assert "user123" not in response.text
     assert "user123" not in caplog.text
+
+def test_chat_message_exactly_at_limit(client_app, mock_supabase, mock_engine_process):
+    from backend.memory import MAX_MESSAGE_LENGTH
+    mock_user = MockUser(id="user123")
+    mock_supabase.auth.get_user.return_value = MockAuthResponse(user=mock_user)
+
+    response = client_app.post(
+        "/chat",
+        json={"message": "a" * MAX_MESSAGE_LENGTH},
+        headers={"Authorization": "Bearer valid_token"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["response"] == "Mock response"
+    mock_engine_process.assert_called_once_with("user123", "a" * MAX_MESSAGE_LENGTH)
+
+def test_chat_message_exceeds_limit(client_app, mock_supabase, mock_engine_process):
+    from backend.memory import MAX_MESSAGE_LENGTH
+    mock_user = MockUser(id="user123")
+    mock_supabase.auth.get_user.return_value = MockAuthResponse(user=mock_user)
+
+    response = client_app.post(
+        "/chat",
+        json={"message": "a" * (MAX_MESSAGE_LENGTH + 1)},
+        headers={"Authorization": "Bearer valid_token"}
+    )
+
+    assert response.status_code == 422
+    mock_engine_process.assert_not_called()

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import Depends
 
@@ -7,12 +7,13 @@ from supabase_auth.errors import AuthApiError, AuthRetryableError
 logger = logging.getLogger(__name__)
 
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Optional
 import uvicorn
 import os
 from dotenv import load_dotenv
 from .engine import ConversationEngine
+from .memory import MAX_MESSAGE_LENGTH
 
 load_dotenv()
 
@@ -44,7 +45,11 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depen
 
         auth_response = engine.memory_manager.supabase.auth.get_user(token)
         if not auth_response.user:
-            raise HTTPException(status_code=401, detail="Authentication failed", headers={"WWW-Authenticate": "Bearer"})
+            raise HTTPException(
+                status_code=401,
+                detail="Authentication failed",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         return auth_response.user
     except HTTPException:
         raise
@@ -63,7 +68,7 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depen
 
 class ChatInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    message: str
+    message: str = Field(max_length=MAX_MESSAGE_LENGTH)
 
 class ChatResponse(BaseModel):
     response: str
@@ -72,14 +77,11 @@ class ChatResponse(BaseModel):
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(
     input_data: ChatInput,
-    background_tasks: BackgroundTasks,
     current_user = Depends(get_current_user)
 ):
     try:
         user_id = current_user.id
-        # Note: background_tasks is still passed for non-critical logging/extraction tasks
-        # but critical state persistence is now synchronous inside process_turn.
-        response_text, current_emotion = await engine.process_turn(user_id, input_data.message, background_tasks)
+        response_text, current_emotion = await engine.process_turn(user_id, input_data.message)
         return ChatResponse(response=response_text, emotion_state=current_emotion)
     except Exception:
         # Sanitize logging: avoid logging raw exceptions that might contain secrets or tracebacks

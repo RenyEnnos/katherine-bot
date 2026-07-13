@@ -1,14 +1,14 @@
 import os
-import json
 import logging
 from datetime import datetime, UTC
 from supabase import create_client, Client
 from sentence_transformers import SentenceTransformer
-from .groq_manager import GroqClientManager
 from .relationship import UserRelationship
 from .emotional_core import EmotionalState
 
 logger = logging.getLogger(__name__)
+
+MAX_MESSAGE_LENGTH = 10000  # Limite máximo de caracteres por mensagem no histórico para evitar sobrecarga de contexto
 
 class StatePersistenceError(Exception):
     """Exception raised when user state cannot be persisted safely."""
@@ -19,6 +19,18 @@ class StatePersistenceError(Exception):
 class StateLoadError(Exception):
     """Exception raised when user state cannot be loaded safely."""
     def __init__(self, message="Falha ao carregar estado do usuário"):
+        self.message = message
+        super().__init__(self.message)
+
+class ContextLoadError(Exception):
+    """Exception raised when turn history cannot be loaded from the database."""
+    def __init__(self, message="Falha ao carregar histórico de conversação"):
+        self.message = message
+        super().__init__(self.message)
+
+class TurnPersistenceError(Exception):
+    """Exception raised when a conversation turn cannot be saved to the database."""
+    def __init__(self, message="Falha ao persistir turno de conversação"):
         self.message = message
         super().__init__(self.message)
 
@@ -41,12 +53,7 @@ class MemoryManager:
         except Exception:
             self.embedding_model = None
 
-        # 3. Short-term memory (Working Context)
-        self.short_term_memory = {}
 
-        # 4. LLM Manager
-        self.groq_manager = GroqClientManager()
-        self.model_fast = "llama-3.1-8b-instant"
 
     def load_user_state(self, user_id: str) -> dict:
         """
@@ -149,14 +156,59 @@ class MemoryManager:
         except Exception as e:
             raise StatePersistenceError() from e
 
+    def load_recent_history(self, user_id: str, limit: int = 10) -> list:
+        if not self.supabase:
+            raise ContextLoadError("Serviço de persistência indisponível.")
+        try:
+            response = self.supabase.table("chat_logs")\
+                .select("role, content")\
+                .eq("user_id", user_id)\
+                .order("created_at", desc=True)\
+                .order("id", desc=True)\
+                .limit(limit)\
+                .execute()
+            if response is None:
+                raise ContextLoadError("Sem resposta do banco de dados na leitura do histórico.")
+            if hasattr(response, 'error') and response.error:
+                raise ContextLoadError("Erro retornado pelo banco de dados na leitura do histórico.")
+            if not hasattr(response, 'data') or response.data is None:
+                raise ContextLoadError("Resposta inválida do banco de dados na leitura do histórico.")
+            if not isinstance(response.data, list):
+                raise ContextLoadError("Resposta do banco de dados não é uma lista.")
+
+            normalized = []
+            for item in response.data:
+                if not isinstance(item, dict):
+                    raise ContextLoadError("Item do histórico não é um dicionário.")
+                if "role" not in item or "content" not in item:
+                    raise ContextLoadError("Item do histórico não possui as chaves obrigatórias 'role' e 'content'.")
+                role = item["role"]
+                content = item["content"]
+                if role not in ("user", "assistant"):
+                    raise ContextLoadError("Role inválida no histórico recente.")
+                if not isinstance(content, str):
+                    raise ContextLoadError("Conteúdo da mensagem não é uma string.")
+                if len(content) > MAX_MESSAGE_LENGTH:
+                    raise ContextLoadError("Mensagem no histórico excede o limite máximo de caracteres permitido.")
+                
+                # Normalize: keep only role and content
+                normalized.append({
+                    "role": role,
+                    "content": content
+                })
+
+            return normalized[::-1]
+        except ContextLoadError as e:
+            logger.error(f"Erro ao carregar histórico: {type(e).__name__}")
+            raise
+        except Exception as e:
+            logger.error(f"Erro ao carregar histórico: {type(e).__name__}")
+            raise ContextLoadError("Falha ao carregar histórico de conversação.") from None
+
     def get_context(self, user_id: str, current_message: str, user_state: dict):
-        # 1. Get Short Term History
-        history = self.short_term_memory.get(user_id, [])
-        short_term_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history[-10:]])
-
-        # 2. Retrieve Archival Memories (RAG)
+        history = self.load_recent_history(user_id, limit=10)
+        short_term_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history])
         relevant_memories = self._retrieve_relevant(user_id, current_message)
-
         context_str = f"""
         === CORE MEMORY (QUEM VOCÊ É) ===
         {user_state.get('persona_config', 'Katherine...')}
@@ -173,64 +225,27 @@ class MemoryManager:
         return context_str
 
     def save_turn(self, user_id: str, user_msg: str, bot_msg: str):
-        # 1. Update Short Term Memory
-        if user_id not in self.short_term_memory:
-            self.short_term_memory[user_id] = []
-
-        self.short_term_memory[user_id].append({"role": "user", "content": user_msg})
-        self.short_term_memory[user_id].append({"role": "assistant", "content": bot_msg})
-
-        # 2. Persist to Supabase Chat Logs
-        if self.supabase:
-            try:
-                self.supabase.table("chat_logs").insert([
-                    {"user_id": user_id, "role": "user", "content": user_msg},
-                    {"user_id": user_id, "role": "assistant", "content": bot_msg}
-                ]).execute()
-            except Exception:
-                pass
-
-        # 3. Check for compression
-        if len(self.short_term_memory[user_id]) > 20:
-            self._compress_episodes(user_id)
-
-        # 4. Async: Extract Facts & Update Core Memory
-        self._analyze_and_store(user_id, user_msg)
-
-    def _compress_episodes(self, user_id: str):
-        if len(self.short_term_memory[user_id]) < 20:
-            return
-
-        oldest_messages = self.short_term_memory[user_id][:10]
-        self.short_term_memory[user_id] = self.short_term_memory[user_id][10:]
-
-        conversation_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in oldest_messages])
-
-        prompt = f"""
-        Analyze this conversation segment and create a concise "Episodic Memory".
-        Focus on:
-        1. Key events or topics discussed.
-        2. Emotional tone of the user.
-        3. Any significant revelations.
-
-        Conversation:
-        {conversation_text}
-
-        Return ONLY the summary text.
-        """
-
+        if not self.supabase:
+            raise TurnPersistenceError("Serviço de persistência indisponível.")
         try:
-            completion = self.groq_manager.chat_completion(
-                messages=[{"role": "user", "content": prompt}],
-                model=self.model_fast,
-                temperature=0.3
-            )
-            summary = completion.choices[0].message.content
-
-            # Store in Supabase
-            self._store_memory(user_id, summary, tags=["episodic", "summary"], importance=0.8)
-        except Exception:
-            pass
+            if len(user_msg) > MAX_MESSAGE_LENGTH or len(bot_msg) > MAX_MESSAGE_LENGTH:
+                raise TurnPersistenceError("Limite de caracteres excedido no turno.")
+            response = self.supabase.table("chat_logs").insert([
+                {"user_id": user_id, "role": "user", "content": user_msg},
+                {"user_id": user_id, "role": "assistant", "content": bot_msg}
+            ]).execute()
+            if response is None:
+                raise TurnPersistenceError("Sem resposta do banco de dados ao salvar turno.")
+            if hasattr(response, 'error') and response.error:
+                raise TurnPersistenceError("Erro retornado pelo banco de dados ao salvar turno.")
+            if not hasattr(response, 'data') or response.data is None or len(response.data) != 2:
+                raise TurnPersistenceError("Falha na gravação do turno: registros inseridos incompletos.")
+        except TurnPersistenceError as e:
+            logger.error(f"Erro ao persistir turno: {type(e).__name__}")
+            raise
+        except Exception as e:
+            logger.error(f"Erro ao persistir turno: {type(e).__name__}")
+            raise TurnPersistenceError("Falha ao persistir turno de conversação.") from None
 
     def _retrieve_relevant(self, user_id: str, query: str):
         if not self.supabase or not self.embedding_model:
@@ -260,69 +275,3 @@ class MemoryManager:
             return "\n".join(formatted)
         except Exception:
             return ""
-
-    def _analyze_and_store(self, user_id: str, text: str):
-        prompt = f"""
-        Analise a mensagem do usuário: "{text}"
-
-        1. Extraia fatos novos para a Memória de Arquivo (eventos, gostos, opiniões).
-        2. Sugira atualizações para a Core Memory do Usuário (se descobrimos algo fundamental sobre ele).
-
-        Retorne JSON:
-        {{
-            "archival_facts": [{{"content": "...", "tags": "tag1,tag2", "importance": 0.0-1.0}}],
-            "core_memory_update": "Texto para adicionar/modificar no perfil do usuário (ou null se nada mudar)"
-        }}
-        """
-
-        try:
-            completion = self.groq_manager.chat_completion(
-                messages=[{"role": "user", "content": prompt}],
-                model=self.model_fast,
-                temperature=0,
-                response_format={"type": "json_object"}
-            )
-            data = json.loads(completion.choices[0].message.content)
-
-            # Store Archival Facts
-            for fact in data.get('archival_facts', []):
-                if fact['importance'] > 0.5:
-                    tags = fact['tags'].split(',') if isinstance(fact['tags'], str) else fact['tags']
-                    self._store_memory(user_id, fact['content'], tags, fact['importance'])
-
-            # Update Core Memory
-            update_text = data.get('core_memory_update')
-            if update_text:
-                if self.supabase:
-                    resp = self.supabase.table("profiles").select("user_profile").eq("user_id", user_id).execute()
-                    if resp.data:
-                        current_profile = resp.data[0].get("user_profile", {})
-                        if "notes" not in current_profile:
-                            current_profile["notes"] = []
-
-                        if update_text not in current_profile["notes"]:
-                            current_profile["notes"].append(update_text)
-                            self.supabase.table("profiles").update({"user_profile": current_profile}).eq("user_id", user_id).execute()
-
-        except Exception:
-            pass
-
-    def _store_memory(self, user_id: str, content: str, tags: list, importance: float):
-        if not self.supabase or not self.embedding_model:
-            return
-
-        try:
-            embedding = self.embedding_model.encode(content).tolist()
-
-            self.supabase.table("memories").insert({
-                "user_id": user_id,
-                "content": content,
-                "embedding": embedding,
-                "metadata": {
-                    "tags": tags,
-                    "importance": importance,
-                    "timestamp": str(datetime.now())
-                }
-            }).execute()
-        except Exception:
-            pass

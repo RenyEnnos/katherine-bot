@@ -8,7 +8,11 @@ from unittest.mock import MagicMock, patch
 from backend.engine import ConversationEngine
 from backend.emotional_core import EmotionalState, AffectiveEngine
 from backend.relationship import UserRelationship
-from backend.memory import StatePersistenceError, StateLoadError
+from backend.memory import StatePersistenceError, StateLoadError, MemoryManager
+
+@pytest.fixture(autouse=True)
+def mock_load_recent_history(monkeypatch):
+    monkeypatch.setattr(MemoryManager, "load_recent_history", lambda self, user_id, limit=10: [])
 
 def test_deterministic_transition():
     engine = AffectiveEngine()

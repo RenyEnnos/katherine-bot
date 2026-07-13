@@ -19,7 +19,7 @@ class ConversationEngine:
         self.model_main = "llama-3.3-70b-versatile"
         self.model_fast = "llama-3.1-8b-instant"
 
-    async def process_turn(self, user_id: str, user_message: str, background_tasks=None):
+    async def process_turn(self, user_id: str, user_message: str):
         async def run_under_lock():
             current_time = time.time()
 
@@ -75,10 +75,8 @@ class ConversationEngine:
                 response_text = "*suspiro cansado* Sinto que minha mente está um pouco nublada agora... Podemos tentar de novo em alguns segundos?"
 
             # 7. Post-processing & Storage (Offloaded to thread)
-            if background_tasks:
-                background_tasks.add_task(self.memory_manager.save_turn, user_id, user_message, response_text)
-            else:
-                await asyncio.to_thread(self.memory_manager.save_turn, user_id, user_message, response_text)
+            # Await critical turn persistence synchronously inside the lock (do not use BackgroundTasks)
+            await asyncio.to_thread(self.memory_manager.save_turn, user_id, user_message, response_text)
 
             # CRITICAL: sync_state MUST complete before releasing lock.
             # Raises StatePersistenceError on failure.

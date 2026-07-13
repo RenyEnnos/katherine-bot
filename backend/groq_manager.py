@@ -1,91 +1,137 @@
-import random
-import time
 import logging
-from typing import List, Optional, Any
-from groq import Groq, RateLimitError, APIError
-from .groq_keys import GROQ_API_KEYS
+import threading
+import time
+from typing import List, Optional, Any, Callable, Set
+from groq import (
+    Groq,
+    RateLimitError,
+    APIStatusError,
+    AuthenticationError,
+    APIConnectionError,
+    APITimeoutError,
+)
+from . import groq_keys
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging without basicConfig to satisfy "remova logging.basicConfig(...)"
 logger = logging.getLogger("GroqManager")
 
-class GroqClientManager:
-    def __init__(self):
-        self.keys = [k for k in GROQ_API_KEYS if k and k.strip()]
-        print(f"DEBUG: GroqClientManager initialized with {len(self.keys)} keys.")
-        if not self.keys:
-            logger.warning("No Groq API keys found in groq_keys.py! Please add them.")
-        
-        # Track cooldowns: {key: timestamp_when_available}
-        self.cooldowns = {}
-        self.cooldown_duration = 10  # Reduced to 10s to avoid long lockouts
+class GroqConfigurationError(Exception):
+    """Raised when the Groq manager has no valid/non-empty API keys configured."""
+    pass
 
-    def _get_available_key(self) -> Optional[str]:
-        now = time.time()
+class GroqPoolExhaustedError(Exception):
+    """Raised when all configured Groq API keys are currently in cooldown or deactivated."""
+    pass
+
+class GroqRequestError(Exception):
+    """Raised when an unexpected error occurs during a Groq completion request."""
+    pass
+
+class GroqClientManager:
+    def __init__(
+        self,
+        keys: Optional[List[str]] = None,
+        time_provider: Optional[Callable[[], float]] = None,
+        client_factory: Optional[Callable[[str], Any]] = None
+    ):
+        self._time_provider = time_provider or time.time
+        self._client_factory = client_factory or (lambda k: Groq(api_key=k))
         
-        # Filter out keys that are in cooldown
-        available_keys = []
-        for k in self.keys:
-            if k in self.cooldowns:
-                if now >= self.cooldowns[k]:
-                    del self.cooldowns[k] # Cooldown expired
-                    available_keys.append(k)
-                # else: key is still cooling down
-            else:
-                available_keys.append(k)
-        
-        if not available_keys:
-            return None
+        # Load and validate keys
+        raw_keys = groq_keys.get_groq_api_keys() if keys is None else keys
+        self._keys = [key for key in raw_keys if key and key.strip()]
+        if not self._keys:
+            raise GroqConfigurationError("No Groq API keys configured.")
             
-        # Random selection for "blurring" usage patterns
-        return random.choice(available_keys)
+        self._lock = threading.Lock()
+        self._deactivated: Set[str] = set()
+        self._cooldowns = {}
+        self._cooldown_duration = 10
+        self._index = 0
+
+    def _acquire_next_key(self, tried_keys: Set[str]) -> str:
+        with self._lock:
+            # Check if there are any active keys left in the entire pool
+            active_keys = [k for k in self._keys if k not in self._deactivated]
+            if not active_keys:
+                logger.warning("event=groq_pool_unavailable")
+                raise GroqPoolExhaustedError("All keys are deactivated.")
+                
+            now = self._time_provider()
+            # Clean up expired cooldowns
+            for k in list(self._cooldowns.keys()):
+                if now >= self._cooldowns[k]:
+                    del self._cooldowns[k]
+            
+            # Find the next eligible key starting from self._index
+            for i in range(len(self._keys)):
+                idx = (self._index + i) % len(self._keys)
+                k = self._keys[idx]
+                
+                if k in self._deactivated:
+                    continue
+                if k in self._cooldowns:
+                    continue
+                if k in tried_keys:
+                    continue
+                    
+                # Mark this index as used and set it to next for next call
+                self._index = (idx + 1) % len(self._keys)
+                return k
+                
+            # If we scanned all keys and found none eligible
+            logger.warning("event=groq_pool_unavailable")
+            raise GroqPoolExhaustedError("No eligible Groq keys available.")
 
     def _mark_key_rate_limited(self, key: str):
-        logger.warning(f"Key {key[:10]}... hit Rate Limit. Cooling down for {self.cooldown_duration}s.")
-        self.cooldowns[key] = time.time() + self.cooldown_duration
+        with self._lock:
+            self._cooldowns[key] = self._time_provider() + self._cooldown_duration
+            logger.warning("event=groq_key_rate_limited")
+
+    def _deactivate_key(self, key: str):
+        with self._lock:
+            self._deactivated.add(key)
+            logger.error("event=groq_key_disabled")
 
     def chat_completion(self, messages: List[dict], model: str, **kwargs) -> Any:
-        """
-        Attempts to get a chat completion, rotating keys on failure.
-        """
-        attempts = 0
-        max_attempts = len(self.keys) * 2 # Try enough times to cover all keys plus some retries
-
-        while attempts < max_attempts:
-            api_key = self._get_available_key()
-            
-            if not api_key:
-                raise Exception("All Groq API keys are currently in cooldown or none are configured.")
-
-            client = Groq(api_key=api_key)
+        tried_keys: Set[str] = set()
+        
+        while True:
+            api_key = self._acquire_next_key(tried_keys)
+                
+            try:
+                # Factory call protected against leakage and exceptions escaping
+                client = self._client_factory(api_key)
+            except Exception as e:
+                logger.error("event=groq_request_failed")
+                raise GroqRequestError("Falha ao executar requisição Groq.") from e
             
             try:
-                # logger.info(f"Using key {api_key[:10]}... for request.")
+                # Execution happens outside of the lock
                 return client.chat.completions.create(
                     messages=messages,
                     model=model,
                     **kwargs
                 )
-
             except RateLimitError:
                 self._mark_key_rate_limited(api_key)
-                attempts += 1
-                continue # Retry loop will pick a new key
-            
-            except APIError as e:
-                # If it's a 401 (Invalid Key), maybe we should remove it?
-                if "401" in str(e):
-                    logger.error(f"Key {api_key[:10]}... is INVALID. Removing from pool.")
-                    if api_key in self.keys:
-                        self.keys.remove(api_key)
+                tried_keys.add(api_key)
+            except AuthenticationError:
+                self._deactivate_key(api_key)
+                tried_keys.add(api_key)
+            except (APIConnectionError, APITimeoutError):
+                logger.error("event=groq_request_failed")
+                tried_keys.add(api_key)
+            except APIStatusError as e:
+                if e.status_code == 401:
+                    self._deactivate_key(api_key)
+                    tried_keys.add(api_key)
+                elif e.status_code >= 500:
+                    logger.error("event=groq_request_failed")
+                    tried_keys.add(api_key)
                 else:
-                    logger.error(f"Groq API Error with key {api_key[:10]}...: {e}")
-                
-                attempts += 1
-                continue
-
+                    logger.error("event=groq_request_failed")
+                    raise GroqRequestError("Falha ao executar requisição Groq.") from e
             except Exception as e:
-                logger.error(f"Unexpected error: {e}")
-                raise e
-
-        raise Exception("Failed to generate response after multiple retries with different keys.")
+                logger.error("event=groq_request_failed")
+                raise GroqRequestError("Falha ao executar requisição Groq.") from e

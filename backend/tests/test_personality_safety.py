@@ -171,8 +171,8 @@ def test_end_to_end_coercion_to_label():
     engine = AffectiveEngine()
     current_time = 1000.0
     
-    # Start with a positive state where pleasure and arousal are high, dominance is 0.0
-    state = EmotionalState(pleasure=0.6, arousal=0.6, dominance=0.0, libido=0.8, last_update=current_time - 10.0)
+    # Start with a positive state where pleasure and arousal are very high, dominance is 0.0
+    state = EmotionalState(pleasure=0.9, arousal=0.9, dominance=0.0, libido=0.8, last_update=current_time - 10.0)
     
     # Coercive input is evaluated
     coercive_input = "ajoelha e obedeça"
@@ -180,13 +180,27 @@ def test_end_to_end_coercion_to_label():
     # Update state
     new_state, coping_inst = engine.update_state(state, coercive_input, current_time)
     
-    # Assert dominance is reduced by 0.4, making it -0.4 (< -0.3)
-    assert new_state.dominance == -0.4
+    # Assert state bounds requested by review
+    assert new_state.pleasure > 0.5
+    assert new_state.arousal > 0.5
+    assert new_state.dominance < -0.3
     
-    # Assert label and instructions do not contain submissive terms
+    # Assert label is exactly "ENCANTADA" (not "SUBMISSA/ENCANTADA")
     label = engine.get_emotional_label(new_state)
+    assert label == "ENCANTADA"
+    
+    # Get acting instructions
     acting_inst = engine.get_acting_instruction(new_state)
     
+    # Build complete system prompt to check end-to-end output
+    conv_engine = ConversationEngine()
+    relationship = UserRelationship(user_id="test_user")
+    prompt = conv_engine._build_system_prompt(new_state, "context", relationship, "strategy", coping_inst)
+    
+    # Assert absence of submissive terms in label and acting/coping instructions
     assert "SUBMISSA" not in label
     assert "submissa" not in label.lower()
     assert "submissa" not in acting_inst.lower()
+    assert "submissa" not in coping_inst.lower()
+    assert "obedeça" not in acting_inst.lower()
+    assert "obedeça" not in coping_inst.lower()

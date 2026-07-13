@@ -15,7 +15,8 @@ from .archival_memory import (
     parse_archival_extraction,
     compute_idempotency_key,
     EXTRACTOR_VERSION,
-    ArchivalValidationError
+    ArchivalValidationError,
+    ArchivalDuplicateError
 )
 
 logger = logging.getLogger(__name__)
@@ -103,13 +104,10 @@ class ConversationEngine:
                 idempotency_key,
                 envelope
             )
-        except Exception as e:
-            # Check for Postgres 23505 unique violation in case it bubbled up
-            err_code = getattr(e, "code", None)
-            if err_code == "23505":
-                logger.info("Event: archival_extraction_duplicate")
-            else:
-                logger.error("Event: archival_extraction_store_failed")
+        except ArchivalDuplicateError:
+            logger.info("Event: archival_extraction_duplicate")
+        except Exception:
+            logger.error("Event: archival_extraction_store_failed")
 
     async def process_turn(self, user_id: str, user_message: str, background_tasks: Optional[BackgroundTasks] = None):
         async def run_under_lock():

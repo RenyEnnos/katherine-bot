@@ -66,7 +66,7 @@ class MockAuthResponse:
 
 
 from backend.engine import ConversationEngine
-from backend.archival_memory import PersistedTurnRef
+from backend.archival_memory import PersistedTurnRef, ArchivalDuplicateError
 
 
 @pytest.mark.anyio
@@ -131,10 +131,7 @@ async def test_run_archival_extraction_duplicate(caplog):
     engine.groq_manager.chat_completion = MagicMock(return_value=m)
     
     # Simulate unique constraint failure treated as duplicate success
-    class PostgrestAPIError(Exception):
-        def __init__(self):
-            self.code = "23505"
-    engine.memory_manager.store_archival_extraction.side_effect = PostgrestAPIError()
+    engine.memory_manager.store_archival_extraction.side_effect = ArchivalDuplicateError("Duplicate")
     
     ref = PersistedTurnRef(user_id="user123", source_chat_log_id=1, assistant_chat_log_id=2)
     

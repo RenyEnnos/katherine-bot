@@ -11,6 +11,10 @@ class ArchivalValidationError(Exception):
     """Domain exception for failed validation checks on archival memories."""
     pass
 
+class ArchivalDuplicateError(Exception):
+    """Exception raised when an archival extraction for a turn already exists (uniqueness violation)."""
+    pass
+
 @dataclass(frozen=True)
 class PersistedTurnRef:
     user_id: str

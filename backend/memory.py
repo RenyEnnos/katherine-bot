@@ -5,7 +5,7 @@ from supabase import create_client, Client
 from sentence_transformers import SentenceTransformer
 from .relationship import UserRelationship
 from .emotional_core import EmotionalState
-from .archival_memory import PersistedTurnRef, ArchivalExtractionEnvelope
+from .archival_memory import PersistedTurnRef, ArchivalExtractionEnvelope, ArchivalDuplicateError
 
 logger = logging.getLogger(__name__)
 
@@ -318,11 +318,9 @@ class MemoryManager:
         try:
             self.supabase.table("archival_extractions").insert(payload).execute()
         except Exception as e:
-            # Check for postgrest PostgreSQL 23505 uniqueness constraint violation
             err_code = getattr(e, "code", None)
             if err_code == "23505":
-                # Treat as successful idempotency
-                return
+                raise ArchivalDuplicateError("Extração arquivística duplicada.")
             raise RuntimeError("Falha ao gravar extração arquivística.") from None
 
 

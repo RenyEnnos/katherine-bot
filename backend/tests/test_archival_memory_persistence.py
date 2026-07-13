@@ -5,7 +5,8 @@ from backend.archival_memory import (
     PersistedTurnRef,
     ArchivalFact,
     ArchivalExtractionEnvelope,
-    ArchivalValidationError
+    ArchivalValidationError,
+    ArchivalDuplicateError
 )
 
 def test_save_turn_success():
@@ -91,8 +92,9 @@ def test_store_archival_extraction_conflict():
     mm.supabase.table.return_value.insert.return_value.execute.side_effect = PostgrestAPIError()
     
     env = ArchivalExtractionEnvelope(facts=[])
-    # 23505 handled as success
-    mm.store_archival_extraction("u1", 100, "key_abc", env)
+    # 23505 raises ArchivalDuplicateError
+    with pytest.raises(ArchivalDuplicateError):
+        mm.store_archival_extraction("u1", 100, "key_abc", env)
 
 def test_load_persisted_user_message_db_uninitialized():
     mm = MemoryManager()

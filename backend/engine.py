@@ -75,10 +75,8 @@ class ConversationEngine:
                 response_text = "*suspiro cansado* Sinto que minha mente está um pouco nublada agora... Podemos tentar de novo em alguns segundos?"
 
             # 7. Post-processing & Storage (Offloaded to thread)
-            if background_tasks:
-                background_tasks.add_task(self.memory_manager.save_turn, user_id, user_message, response_text)
-            else:
-                await asyncio.to_thread(self.memory_manager.save_turn, user_id, user_message, response_text)
+            # Await critical turn persistence synchronously inside the lock (do not use BackgroundTasks)
+            await asyncio.to_thread(self.memory_manager.save_turn, user_id, user_message, response_text)
 
             # CRITICAL: sync_state MUST complete before releasing lock.
             # Raises StatePersistenceError on failure.

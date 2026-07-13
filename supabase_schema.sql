@@ -80,5 +80,5 @@ alter table archival_extractions enable row level security;
 create policy "Users can access their own archival extractions"
   on archival_extractions
   for all
-  using (auth.uid() = user_id);
+  using (auth.uid()::text = user_id);
 

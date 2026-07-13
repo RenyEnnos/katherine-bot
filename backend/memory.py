@@ -273,7 +273,7 @@ class MemoryManager:
 
     def load_persisted_user_message(self, user_id: str, source_chat_log_id: int) -> str:
         if not self.supabase:
-            raise KeyError("Serviço de persistência indisponível.")
+            raise RuntimeError("Serviço de persistência indisponível.")
         try:
             response = self.supabase.table("chat_logs")\
                 .select("role, content, user_id")\
@@ -291,7 +291,7 @@ class MemoryManager:
         except Exception as e:
             if isinstance(e, KeyError):
                 raise
-            raise KeyError("Falha ao carregar mensagem persistida por ID.") from None
+            raise RuntimeError("Serviço de persistência indisponível.") from None
 
     def store_archival_extraction(self, user_id: str, source_chat_log_id: int, idempotency_key: str, envelope: ArchivalExtractionEnvelope):
         if not self.supabase:
@@ -323,7 +323,7 @@ class MemoryManager:
             if err_code == "23505":
                 # Treat as successful idempotency
                 return
-            raise RuntimeError("Falha ao gravar extração arquivística.") from e
+            raise RuntimeError("Falha ao gravar extração arquivística.") from None
 
 
     def _retrieve_relevant(self, user_id: str, query: str):

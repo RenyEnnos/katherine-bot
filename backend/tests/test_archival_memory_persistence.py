@@ -93,3 +93,19 @@ def test_store_archival_extraction_conflict():
     env = ArchivalExtractionEnvelope(facts=[])
     # 23505 handled as success
     mm.store_archival_extraction("u1", 100, "key_abc", env)
+
+def test_load_persisted_user_message_db_uninitialized():
+    mm = MemoryManager()
+    mm.supabase = None
+    with pytest.raises(RuntimeError) as exc_info:
+        mm.load_persisted_user_message("u1", 100)
+    assert "Serviço de persistência indisponível." in str(exc_info.value)
+
+def test_load_persisted_user_message_db_failure():
+    mm = MemoryManager()
+    mm.supabase = MagicMock()
+    mm.supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.side_effect = Exception("DB Connection Error")
+    
+    with pytest.raises(RuntimeError) as exc_info:
+        mm.load_persisted_user_message("u1", 100)
+    assert "Serviço de persistência indisponível." in str(exc_info.value)

@@ -106,7 +106,7 @@ def test_reject_tag_too_long():
         parse_archival_extraction(payload)
 
 def test_reject_wrong_versions():
-    for v in [0, 2, "1"]:
+    for v in [0, 2, "1", 1.0, True]:
         payload = {
             "facts": [],
             "schema_version": v,

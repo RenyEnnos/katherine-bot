@@ -82,9 +82,6 @@ class ConversationEngine:
         # 3. Validate raw facts envelope
         try:
             envelope = parse_archival_extraction(raw_envelope)
-        except ArchivalValidationError:
-            logger.warning("Event: archival_extraction_invalid")
-            return
         except Exception:
             logger.warning("Event: archival_extraction_invalid")
             return

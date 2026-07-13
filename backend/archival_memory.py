@@ -50,9 +50,9 @@ def parse_archival_extraction(raw_dict: dict) -> ArchivalExtractionEnvelope:
     extractor_version = raw_dict.get("extractor_version", EXTRACTOR_VERSION)
 
     # Versions must match exact int values
-    if schema_version != ARCHIVAL_SCHEMA_VERSION or isinstance(schema_version, bool):
+    if type(schema_version) is not int or schema_version != ARCHIVAL_SCHEMA_VERSION:
         raise ArchivalValidationError("Invalid or unsupported schema version.")
-    if extractor_version != EXTRACTOR_VERSION or isinstance(extractor_version, bool):
+    if type(extractor_version) is not int or extractor_version != EXTRACTOR_VERSION:
         raise ArchivalValidationError("Invalid or unsupported extractor version.")
 
     facts_list = raw_dict.get("facts")

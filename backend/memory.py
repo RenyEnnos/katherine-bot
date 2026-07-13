@@ -319,7 +319,7 @@ class MemoryManager:
             self.supabase.table("archival_extractions").insert(payload).execute()
         except Exception as e:
             err_code = getattr(e, "code", None)
-            if err_code == "23505":
+            if err_code is not None and str(err_code) == "23505":
                 raise ArchivalDuplicateError("Extração arquivística duplicada.")
             raise RuntimeError("Falha ao gravar extração arquivística.") from None
 

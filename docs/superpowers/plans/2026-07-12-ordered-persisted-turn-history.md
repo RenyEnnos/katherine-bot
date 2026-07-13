@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Remove user-specific conversation history from process-wide `MemoryManager` memory, load recent history deterministically from Supabase `chat_logs` using a stable tie-breaker, and persist turns síncronamente inside the per-user lock.
+**Goal:** Remove user-specific conversation history from process-wide `MemoryManager` memory, load recent history deterministically from Supabase `chat_logs` using a stable tie-breaker, and persist turns synchronously inside the per-user lock.
 
 **Architecture:** Retrieve user chat history by querying Supabase `chat_logs` with ordering by `created_at` and `id` (primary key, stable tie-breaker), reversing the list in memory. Perform all turn writes inside the user lock in `engine.py` without using FastAPI `BackgroundTasks`. Raise sanitized `ContextLoadError` and `TurnPersistenceError` upon DB failures.
 
@@ -174,7 +174,7 @@
 - Produces:
   - `ConversationEngine.process_turn(user_id: str, user_message: str, background_tasks=None) -> tuple[str, dict]`
 
-- [ ] **Step 1: Write a failing test for síncrona persistence inside per-user lock**
+- [ ] **Step 1: Write a failing test for synchronous persistence inside per-user lock**
   Add a test to `backend/tests/test_ordered_persisted_turn_history.py` verifying that `process_turn` awaits `save_turn` inside the lock.
   ```python
   import asyncio

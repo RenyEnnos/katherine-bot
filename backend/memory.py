@@ -176,13 +176,19 @@ class MemoryManager:
             if not hasattr(response, 'data') or response.data is None:
                 raise ContextLoadError("Resposta inválida do banco de dados na leitura do histórico.")
             return response.data[::-1]
-        except ContextLoadError:
+        except ContextLoadError as e:
+            logger.error(f"Erro ao carregar histórico: {type(e).__name__}")
             raise
-        except Exception:
+        except Exception as e:
+            logger.error(f"Erro ao carregar histórico: {type(e).__name__}")
             raise ContextLoadError("Falha ao carregar histórico de conversação.") from None
 
     def get_context(self, user_id: str, current_message: str, user_state: dict):
-        history = self.load_recent_history(user_id, limit=10)
+        try:
+            history = self.load_recent_history(user_id, limit=10)
+        except Exception as e:
+            logger.warning(f"Falha ao carregar histórico recente ({type(e).__name__}); usando histórico vazio.")
+            history = []
         short_term_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history])
         relevant_memories = self._retrieve_relevant(user_id, current_message)
         context_str = f"""
@@ -214,9 +220,11 @@ class MemoryManager:
                 raise TurnPersistenceError("Erro retornado pelo banco de dados ao salvar turno.")
             if not hasattr(response, 'data') or response.data is None or len(response.data) == 0:
                 raise TurnPersistenceError("Falha na gravação do turno: nenhum registro inserido.")
-        except TurnPersistenceError:
+        except TurnPersistenceError as e:
+            logger.error(f"Erro ao persistir turno: {type(e).__name__}")
             raise
-        except Exception:
+        except Exception as e:
+            logger.error(f"Erro ao persistir turno: {type(e).__name__}")
             raise TurnPersistenceError("Falha ao persistir turno de conversação.") from None
 
     def _retrieve_relevant(self, user_id: str, query: str):

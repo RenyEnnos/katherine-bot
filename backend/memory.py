@@ -5,6 +5,7 @@ from supabase import create_client, Client
 from sentence_transformers import SentenceTransformer
 from .relationship import UserRelationship
 from .emotional_core import EmotionalState
+from .archival_memory import PersistedTurnRef, ArchivalExtractionEnvelope, ArchivalDuplicateError
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +225,7 @@ class MemoryManager:
         """
         return context_str
 
-    def save_turn(self, user_id: str, user_msg: str, bot_msg: str):
+    def save_turn(self, user_id: str, user_msg: str, bot_msg: str) -> PersistedTurnRef:
         if not self.supabase:
             raise TurnPersistenceError("Serviço de persistência indisponível.")
         try:
@@ -238,14 +239,131 @@ class MemoryManager:
                 raise TurnPersistenceError("Sem resposta do banco de dados ao salvar turno.")
             if hasattr(response, 'error') and response.error:
                 raise TurnPersistenceError("Erro retornado pelo banco de dados ao salvar turno.")
-            if not hasattr(response, 'data') or response.data is None or len(response.data) != 2:
+            if not hasattr(response, 'data') or response.data is None:
                 raise TurnPersistenceError("Falha na gravação do turno: registros inseridos incompletos.")
+            
+            records = response.data
+            if not isinstance(records, list) or len(records) != 2:
+                raise TurnPersistenceError("Falha na gravação do turno: registros inseridos incompletos.")
+            
+            user_rec = None
+            assistant_rec = None
+            for rec in records:
+                if not isinstance(rec, dict):
+                    raise TurnPersistenceError("Registro retornado inválido.")
+                if "id" not in rec or "role" not in rec or "user_id" not in rec or "content" not in rec:
+                    raise TurnPersistenceError("Campos estruturais ausentes nas linhas persistidas.")
+                
+                rec_id = rec["id"]
+                if type(rec_id) is not int or rec_id <= 0:
+                    raise TurnPersistenceError("ID do registro inválido.")
+                if rec["user_id"] != user_id:
+                    raise TurnPersistenceError("Divergência de usuário no turno persistido.")
+                
+                if rec["role"] == "user":
+                    if user_rec is not None:
+                        raise TurnPersistenceError("Mais de uma linha de usuário retornada.")
+                    user_rec = rec
+                elif rec["role"] == "assistant":
+                    if assistant_rec is not None:
+                        raise TurnPersistenceError("Mais de uma linha de assistente retornada.")
+                    assistant_rec = rec
+                else:
+                    raise TurnPersistenceError("Role desconhecida no turno persistido.")
+            
+            if not user_rec or not assistant_rec:
+                raise TurnPersistenceError("Roles user e assistant não encontradas.")
+            
+            if user_rec["id"] == assistant_rec["id"]:
+                raise TurnPersistenceError("IDs de usuário e assistente devem ser distintos.")
+                
+            if user_rec["content"] != user_msg or assistant_rec["content"] != bot_msg:
+                raise TurnPersistenceError("Conteúdo do turno persistido divergente.")
+            
+            return PersistedTurnRef(
+                user_id=user_id,
+                source_chat_log_id=user_rec["id"],
+                assistant_chat_log_id=assistant_rec["id"]
+            )
         except TurnPersistenceError as e:
             logger.error(f"Erro ao persistir turno: {type(e).__name__}")
             raise
         except Exception as e:
             logger.error(f"Erro ao persistir turno: {type(e).__name__}")
             raise TurnPersistenceError("Falha ao persistir turno de conversação.") from None
+
+    def load_persisted_user_message(self, user_id: str, source_chat_log_id: int) -> str:
+        if not self.supabase:
+            raise RuntimeError("Serviço de persistência indisponível.")
+        try:
+            response = self.supabase.table("chat_logs")\
+                .select("id, user_id, role, content")\
+                .eq("id", source_chat_log_id)\
+                .eq("user_id", user_id)\
+                .execute()
+            if not response or not hasattr(response, 'data') or not isinstance(response.data, list):
+                raise KeyError("Mensagem persistida não encontrada ou resposta inválida.")
+            if len(response.data) != 1:
+                raise KeyError("Mensagem persistida não encontrada ou registros múltiplos retornados.")
+            
+            record = response.data[0]
+            if not isinstance(record, dict):
+                raise KeyError("Registro retornado inválido.")
+            if "id" not in record or "user_id" not in record or "role" not in record or "content" not in record:
+                raise KeyError("Campos estruturais ausentes nas linhas persistidas.")
+            if record["id"] != source_chat_log_id:
+                raise KeyError("ID divergente da mensagem persistida.")
+            if record["user_id"] != user_id:
+                raise KeyError("Divergência de usuário no carregamento da mensagem.")
+            if record["role"] != "user":
+                raise KeyError("A mensagem encontrada não é do usuário.")
+            if type(record["content"]) is not str:
+                raise KeyError("Conteúdo retornado não é uma string.")
+            
+            return record["content"]
+        except Exception as e:
+            if isinstance(e, KeyError):
+                raise
+            raise RuntimeError("Serviço de persistência indisponível.") from None
+
+    def store_archival_extraction(self, user_id: str, source_chat_log_id: int, idempotency_key: str, envelope: ArchivalExtractionEnvelope):
+        if not self.supabase:
+            raise RuntimeError("Serviço de persistência indisponível.")
+        
+        facts_data = [
+            {
+                "content": fact.content,
+                "importance": fact.importance,
+                "tags": fact.tags
+            }
+            for fact in envelope.facts
+        ]
+
+        payload = {
+            "user_id": user_id,
+            "source_chat_log_id": source_chat_log_id,
+            "extractor_version": envelope.extractor_version,
+            "schema_version": envelope.schema_version,
+            "idempotency_key": idempotency_key,
+            "facts": facts_data
+        }
+
+        response = None
+        try:
+            response = self.supabase.table("archival_extractions").insert(payload).execute()
+        except Exception as e:
+            err_code = getattr(e, "code", None)
+            if err_code is not None and str(err_code) == "23505":
+                raise ArchivalDuplicateError("Extração arquivística duplicada.")
+            raise RuntimeError("Falha ao gravar extração arquivística.") from None
+
+        if response is None:
+            raise RuntimeError("Sem resposta do banco de dados na gravação.")
+        if hasattr(response, 'error') and response.error:
+            raise RuntimeError("Erro retornado pelo banco de dados na gravação.")
+        if not hasattr(response, 'data') or response.data is None:
+            raise RuntimeError("Resposta estruturalmente inválida do banco de dados.")
+
 
     def _retrieve_relevant(self, user_id: str, query: str):
         if not self.supabase or not self.embedding_model:

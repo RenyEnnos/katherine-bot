@@ -155,7 +155,9 @@ def test_save_turn_incomplete_rows():
     mm.supabase.table.return_value.insert.return_value.execute.return_value = mock_resp
     with pytest.raises(TurnPersistenceError) as exc:
         mm.save_turn("user123", "hi", "hello")
-    assert "registros inseridos incompletos" in str(exc.value)
+    assert "user123" not in str(exc.value)
+    assert "hi" not in str(exc.value)
+    assert "hello" not in str(exc.value)
 
 def test_save_turn_validation_failures():
     mm = MemoryManager()
@@ -214,13 +216,18 @@ def test_save_turn_exactly_at_limit():
     from backend.memory import MAX_MESSAGE_LENGTH
     mm = MemoryManager()
     mm.supabase = MagicMock()
+    
+    user_msg = "a" * MAX_MESSAGE_LENGTH
+    bot_msg = "b" * MAX_MESSAGE_LENGTH
+    
     mock_resp = MagicMock()
-    mock_resp.data = [{"id": 1}, {"id": 2}]
+    mock_resp.data = [
+        {"id": 1, "user_id": "user123", "role": "user", "content": user_msg},
+        {"id": 2, "user_id": "user123", "role": "assistant", "content": bot_msg}
+    ]
     mock_resp.error = None
     mm.supabase.table.return_value.insert.return_value.execute.return_value = mock_resp
 
-    user_msg = "a" * MAX_MESSAGE_LENGTH
-    bot_msg = "b" * MAX_MESSAGE_LENGTH
     mm.save_turn("user123", user_msg, bot_msg)
     mm.supabase.table.assert_called_once_with("chat_logs")
     mm.supabase.table.return_value.insert.assert_called_once_with([

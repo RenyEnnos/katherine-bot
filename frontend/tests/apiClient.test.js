@@ -1,7 +1,10 @@
+/* global process */
+process.env.NODE_ENV = 'test';
 import { test } from 'node:test';
 import assert from 'node:assert';
 import axios from 'axios';
-import { setupRequestInterceptor } from '../src/shared/services/apiClient.js';
+
+const { setupRequestInterceptor } = await import('../src/shared/services/apiClient.js');
 
 test('comportamento do interceptor com token de sessão ativo', async () => {
   // Instância fictícia do axios

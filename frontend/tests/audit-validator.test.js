@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
+import { spawnSync } from 'child_process';
 import { validateAudit } from '../scripts/audit-validator.js';
 
 const createReport = (vulns) => JSON.stringify({
@@ -47,6 +48,12 @@ test('exit code operacional inesperado', () => {
   assert.throws(() => validateAudit(report, 2), (err) => {
     return err.code === 4 && err.message.includes('OPERATIONAL_ERROR');
   });
+});
+
+test('arquivo ausente', () => {
+  const result = spawnSync('node', ['scripts/audit-validator.js', 'non_existent_file.json', '0'], { encoding: 'utf8' });
+  assert.strictEqual(result.status, 2);
+  assert.match(result.stderr, /OPERATIONAL_ERROR: Audit report file is missing at:/);
 });
 
 test('JSON inválido', () => {

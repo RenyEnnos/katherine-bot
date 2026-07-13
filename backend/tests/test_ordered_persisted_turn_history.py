@@ -65,6 +65,74 @@ def test_load_recent_history_validation_failures():
     assert "unexpected supabase failure for user123" not in str(exc.value)
     assert "user123" not in str(exc.value)
 
+    # Reset side_effect so that subsequent tests can use return_value
+    mm.supabase.table.return_value.select.return_value.eq.return_value.order.return_value.order.return_value.limit.return_value.execute.side_effect = None
+
+    # Case 4: response.data is not a list
+    mock_resp_not_list = MagicMock()
+    mock_resp_not_list.data = "not a list"
+    mock_resp_not_list.error = None
+    mm.supabase.table.return_value.select.return_value.eq.return_value.order.return_value.order.return_value.limit.return_value.execute.return_value = mock_resp_not_list
+    with pytest.raises(ContextLoadError):
+        mm.load_recent_history("user123")
+
+    # Case 5: item is not a dict
+    mock_resp_item_not_dict = MagicMock()
+    mock_resp_item_not_dict.data = ["not a dict"]
+    mock_resp_item_not_dict.error = None
+    mm.supabase.table.return_value.select.return_value.eq.return_value.order.return_value.order.return_value.limit.return_value.execute.return_value = mock_resp_item_not_dict
+    with pytest.raises(ContextLoadError):
+        mm.load_recent_history("user123")
+
+    # Case 6: missing role
+    mock_resp_missing_role = MagicMock()
+    mock_resp_missing_role.data = [{"content": "hello"}]
+    mock_resp_missing_role.error = None
+    mm.supabase.table.return_value.select.return_value.eq.return_value.order.return_value.order.return_value.limit.return_value.execute.return_value = mock_resp_missing_role
+    with pytest.raises(ContextLoadError):
+        mm.load_recent_history("user123")
+
+    # Case 7: missing content
+    mock_resp_missing_content = MagicMock()
+    mock_resp_missing_content.data = [{"role": "user"}]
+    mock_resp_missing_content.error = None
+    mm.supabase.table.return_value.select.return_value.eq.return_value.order.return_value.order.return_value.limit.return_value.execute.return_value = mock_resp_missing_content
+    with pytest.raises(ContextLoadError):
+        mm.load_recent_history("user123")
+
+    # Case 8: unknown role
+    mock_resp_unknown_role = MagicMock()
+    mock_resp_unknown_role.data = [{"role": "admin", "content": "hello"}]
+    mock_resp_unknown_role.error = None
+    mm.supabase.table.return_value.select.return_value.eq.return_value.order.return_value.order.return_value.limit.return_value.execute.return_value = mock_resp_unknown_role
+    with pytest.raises(ContextLoadError):
+        mm.load_recent_history("user123")
+
+    # Case 9: content not a string
+    mock_resp_content_not_str = MagicMock()
+    mock_resp_content_not_str.data = [{"role": "user", "content": 123}]
+    mock_resp_content_not_str.error = None
+    mm.supabase.table.return_value.select.return_value.eq.return_value.order.return_value.order.return_value.limit.return_value.execute.return_value = mock_resp_content_not_str
+    with pytest.raises(ContextLoadError):
+        mm.load_recent_history("user123")
+
+    # Case 10: content exceeds limit
+    mock_resp_exceeds_limit = MagicMock()
+    mock_resp_exceeds_limit.data = [{"role": "user", "content": "a" * 10001}]
+    mock_resp_exceeds_limit.error = None
+    mm.supabase.table.return_value.select.return_value.eq.return_value.order.return_value.order.return_value.limit.return_value.execute.return_value = mock_resp_exceeds_limit
+    with pytest.raises(ContextLoadError):
+        mm.load_recent_history("user123")
+
+    # Case 11: valid payload with extra keys normalized to only role and content
+    mock_resp_valid_extra = MagicMock()
+    mock_resp_valid_extra.data = [{"role": "user", "content": "hello", "extra_key": "some_value", "id": 1}]
+    mock_resp_valid_extra.error = None
+    mm.supabase.table.return_value.select.return_value.eq.return_value.order.return_value.order.return_value.limit.return_value.execute.return_value = mock_resp_valid_extra
+    history = mm.load_recent_history("user123")
+    assert history == [{"role": "user", "content": "hello"}]
+
+
 def test_save_turn_zero_inserted_rows():
     mm = MemoryManager()
     mm.supabase = MagicMock()
@@ -224,7 +292,6 @@ def test_tied_timestamps_ordering():
     
     # Inversion in Python memory yields correct chronological insertion order: user -> assistant -> user -> assistant
     assert [h["content"] for h in history] == ["msg1", "reply1", "msg2", "reply2"]
-    assert [h["id"] for h in history] == [1, 2, 3, 4]
 
 def test_process_turn_awaits_save_turn_inside_lock():
     async def run_test():

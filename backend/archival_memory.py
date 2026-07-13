@@ -46,8 +46,10 @@ def parse_archival_extraction(raw_dict: dict) -> ArchivalExtractionEnvelope:
     if set(raw_dict.keys()) - allowed_keys:
         raise ArchivalValidationError("Unknown keys in envelope.")
 
-    schema_version = raw_dict.get("schema_version", ARCHIVAL_SCHEMA_VERSION)
-    extractor_version = raw_dict.get("extractor_version", EXTRACTOR_VERSION)
+    if "schema_version" not in raw_dict or "extractor_version" not in raw_dict:
+        raise ArchivalValidationError("schema_version and extractor_version are required.")
+    schema_version = raw_dict["schema_version"]
+    extractor_version = raw_dict["extractor_version"]
 
     # Versions must match exact int values
     if type(schema_version) is not int or schema_version != ARCHIVAL_SCHEMA_VERSION:

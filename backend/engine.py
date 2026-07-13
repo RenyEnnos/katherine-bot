@@ -40,7 +40,7 @@ class ConversationEngine:
                 turn_ref.source_chat_log_id
             )
         except Exception:
-            # Simply fail closed silently since load failed
+            logger.error("Event: archival_extraction_load_failed")
             return
 
         # 2. Call LLM to extract facts
@@ -74,9 +74,14 @@ class ConversationEngine:
                 response_format={"type": "json_object"}
             )
             response_text = chat_completion.choices[0].message.content
-            raw_envelope = json.loads(response_text)
         except Exception:
             logger.error("Event: archival_extraction_llm_failed")
+            return
+
+        try:
+            raw_envelope = json.loads(response_text)
+        except Exception:
+            logger.warning("Event: archival_extraction_invalid")
             return
 
         # 3. Validate raw facts envelope

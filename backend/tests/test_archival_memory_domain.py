@@ -122,3 +122,38 @@ def test_compute_idempotency_key():
     assert key1 == key2
     assert key1 != key3
     assert len(key1) == 64
+
+def test_reject_missing_versions():
+    # schema_version missing
+    payload1 = {
+        "facts": [],
+        "extractor_version": 1
+    }
+    with pytest.raises(ArchivalValidationError):
+        parse_archival_extraction(payload1)
+        
+    # extractor_version missing
+    payload2 = {
+        "facts": [],
+        "schema_version": 1
+    }
+    with pytest.raises(ArchivalValidationError):
+        parse_archival_extraction(payload2)
+
+def test_reject_invalid_version_types():
+    for val in [None, 1.0, "1", [1], {"v": 1}, True, False]:
+        payload1 = {
+            "facts": [],
+            "schema_version": val,
+            "extractor_version": 1
+        }
+        with pytest.raises(ArchivalValidationError):
+            parse_archival_extraction(payload1)
+            
+        payload2 = {
+            "facts": [],
+            "schema_version": 1,
+            "extractor_version": val
+        }
+        with pytest.raises(ArchivalValidationError):
+            parse_archival_extraction(payload2)

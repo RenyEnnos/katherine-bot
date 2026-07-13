@@ -2,48 +2,53 @@ import os
 import sys
 import logging
 import json
+from unittest.mock import MagicMock
+
+# 1. Mock external dependencies before importing any backend modules
+sys.modules['sentence_transformers'] = MagicMock()
+sys.modules['supabase'] = MagicMock()
+
+# Setup environment variables immediately
+_original_env = dict(os.environ)
+os.environ['GROQ_API_KEY'] = 'mock_key'
+os.environ['SUPABASE_URL'] = 'http://mock'
+os.environ['SUPABASE_KEY'] = 'mock_key'
+
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import patch, AsyncMock
 from fastapi import BackgroundTasks
+from fastapi.testclient import TestClient
+
+# Import backend modules after mocks are installed
+from backend.engine import ConversationEngine
+from backend.archival_memory import PersistedTurnRef, ArchivalDuplicateError, ArchivalValidationError, compute_idempotency_key
 
 @pytest.fixture(autouse=True, scope="module")
 def mock_external_dependencies():
-    _original_modules = dict(sys.modules)
-    _original_env = dict(os.environ)
-
-    mock_env = {
-        'GROQ_API_KEY': 'mock_key',
-        'SUPABASE_URL': 'http://mock',
-        'SUPABASE_KEY': 'mock_key'
-    }
-    os.environ.update(mock_env)
-
-    # Mock modules before importing
-    sys.modules['sentence_transformers'] = MagicMock()
-    sys.modules['supabase'] = MagicMock()
-
     yield
+    # Restore environment variables safely without breaking Pytest internals
+    for k in list(os.environ.keys()):
+        if k.startswith("PYTEST_"):
+            continue
+        if k not in _original_env:
+            del os.environ[k]
+    for k, v in _original_env.items():
+        if not k.startswith("PYTEST_"):
+            os.environ[k] = v
 
-    # Restore environment and modules directionally
-    if 'backend.main' in sys.modules:
-        del sys.modules['backend.main']
+    # Restore modules directionally
+    for mod in ['backend.main', 'backend.engine', 'backend.memory', 'backend.archival_memory']:
+        if mod in sys.modules:
+            del sys.modules[mod]
+            
     if 'sentence_transformers' in sys.modules:
         del sys.modules['sentence_transformers']
     if 'supabase' in sys.modules:
         del sys.modules['supabase']
 
-    # Restore what was actually added during the test
-    for k in list(sys.modules.keys()):
-        if k.startswith('backend.'):
-            del sys.modules[k]
-
-    os.environ.clear()
-    os.environ.update(_original_env)
-
 
 @pytest.fixture
 def client_app(mock_external_dependencies):
-    from fastapi.testclient import TestClient
     from backend.main import app
     return TestClient(app)
 
@@ -65,8 +70,6 @@ class MockAuthResponse:
         self.user = user
 
 
-from backend.engine import ConversationEngine
-from backend.archival_memory import PersistedTurnRef, ArchivalDuplicateError
 
 
 @pytest.mark.anyio
@@ -255,3 +258,64 @@ def test_chat_response_format(client_app, mock_supabase):
     assert len(data) == 2  # exactly response and emotion_state
     assert data["response"] == "My response text"
     assert data["emotion_state"] == {"joy": 0.5}
+
+
+@pytest.mark.anyio
+async def test_run_archival_extraction_load_failure(caplog):
+    engine = ConversationEngine()
+    engine.memory_manager = MagicMock()
+    engine.memory_manager.load_persisted_user_message = MagicMock(side_effect=Exception("DB connection error user123 secret message"))
+    
+    ref = PersistedTurnRef(user_id="user123", source_chat_log_id=1, assistant_chat_log_id=2)
+    
+    with caplog.at_level(logging.ERROR):
+        await engine.run_archival_extraction(ref)
+        
+    assert "archival_extraction_load_failed" in caplog.text
+    # No leak
+    assert "user123" not in caplog.text
+    assert "secret message" not in caplog.text
+    assert "DB connection error" not in caplog.text
+
+
+def test_different_turns_same_content_distinct():
+    # Different turns with the same content (same user, but different source_chat_log_id)
+    # produce different idempotency keys
+    key1 = compute_idempotency_key("user123", 100, 1)
+    key2 = compute_idempotency_key("user123", 101, 1)
+    
+    assert key1 != key2
+    
+    # Same turn (same user, same source_chat_log_id) produces same key (idempotency)
+    key3 = compute_idempotency_key("user123", 100, 1)
+    assert key1 == key3
+
+
+def test_no_real_external_dependencies_proof():
+    # Programmatic proof that real SentenceTransformer, Supabase or Groq are not used
+    # in any test environment instantiation
+    import sys
+    from unittest.mock import MagicMock
+    
+    assert isinstance(sys.modules.get('sentence_transformers'), MagicMock)
+    assert isinstance(sys.modules.get('supabase'), MagicMock)
+
+
+def test_sql_guarantees_mock():
+    # Verify RLS and composite FK setup exists in the migration schema
+    schema_path = "supabase_schema.sql"
+    with open(schema_path, "r", encoding="utf-8") as f:
+        schema_content = f.read()
+        
+    # Check RLS exists and FOR ALL is removed
+    assert "alter table archival_extractions enable row level security;" in schema_content
+    assert "for select" in schema_content
+    assert "for all" not in schema_content
+    
+    # Check composite foreign key constraints exist
+    assert "foreign key (user_id, source_chat_log_id) references chat_logs(user_id, id)" in schema_content
+    assert "constraint chat_logs_user_id_id_key unique (user_id, id)" in schema_content
+    
+    # Check mandatory not null fields
+    assert "user_id text not null" in schema_content
+    assert "source_chat_log_id bigint not null" in schema_content

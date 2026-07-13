@@ -7,12 +7,13 @@ from supabase_auth.errors import AuthApiError, AuthRetryableError
 logger = logging.getLogger(__name__)
 
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Optional
 import uvicorn
 import os
 from dotenv import load_dotenv
 from .engine import ConversationEngine
+from .memory import MAX_MESSAGE_LENGTH
 
 load_dotenv()
 
@@ -43,7 +44,10 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depen
             raise HTTPException(status_code=503, detail="Authentication service unavailable")
 
         auth_response = engine.memory_manager.supabase.auth.get_user(token)
-        if not auth_response.user:
+        # Check for error in response if library is older
+        if hasattr(auth_response, 'error') and auth_response.error:
+            raise HTTPException(status_code=401, detail="Authentication failed", headers={"WWW-Authenticate": "Bearer"})
+        if not hasattr(auth_response, 'user') or auth_response.user is None:
             raise HTTPException(status_code=401, detail="Authentication failed", headers={"WWW-Authenticate": "Bearer"})
         return auth_response.user
     except HTTPException:
@@ -63,7 +67,7 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depen
 
 class ChatInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    message: str
+    message: str = Field(max_length=MAX_MESSAGE_LENGTH)
 
 class ChatResponse(BaseModel):
     response: str

@@ -228,6 +228,8 @@ class MemoryManager:
         if not self.supabase:
             raise TurnPersistenceError("Serviço de persistência indisponível.")
         try:
+            if len(user_msg) > MAX_MESSAGE_LENGTH or len(bot_msg) > MAX_MESSAGE_LENGTH:
+                raise TurnPersistenceError("Limite de caracteres excedido no turno.")
             response = self.supabase.table("chat_logs").insert([
                 {"user_id": user_id, "role": "user", "content": user_msg},
                 {"user_id": user_id, "role": "assistant", "content": bot_msg}

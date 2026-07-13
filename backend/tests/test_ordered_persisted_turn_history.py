@@ -210,6 +210,52 @@ def test_save_turn_validation_failures():
     assert "network failure for user123" not in str(exc.value)
     assert "user123" not in str(exc.value)
 
+def test_save_turn_exactly_at_limit():
+    from backend.memory import MAX_MESSAGE_LENGTH
+    mm = MemoryManager()
+    mm.supabase = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.data = [{"id": 1}, {"id": 2}]
+    mock_resp.error = None
+    mm.supabase.table.return_value.insert.return_value.execute.return_value = mock_resp
+
+    user_msg = "a" * MAX_MESSAGE_LENGTH
+    bot_msg = "b" * MAX_MESSAGE_LENGTH
+    mm.save_turn("user123", user_msg, bot_msg)
+    mm.supabase.table.assert_called_once_with("chat_logs")
+    mm.supabase.table.return_value.insert.assert_called_once_with([
+        {"user_id": "user123", "role": "user", "content": user_msg},
+        {"user_id": "user123", "role": "assistant", "content": bot_msg}
+    ])
+
+def test_save_turn_user_msg_exceeds_limit():
+    from backend.memory import MAX_MESSAGE_LENGTH
+    mm = MemoryManager()
+    mm.supabase = MagicMock()
+
+    user_msg = "a" * (MAX_MESSAGE_LENGTH + 1)
+    bot_msg = "hello"
+    with pytest.raises(TurnPersistenceError) as exc:
+        mm.save_turn("user123", user_msg, bot_msg)
+    
+    assert "user123" not in str(exc.value)
+    assert user_msg not in str(exc.value)
+    mm.supabase.table.assert_not_called()
+
+def test_save_turn_bot_msg_exceeds_limit():
+    from backend.memory import MAX_MESSAGE_LENGTH
+    mm = MemoryManager()
+    mm.supabase = MagicMock()
+
+    user_msg = "hello"
+    bot_msg = "b" * (MAX_MESSAGE_LENGTH + 1)
+    with pytest.raises(TurnPersistenceError) as exc:
+        mm.save_turn("user123", user_msg, bot_msg)
+    
+    assert "user123" not in str(exc.value)
+    assert bot_msg not in str(exc.value)
+    mm.supabase.table.assert_not_called()
+
 def test_user_history_isolation():
     mm = MemoryManager()
     mm.supabase = MagicMock()

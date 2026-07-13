@@ -44,11 +44,12 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depen
             raise HTTPException(status_code=503, detail="Authentication service unavailable")
 
         auth_response = engine.memory_manager.supabase.auth.get_user(token)
-        # Check for error in response if library is older
-        if hasattr(auth_response, 'error') and auth_response.error:
-            raise HTTPException(status_code=401, detail="Authentication failed", headers={"WWW-Authenticate": "Bearer"})
-        if not hasattr(auth_response, 'user') or auth_response.user is None:
-            raise HTTPException(status_code=401, detail="Authentication failed", headers={"WWW-Authenticate": "Bearer"})
+        if not auth_response.user:
+            raise HTTPException(
+                status_code=401,
+                detail="Authentication failed",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         return auth_response.user
     except HTTPException:
         raise

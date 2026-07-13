@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import Depends
 
@@ -72,14 +72,11 @@ class ChatResponse(BaseModel):
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(
     input_data: ChatInput,
-    background_tasks: BackgroundTasks,
     current_user = Depends(get_current_user)
 ):
     try:
         user_id = current_user.id
-        # Note: background_tasks is still passed for non-critical logging/extraction tasks
-        # but critical state persistence is now synchronous inside process_turn.
-        response_text, current_emotion = await engine.process_turn(user_id, input_data.message, background_tasks)
+        response_text, current_emotion = await engine.process_turn(user_id, input_data.message)
         return ChatResponse(response=response_text, emotion_state=current_emotion)
     except Exception:
         # Sanitize logging: avoid logging raw exceptions that might contain secrets or tracebacks

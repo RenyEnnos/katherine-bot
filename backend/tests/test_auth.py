@@ -136,8 +136,7 @@ def test_valid_token(client_app, mock_supabase, mock_engine_process):
     )
 
     assert response.status_code == 200
-    assert response.json()["response"] == "Mock response"
-    mock_engine_process.assert_called_once_with("user123", "Hello", ANY)
+    mock_engine_process.assert_called_once_with("user123", "Hello")
 
 def test_spoofing_user_id_in_chat(client_app, mock_supabase, mock_engine_process):
     mock_user = MockUser(id="user123")

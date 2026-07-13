@@ -19,7 +19,7 @@ class ConversationEngine:
         self.model_main = "llama-3.3-70b-versatile"
         self.model_fast = "llama-3.1-8b-instant"
 
-    async def process_turn(self, user_id: str, user_message: str, background_tasks=None):
+    async def process_turn(self, user_id: str, user_message: str):
         async def run_under_lock():
             current_time = time.time()
 

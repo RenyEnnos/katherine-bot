@@ -1,10 +1,8 @@
 import os
-import json
 import logging
 from datetime import datetime, UTC
 from supabase import create_client, Client
 from sentence_transformers import SentenceTransformer
-from .groq_manager import GroqClientManager
 from .relationship import UserRelationship
 from .emotional_core import EmotionalState
 
@@ -53,9 +51,7 @@ class MemoryManager:
         except Exception:
             self.embedding_model = None
 
-        # 4. LLM Manager
-        self.groq_manager = GroqClientManager()
-        self.model_fast = "llama-3.1-8b-instant"
+
 
     def load_user_state(self, user_id: str) -> dict:
         """
@@ -184,11 +180,7 @@ class MemoryManager:
             raise ContextLoadError("Falha ao carregar histórico de conversação.") from None
 
     def get_context(self, user_id: str, current_message: str, user_state: dict):
-        try:
-            history = self.load_recent_history(user_id, limit=10)
-        except Exception as e:
-            logger.warning(f"Falha ao carregar histórico recente ({type(e).__name__}); usando histórico vazio.")
-            history = []
+        history = self.load_recent_history(user_id, limit=10)
         short_term_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history])
         relevant_memories = self._retrieve_relevant(user_id, current_message)
         context_str = f"""
@@ -218,8 +210,8 @@ class MemoryManager:
                 raise TurnPersistenceError("Sem resposta do banco de dados ao salvar turno.")
             if hasattr(response, 'error') and response.error:
                 raise TurnPersistenceError("Erro retornado pelo banco de dados ao salvar turno.")
-            if not hasattr(response, 'data') or response.data is None or len(response.data) == 0:
-                raise TurnPersistenceError("Falha na gravação do turno: nenhum registro inserido.")
+            if not hasattr(response, 'data') or response.data is None or len(response.data) != 2:
+                raise TurnPersistenceError("Falha na gravação do turno: registros inseridos incompletos.")
         except TurnPersistenceError as e:
             logger.error(f"Erro ao persistir turno: {type(e).__name__}")
             raise

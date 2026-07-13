@@ -1,6 +1,8 @@
 import pytest
 import asyncio
-from unittest.mock import MagicMock, patch
+import threading
+import time
+from unittest.mock import MagicMock, patch, ANY
 from backend.memory import MemoryManager, ContextLoadError, TurnPersistenceError
 from backend.engine import ConversationEngine
 
@@ -67,7 +69,7 @@ def test_save_turn_zero_inserted_rows():
     mm = MemoryManager()
     mm.supabase = MagicMock()
     mock_resp = MagicMock()
-    mock_resp.data = [] # zero inserted rows
+    mock_resp.data = [] # zero inserted rows (should be 2)
     mock_resp.error = None
     mm.supabase.table.return_value.insert.return_value.execute.return_value = mock_resp
     with pytest.raises(TurnPersistenceError) as exc:
@@ -75,6 +77,17 @@ def test_save_turn_zero_inserted_rows():
     assert "user123" not in str(exc.value)
     assert "hi" not in str(exc.value)
     assert "hello" not in str(exc.value)
+
+def test_save_turn_incomplete_rows():
+    mm = MemoryManager()
+    mm.supabase = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.data = [{"id": 1}] # only one inserted row (should be 2)
+    mock_resp.error = None
+    mm.supabase.table.return_value.insert.return_value.execute.return_value = mock_resp
+    with pytest.raises(TurnPersistenceError) as exc:
+        mm.save_turn("user123", "hi", "hello")
+    assert "registros inseridos incompletos" in str(exc.value)
 
 def test_save_turn_validation_failures():
     mm = MemoryManager()
@@ -185,6 +198,34 @@ def test_deterministic_ordering_calls():
         {"role": "assistant", "content": "reply2"}
     ]
 
+def test_tied_timestamps_ordering():
+    mm = MemoryManager()
+    mm.supabase = MagicMock()
+    
+    mock_select = mm.supabase.table.return_value.select
+    mock_eq = mock_select.return_value.eq
+    mock_order1 = mock_eq.return_value.order
+    mock_order2 = mock_order1.return_value.order
+    mock_limit = mock_order2.return_value.limit
+    
+    # Tied timestamps (identical created_at), ordered in DB by id desc:
+    # 4 -> assistant reply2, 3 -> user msg2, 2 -> assistant reply1, 1 -> user msg1
+    mock_resp = MagicMock()
+    mock_resp.data = [
+        {"id": 4, "role": "assistant", "content": "reply2", "created_at": "2026-07-12T22:00:00Z"},
+        {"id": 3, "role": "user", "content": "msg2", "created_at": "2026-07-12T22:00:00Z"},
+        {"id": 2, "role": "assistant", "content": "reply1", "created_at": "2026-07-12T22:00:00Z"},
+        {"id": 1, "role": "user", "content": "msg1", "created_at": "2026-07-12T22:00:00Z"}
+    ]
+    mock_resp.error = None
+    mock_limit.return_value.execute.return_value = mock_resp
+    
+    history = mm.load_recent_history("userA", limit=4)
+    
+    # Inversion in Python memory yields correct chronological insertion order: user -> assistant -> user -> assistant
+    assert [h["content"] for h in history] == ["msg1", "reply1", "msg2", "reply2"]
+    assert [h["id"] for h in history] == [1, 2, 3, 4]
+
 def test_process_turn_awaits_save_turn_inside_lock():
     async def run_test():
         engine = ConversationEngine()
@@ -200,7 +241,6 @@ def test_process_turn_awaits_save_turn_inside_lock():
         save_turn_called = False
         def slow_save_turn(*args, **kwargs):
             nonlocal save_turn_called
-            import time
             time.sleep(0.2)
             save_turn_called = True
 
@@ -247,17 +287,207 @@ def test_recreate_engine_preserves_context():
         assert context1 == context2
     asyncio.run(run_test())
 
-def test_get_context_fallback_on_load_recent_history_failure():
+def test_get_context_propagates_load_failure():
     mm = MemoryManager()
     mm.supabase = MagicMock()
     
     # Mock load_recent_history to raise ContextLoadError
     mm.load_recent_history = MagicMock(side_effect=ContextLoadError("Database failure"))
     
-    # Call get_context and assert it does not raise and builds context string with empty history
-    context = mm.get_context("user123", "hello", {"persona_config": "Persona config"})
-    
-    # Context should contain empty conversation history block
-    assert "=== CONVERSA ATUAL (CURTO PRAZO) ===" in context
-    assert "user:" not in context
-    assert "assistant:" not in context
+    # Call get_context and assert it propagates the exception (fail closed)
+    with pytest.raises(ContextLoadError):
+        mm.get_context("user123", "hello", {})
+
+def test_process_turn_fails_closed_on_load_failure():
+    async def run_test():
+        engine = ConversationEngine()
+        engine.memory_manager.load_user_state = MagicMock(return_value={})
+        engine.memory_manager.sync_state = MagicMock()
+        engine._perceive = MagicMock()
+        engine.groq_manager.chat_completion = MagicMock()
+        engine.memory_manager.save_turn = MagicMock()
+        
+        # Mock load_recent_history to fail
+        engine.memory_manager.load_recent_history = MagicMock(side_effect=ContextLoadError("DB error"))
+        
+        # Calling process_turn must propagate ContextLoadError
+        with pytest.raises(ContextLoadError):
+            await engine.process_turn("user123", "Hello")
+            
+        # Verify that subsequent pipeline steps (perception, LLM completion, save_turn, state sync) are NOT run
+        engine._perceive.assert_not_called()
+        engine.groq_manager.chat_completion.assert_not_called()
+        engine.memory_manager.save_turn.assert_not_called()
+        engine.memory_manager.sync_state.assert_not_called()
+        
+    asyncio.run(run_test())
+
+def test_concurrent_process_turn_serialization():
+    async def run_test():
+        engine = ConversationEngine()
+        engine.memory_manager.load_user_state = MagicMock(return_value={})
+        engine.memory_manager.sync_state = MagicMock()
+        engine._perceive = MagicMock(return_value={})
+        
+        mock_chat1 = MagicMock()
+        mock_chat1.choices = [MagicMock()]
+        mock_chat1.choices[0].message.content = "Bot reply 1"
+        mock_chat2 = MagicMock()
+        mock_chat2.choices = [MagicMock()]
+        mock_chat2.choices[0].message.content = "Bot reply 2"
+        engine.groq_manager.chat_completion = MagicMock(side_effect=[mock_chat1, mock_chat2])
+        
+        load_calls = []
+        def mock_load(user_id, limit=10):
+            load_calls.append((user_id, time.time()))
+            return []
+        engine.memory_manager.load_recent_history = mock_load
+
+        save_started = threading.Event()
+        save_proceed = threading.Event()
+        save_finished = threading.Event()
+        
+        def slow_save(user_id, user_msg, bot_msg):
+            save_started.set()
+            save_proceed.wait(timeout=2.0)
+            save_finished.set()
+
+        engine.memory_manager.save_turn = slow_save
+
+        # Start first turn
+        t1 = asyncio.create_task(engine.process_turn("user123", "msg1"))
+        
+        # Wait until save_turn has started
+        await asyncio.to_thread(save_started.wait, 2.0)
+        assert save_started.is_set()
+        
+        # Start second turn for the SAME user
+        t2 = asyncio.create_task(engine.process_turn("user123", "msg2"))
+        
+        # Give task 2 a moment to run and try to acquire the lock
+        await asyncio.sleep(0.05)
+        
+        # load_recent_history should only have been called by task 1 so far
+        assert len(load_calls) == 1
+        assert load_calls[0][0] == "user123"
+        
+        # Release the first save_turn
+        save_proceed.set()
+        
+        # Wait for both tasks to complete
+        await t1
+        await t2
+        
+        # load_recent_history is called twice in total
+        assert len(load_calls) == 2
+        # The second load call (load_calls[1][1]) happened after task 1 finished saving
+        assert save_finished.is_set()
+        
+    asyncio.run(run_test())
+
+def test_concurrent_different_users_not_blocked():
+    async def run_test():
+        engine = ConversationEngine()
+        engine.memory_manager.load_user_state = MagicMock(return_value={})
+        engine.memory_manager.sync_state = MagicMock()
+        engine._perceive = MagicMock(return_value={})
+        
+        mock_chat = MagicMock()
+        mock_chat.choices = [MagicMock()]
+        mock_chat.choices[0].message.content = "Bot reply"
+        engine.groq_manager.chat_completion = MagicMock(return_value=mock_chat)
+        
+        load_calls = []
+        def mock_load(user_id, limit=10):
+            load_calls.append(user_id)
+            return []
+        engine.memory_manager.load_recent_history = mock_load
+
+        save1_started = threading.Event()
+        save1_proceed = threading.Event()
+        
+        def slow_save(user_id, user_msg, bot_msg):
+            if user_id == "userA":
+                save1_started.set()
+                save1_proceed.wait(timeout=2.0)
+
+        engine.memory_manager.save_turn = slow_save
+
+        # Start task 1 for userA
+        t1 = asyncio.create_task(engine.process_turn("userA", "msg1"))
+        
+        # Wait until userA's save starts
+        await asyncio.to_thread(save1_started.wait, 2.0)
+        assert save1_started.is_set()
+        
+        # Start task 2 for userB (different user)
+        t2 = asyncio.create_task(engine.process_turn("userB", "msg2"))
+        
+        # Wait for task 2 to finish (it should NOT be blocked by userA's save!)
+        await asyncio.wait_for(t2, timeout=2.0)
+        
+        # userB should have completed successfully
+        assert "userB" in load_calls
+        
+        # Release userA
+        save1_proceed.set()
+        await t1
+        assert "userA" in load_calls
+        
+    asyncio.run(run_test())
+
+def test_repeated_cancellation_during_save_turn():
+    async def run_test():
+        engine = ConversationEngine()
+        engine.memory_manager.load_user_state = MagicMock(return_value={})
+        engine.memory_manager.sync_state = MagicMock()
+        engine._perceive = MagicMock(return_value={})
+        
+        mock_chat = MagicMock()
+        mock_chat.choices = [MagicMock()]
+        mock_chat.choices[0].message.content = "Bot reply"
+        engine.groq_manager.chat_completion = MagicMock(return_value=mock_chat)
+        
+        engine.memory_manager.load_recent_history = MagicMock(return_value=[])
+
+        save_started = threading.Event()
+        save_proceed = threading.Event()
+        save_finished = threading.Event()
+        
+        def slow_save(user_id, user_msg, bot_msg):
+            save_started.set()
+            save_proceed.wait(timeout=2.0)
+            save_finished.set()
+
+        engine.memory_manager.save_turn = slow_save
+
+        # Start process_turn
+        t1 = asyncio.create_task(engine.process_turn("user123", "msg1"))
+        
+        # Wait for save_turn to start
+        await asyncio.to_thread(save_started.wait, 2.0)
+        assert save_started.is_set()
+        
+        # Cancel task 1 repeatedly
+        t1.cancel()
+        t1.cancel()
+        t1.cancel()
+        
+        await asyncio.sleep(0.05)
+        assert not save_finished.is_set()
+        
+        # Release save_turn
+        save_proceed.set()
+        
+        # t1 raises CancelledError
+        with pytest.raises(asyncio.CancelledError):
+            await t1
+            
+        # save_turn ran to completion
+        assert save_finished.is_set()
+        
+        # Lock is released/cleaned up
+        async with engine.lock_manager._dict_lock:
+            assert "user123" not in engine.lock_manager._locks
+            
+    asyncio.run(run_test())

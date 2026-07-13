@@ -172,7 +172,7 @@
 - Consumes:
   - `MemoryManager.save_turn(user_id: str, user_msg: str, bot_msg: str)`
 - Produces:
-  - `ConversationEngine.process_turn(user_id: str, user_message: str, background_tasks=None) -> tuple[str, dict]`
+  - `ConversationEngine.process_turn(user_id: str, user_message: str) -> tuple[str, dict]`
 
 - [ ] **Step 1: Write a failing test for synchronous persistence inside per-user lock**
   Add a test to `backend/tests/test_ordered_persisted_turn_history.py` verifying that `process_turn` awaits `save_turn` inside the lock.

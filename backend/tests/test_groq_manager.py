@@ -55,15 +55,24 @@ def test_empty_keys_initialization(monkeypatch):
     with pytest.raises(GroqConfigurationError):
         GroqClientManager(keys=["", "   "])
 
-    # Test constructor fails immediately on keys=None if GROQ_API_KEYS is empty/invalid
+    # Apply patch to the explicit accessor function to return []
     import backend.groq_manager
-    monkeypatch.setattr(backend.groq_manager, "GROQ_API_KEYS", [])
+    monkeypatch.setattr(backend.groq_manager.groq_keys, "get_groq_api_keys", lambda: [])
     with pytest.raises(GroqConfigurationError):
         GroqClientManager()
 
-    monkeypatch.setattr(backend.groq_manager, "GROQ_API_KEYS", ["", "   "])
+    # Apply patch to the explicit accessor function to return empty strings
+    monkeypatch.setattr(backend.groq_manager.groq_keys, "get_groq_api_keys", lambda: ["", "   "])
     with pytest.raises(GroqConfigurationError):
         GroqClientManager()
+
+    # Restore the monkeypatch
+    monkeypatch.undo()
+
+    # Confirm that after restoration, a new instantiation successfully resolves get_groq_api_keys
+    # returning the test environment placeholders and thus constructs successfully
+    manager = GroqClientManager()
+    assert "mock_groq_key_placeholder" in manager._keys
 
 # 2. Concurrent calls do not corrupt the pool
 def test_concurrent_access_no_corruption():

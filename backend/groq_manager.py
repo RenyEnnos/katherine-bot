@@ -1,5 +1,4 @@
 import logging
-import sys
 import threading
 import time
 from typing import List, Optional, Any, Callable, Set
@@ -28,11 +27,6 @@ class GroqRequestError(Exception):
     """Raised when an unexpected error occurs during a Groq completion request."""
     pass
 
-def __getattr__(name: str):
-    if name == "GROQ_API_KEYS":
-        return groq_keys.GROQ_API_KEYS
-    raise AttributeError(f"module {__name__} has no attribute {name}")
-
 class GroqClientManager:
     def __init__(
         self,
@@ -44,7 +38,7 @@ class GroqClientManager:
         self._client_factory = client_factory or (lambda k: Groq(api_key=k))
         
         # Load and validate keys
-        raw_keys = getattr(sys.modules[__name__], "GROQ_API_KEYS") if keys is None else keys
+        raw_keys = groq_keys.get_groq_api_keys() if keys is None else keys
         self._keys = [key for key in raw_keys if key and key.strip()]
         if not self._keys:
             raise GroqConfigurationError("No Groq API keys configured.")

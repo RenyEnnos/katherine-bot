@@ -244,7 +244,7 @@ class MemoryManager:
             
             records = response.data
             if not isinstance(records, list) or len(records) != 2:
-                raise TurnPersistenceError("Quantidade inválida de registros retornados.")
+                raise TurnPersistenceError("Falha na gravação do turno: registros inseridos incompletos.")
             
             user_rec = None
             assistant_rec = None

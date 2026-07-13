@@ -4,28 +4,33 @@ import logging
 import json
 from unittest.mock import MagicMock
 
-# 1. Mock external dependencies before importing any backend modules
-sys.modules['sentence_transformers'] = MagicMock()
-sys.modules['supabase'] = MagicMock()
-
-# Setup environment variables immediately
+# Capture original states BEFORE modifying them
+_original_sys_modules = dict(sys.modules)
 _original_env = dict(os.environ)
-os.environ['GROQ_API_KEY'] = 'mock_key'
-os.environ['SUPABASE_URL'] = 'http://mock'
-os.environ['SUPABASE_KEY'] = 'mock_key'
 
 import pytest
 from unittest.mock import patch, AsyncMock
 from fastapi import BackgroundTasks
 from fastapi.testclient import TestClient
 
-# Import backend modules after mocks are installed
-from backend.engine import ConversationEngine
-from backend.archival_memory import PersistedTurnRef, ArchivalDuplicateError, ArchivalValidationError, compute_idempotency_key
-
 @pytest.fixture(autouse=True, scope="module")
 def mock_external_dependencies():
+    # Capture states at setup phase
+    global _original_sys_modules, _original_env
+    _original_sys_modules = dict(sys.modules)
+    _original_env = dict(os.environ)
+
+    # Mock external dependencies before importing any backend modules
+    sys.modules['sentence_transformers'] = MagicMock()
+    sys.modules['supabase'] = MagicMock()
+
+    # Setup environment variables immediately
+    os.environ['GROQ_API_KEY'] = 'mock_key'
+    os.environ['SUPABASE_URL'] = 'http://mock'
+    os.environ['SUPABASE_KEY'] = 'mock_key'
+
     yield
+
     # Restore environment variables safely without breaking Pytest internals
     for k in list(os.environ.keys()):
         if k.startswith("PYTEST_"):
@@ -36,15 +41,25 @@ def mock_external_dependencies():
         if not k.startswith("PYTEST_"):
             os.environ[k] = v
 
-    # Restore modules directionally
-    for mod in ['backend.main', 'backend.engine', 'backend.memory', 'backend.archival_memory']:
-        if mod in sys.modules:
-            del sys.modules[mod]
-            
-    if 'sentence_transformers' in sys.modules:
-        del sys.modules['sentence_transformers']
-    if 'supabase' in sys.modules:
-        del sys.modules['supabase']
+    # Restore sys.modules exactly
+    for key in list(sys.modules.keys()):
+        if key not in _original_sys_modules:
+            del sys.modules[key]
+    sys.modules.update(_original_sys_modules)
+
+
+@pytest.fixture(scope="module")
+def backend(mock_external_dependencies):
+    from backend import engine, archival_memory
+    class Holder:
+        pass
+    h = Holder()
+    h.ConversationEngine = engine.ConversationEngine
+    h.PersistedTurnRef = archival_memory.PersistedTurnRef
+    h.ArchivalDuplicateError = archival_memory.ArchivalDuplicateError
+    h.ArchivalValidationError = archival_memory.ArchivalValidationError
+    h.compute_idempotency_key = archival_memory.compute_idempotency_key
+    return h
 
 
 @pytest.fixture
@@ -70,18 +85,16 @@ class MockAuthResponse:
         self.user = user
 
 
-
-
 @pytest.mark.anyio
-async def test_run_archival_extraction_llm_failure(caplog):
-    engine = ConversationEngine()
+async def test_run_archival_extraction_llm_failure(backend, caplog):
+    engine = backend.ConversationEngine()
     engine.memory_manager = MagicMock()
     engine.memory_manager.load_persisted_user_message = MagicMock(return_value="Hello")
     
     # Mock Groq client failure
     engine.groq_manager.chat_completion = MagicMock(side_effect=Exception("Groq error"))
     
-    ref = PersistedTurnRef(user_id="user123", source_chat_log_id=1, assistant_chat_log_id=2)
+    ref = backend.PersistedTurnRef(user_id="user123", source_chat_log_id=1, assistant_chat_log_id=2)
     
     with caplog.at_level(logging.ERROR):
         await engine.run_archival_extraction(ref)
@@ -95,8 +108,8 @@ async def test_run_archival_extraction_llm_failure(caplog):
 
 
 @pytest.mark.anyio
-async def test_run_archival_extraction_validation_failure(caplog):
-    engine = ConversationEngine()
+async def test_run_archival_extraction_validation_failure(backend, caplog):
+    engine = backend.ConversationEngine()
     engine.memory_manager = MagicMock()
     engine.memory_manager.load_persisted_user_message = MagicMock(return_value="Hello")
     
@@ -108,7 +121,7 @@ async def test_run_archival_extraction_validation_failure(caplog):
     })
     engine.groq_manager.chat_completion = MagicMock(return_value=m)
     
-    ref = PersistedTurnRef(user_id="user123", source_chat_log_id=1, assistant_chat_log_id=2)
+    ref = backend.PersistedTurnRef(user_id="user123", source_chat_log_id=1, assistant_chat_log_id=2)
     
     with caplog.at_level(logging.WARNING):
         await engine.run_archival_extraction(ref)
@@ -119,8 +132,8 @@ async def test_run_archival_extraction_validation_failure(caplog):
 
 
 @pytest.mark.anyio
-async def test_run_archival_extraction_duplicate(caplog):
-    engine = ConversationEngine()
+async def test_run_archival_extraction_duplicate(backend, caplog):
+    engine = backend.ConversationEngine()
     engine.memory_manager = MagicMock()
     engine.memory_manager.load_persisted_user_message = MagicMock(return_value="Hello")
     
@@ -134,9 +147,9 @@ async def test_run_archival_extraction_duplicate(caplog):
     engine.groq_manager.chat_completion = MagicMock(return_value=m)
     
     # Simulate unique constraint failure treated as duplicate success
-    engine.memory_manager.store_archival_extraction.side_effect = ArchivalDuplicateError("Duplicate")
+    engine.memory_manager.store_archival_extraction.side_effect = backend.ArchivalDuplicateError("Duplicate")
     
-    ref = PersistedTurnRef(user_id="user123", source_chat_log_id=1, assistant_chat_log_id=2)
+    ref = backend.PersistedTurnRef(user_id="user123", source_chat_log_id=1, assistant_chat_log_id=2)
     
     with caplog.at_level(logging.INFO):
         await engine.run_archival_extraction(ref)
@@ -146,8 +159,8 @@ async def test_run_archival_extraction_duplicate(caplog):
 
 
 @pytest.mark.anyio
-async def test_run_archival_extraction_store_failed(caplog):
-    engine = ConversationEngine()
+async def test_run_archival_extraction_store_failed(backend, caplog):
+    engine = backend.ConversationEngine()
     engine.memory_manager = MagicMock()
     engine.memory_manager.load_persisted_user_message = MagicMock(return_value="Hello secret message")
     
@@ -163,7 +176,7 @@ async def test_run_archival_extraction_store_failed(caplog):
     # Simulate general database failure
     engine.memory_manager.store_archival_extraction.side_effect = Exception("DB connection failed secret token")
     
-    ref = PersistedTurnRef(user_id="user123", source_chat_log_id=1, assistant_chat_log_id=2)
+    ref = backend.PersistedTurnRef(user_id="user123", source_chat_log_id=1, assistant_chat_log_id=2)
     
     with caplog.at_level(logging.ERROR):
         await engine.run_archival_extraction(ref)
@@ -176,8 +189,8 @@ async def test_run_archival_extraction_store_failed(caplog):
 
 
 @pytest.mark.anyio
-async def test_process_turn_schedules_background_task():
-    engine = ConversationEngine()
+async def test_process_turn_schedules_background_task(backend):
+    engine = backend.ConversationEngine()
     
     # Mock all internal methods of process_turn to focus on orchestration
     engine.memory_manager = MagicMock()
@@ -194,7 +207,7 @@ async def test_process_turn_schedules_background_task():
     
     def mock_save_turn(user_id, user_msg, bot_msg):
         call_order.append("save_turn")
-        return PersistedTurnRef(user_id=user_id, source_chat_log_id=1, assistant_chat_log_id=2)
+        return backend.PersistedTurnRef(user_id=user_id, source_chat_log_id=1, assistant_chat_log_id=2)
         
     def mock_sync_state(user_id, state, relationship):
         call_order.append("sync_state")
@@ -224,7 +237,7 @@ async def test_process_turn_schedules_background_task():
     bg_tasks.add_task.assert_called_once()
     args, kwargs = bg_tasks.add_task.call_args
     assert args[0] == engine.run_archival_extraction
-    assert isinstance(args[1], PersistedTurnRef)
+    assert isinstance(args[1], backend.PersistedTurnRef)
     assert args[1].user_id == "user123"
 
 
@@ -261,12 +274,12 @@ def test_chat_response_format(client_app, mock_supabase):
 
 
 @pytest.mark.anyio
-async def test_run_archival_extraction_load_failure(caplog):
-    engine = ConversationEngine()
+async def test_run_archival_extraction_load_failure(backend, caplog):
+    engine = backend.ConversationEngine()
     engine.memory_manager = MagicMock()
     engine.memory_manager.load_persisted_user_message = MagicMock(side_effect=Exception("DB connection error user123 secret message"))
     
-    ref = PersistedTurnRef(user_id="user123", source_chat_log_id=1, assistant_chat_log_id=2)
+    ref = backend.PersistedTurnRef(user_id="user123", source_chat_log_id=1, assistant_chat_log_id=2)
     
     with caplog.at_level(logging.ERROR):
         await engine.run_archival_extraction(ref)
@@ -278,16 +291,16 @@ async def test_run_archival_extraction_load_failure(caplog):
     assert "DB connection error" not in caplog.text
 
 
-def test_different_turns_same_content_distinct():
+def test_different_turns_same_content_distinct(backend):
     # Different turns with the same content (same user, but different source_chat_log_id)
     # produce different idempotency keys
-    key1 = compute_idempotency_key("user123", 100, 1)
-    key2 = compute_idempotency_key("user123", 101, 1)
+    key1 = backend.compute_idempotency_key("user123", 100, 1)
+    key2 = backend.compute_idempotency_key("user123", 101, 1)
     
     assert key1 != key2
     
     # Same turn (same user, same source_chat_log_id) produces same key (idempotency)
-    key3 = compute_idempotency_key("user123", 100, 1)
+    key3 = backend.compute_idempotency_key("user123", 100, 1)
     assert key1 == key3
 
 

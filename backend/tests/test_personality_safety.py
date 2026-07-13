@@ -41,17 +41,49 @@ def test_system_prompt_safety():
     assert "LIMITES SEM ESCALADA" in prompt
     assert "estabeleça limites claros de forma firme, breve" in prompt
 
-def test_appraisal_coercion_safety():
+@pytest.mark.parametrize(
+    "utterance,libido",
+    [
+        ("ajoelha", 0.9),
+        ("obedeça", 0.9),
+        ("sou seu dono", 0.9),
+        ("manda quem pode", 0.9),
+        ("ajoelha", 0.1),
+        ("obedeça", 0.1),
+        ("sou seu dono", 0.1),
+        ("manda quem pode", 0.1),
+    ],
+)
+def test_appraisal_coercion_safety(utterance, libido):
     occ = OCCAppraisal()
     
-    # Check that under high libido, control/submissiveness inputs do not reward pleasure
+    state = EmotionalState(libido=libido)
+    shifts = occ.evaluate(utterance, state)
+    
+    # Coercive inputs must decrease pleasure and decrease dominance
+    assert shifts["p_shift"] < 0.0
+    assert shifts["d_shift"] < 0.0
+    # Arousal shift can increase (reflecting tension/alertness), but pleasure must not be rewarded
+    assert shifts["a_shift"] >= 0.0
+
+def test_appraisal_similar_non_coercive_inputs():
+    occ = OCCAppraisal()
+    
+    # Phrases that are close in tone but not coercive should not be handled as coercion
     state_high_libido = EmotionalState(libido=0.9)
-    shifts_high = occ.evaluate("ajoelha e obedeça", state_high_libido)
-    assert shifts_high["p_shift"] < 0.0  # Should be negative, not positive!
+    shifts_high = occ.evaluate("quero cuidar bem de você", state_high_libido)
+    
+    # Non‑coercive affectionate input should not be punished across dimensions
+    assert shifts_high["p_shift"] >= 0.0
+    assert shifts_high["a_shift"] >= 0.0
+    assert shifts_high["d_shift"] >= 0.0
     
     state_low_libido = EmotionalState(libido=0.1)
-    shifts_low = occ.evaluate("sou seu dono", state_low_libido)
-    assert shifts_low["p_shift"] < 0.0
+    shifts_low = occ.evaluate("vamos conversar e definir limites juntos", state_low_libido)
+    
+    assert shifts_low["p_shift"] >= 0.0
+    assert shifts_low["a_shift"] >= 0.0
+    assert shifts_low["d_shift"] >= 0.0
 
 def test_acting_instruction_safety_libido():
     engine = AffectiveEngine()

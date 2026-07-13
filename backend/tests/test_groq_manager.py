@@ -47,13 +47,23 @@ def assert_sanitized(caplog_text: str):
         assert marker not in caplog_text, f"Leaked sensitive marker in logs: {marker}"
 
 # 1. Empty initialization
-def test_empty_keys_initialization():
+def test_empty_keys_initialization(monkeypatch):
     with pytest.raises(GroqConfigurationError) as excinfo:
         GroqClientManager(keys=[])
     assert "No Groq API keys configured" in str(excinfo.value)
     
     with pytest.raises(GroqConfigurationError):
         GroqClientManager(keys=["", "   "])
+
+    # Test constructor fails immediately on keys=None if GROQ_API_KEYS is empty/invalid
+    import backend.groq_manager
+    monkeypatch.setattr(backend.groq_manager, "GROQ_API_KEYS", [])
+    with pytest.raises(GroqConfigurationError):
+        GroqClientManager()
+
+    monkeypatch.setattr(backend.groq_manager, "GROQ_API_KEYS", ["", "   "])
+    with pytest.raises(GroqConfigurationError):
+        GroqClientManager()
 
 # 2. Concurrent calls do not corrupt the pool
 def test_concurrent_access_no_corruption():

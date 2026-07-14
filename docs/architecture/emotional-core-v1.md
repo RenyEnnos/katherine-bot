@@ -2,9 +2,11 @@
 
 ## Scope
 
-This document describes the typed, versioned domain contracts introduced in issue #232.
-It covers boundaries, invariants, allowlists, serialisation, migration, and fallback policy.
-It does **not** describe transition logic, decay, or production integration (those are #233 and #234).
+This document describes the typed, versioned domain contracts introduced in issue #232
+and hardened in issue #232 v1.1.
+It covers construction invariants, deep immutability, serialisation, migration, parser,
+fallback policy, and alias translation.
+It does **not** describe transition logic, decay, or production integration (#233/#234).
 
 ---
 
@@ -39,11 +41,11 @@ backend/emotional_domain/
     models.py             — EmotionalStateV1, AppraisalV1, constants
     migration.py          — migrate_legacy_snapshot
     serialization.py      — serialize_*/deserialize_* (JSON)
-    appraisal_parser.py   — parse_llm_appraisal (with fallback)
+    appraisal_parser.py   — parse_llm_appraisal (with ParseResult and ParseErrorCode)
 ```
 
 No file in this package imports FastAPI, Groq, Supabase, sentence_transformers,
-environment variables, or any I/O.
+environment variables, or any I/O. This is verified by an isolated subprocess test.
 
 ---
 
@@ -53,7 +55,27 @@ environment variables, or any I/O.
 EMOTIONAL_SCHEMA_VERSION: int = 1
 ```
 
-Single supported version. All models carry `schema_version` and reject any other value.
+Single supported version. All models carry `schema_version` and reject any other value,
+including: `None`, `bool`, `float`, `str`, and any integer ≠ 1.
+
+---
+
+## Validation on all public construction paths
+
+Every public construction path validates all invariants:
+
+| Path | Validation |
+|---|---|
+| `EmotionalStateV1(...)` | `__post_init__` validates all fields |
+| `EmotionalStateV1.create(...)` | validates, then delegates to `__init__` |
+| `EmotionalStateV1.from_dict(...)` | checks structure, then delegates to `create` |
+| `EmotionalStateV1.neutral(...)` | delegates to `create` |
+| `AppraisalV1(...)` | `__post_init__` validates all fields and enforces immutability |
+| `AppraisalV1.create(...)` | validates, then delegates to `__init__` |
+| `AppraisalV1.from_dict(...)` | checks structure, then delegates to `create` |
+| `AppraisalV1.neutral()` | delegates to `create` |
+
+> **There is no way to produce an invalid instance through any public path.**
 
 ---
 
@@ -63,7 +85,7 @@ Single supported version. All models carry `schema_version` and reject any other
 
 | Field         | Type    | Range / Allowlist       | Policy on violation |
 |---------------|---------|-------------------------|---------------------|
-| `schema_version` | `int` | must equal `1`        | `EmotionalDomainError` |
+| `schema_version` | `int` | must equal `1`; not bool, float, str, None | `EmotionalDomainError` |
 | `pleasure`    | `float` | `[-1.0, 1.0]`          | `EmotionalDomainError` |
 | `arousal`     | `float` | `[-1.0, 1.0]`          | `EmotionalDomainError` |
 | `dominance`   | `float` | `[-1.0, 1.0]`          | `EmotionalDomainError` |
@@ -81,7 +103,9 @@ Single supported version. All models carry `schema_version` and reject any other
 - `str`, `list`, `dict`, or any non-numeric type
 - `NaN`, `+Inf`, `-Inf`
 
-**Unknown keys:** always rejected via `EmotionalDomainError`.
+**Unknown keys in `from_dict`:** always rejected via `EmotionalDomainError`.
+
+**Error messages do not include raw values** (e.g., out-of-range numbers, enum values from input) to avoid leaking untrusted data.
 
 ### Coping mode allowlist
 
@@ -106,24 +130,9 @@ state = EmotionalStateV1.neutral(timestamp=time.time())
 
 # From persisted dict (validates all fields + rejects unknown keys)
 state = EmotionalStateV1.from_dict(stored_dict)
-```
 
-### Valid JSON example
-
-```json
-{
-  "aggression": 0.1,
-  "arousal": -0.2,
-  "connection": 0.5,
-  "coping_mode": "HEALTHY",
-  "dominance": 0.3,
-  "energy": 0.8,
-  "libido": 0.0,
-  "pleasure": 0.1,
-  "schema_version": 1,
-  "tension": 0.2,
-  "timestamp": 1700000000.0
-}
+# Direct construction also validates (via __post_init__)
+state = EmotionalStateV1(pleasure=0.1, ..., schema_version=1)  # raises if invalid
 ```
 
 ---
@@ -138,7 +147,7 @@ state = EmotionalStateV1.from_dict(stored_dict)
 | `valence_shift`    | `float`         | `[-1.0, 1.0]`              | `EmotionalDomainError`  |
 | `arousal_shift`    | `float`         | `[-1.0, 1.0]`              | `EmotionalDomainError`  |
 | `dominance_shift`  | `float`         | `[-1.0, 1.0]`              | `EmotionalDomainError`  |
-| `discrete_emotions`| `dict[str, float]` | keys ∈ `DISCRETE_EMOTIONS`, values in `[0.0, 1.0]` | `EmotionalDomainError` |
+| `discrete_emotions`| `MappingProxyType[str, float]` | keys ∈ `DISCRETE_EMOTIONS`, values in `[0.0, 1.0]` | `EmotionalDomainError` |
 
 ### Discrete emotion allowlist
 
@@ -149,29 +158,34 @@ DISCRETE_EMOTIONS = frozenset({
 })
 ```
 
-Unknown emotion keys are **rejected** (strict policy). Intensities follow the same
-rejection rules as other numeric fields (no bool, no None, no NaN/Inf, range enforced).
+Unknown emotion keys are **rejected** via `create`/`from_dict`/direct constructor.
+In the LLM parser (`parse_llm_appraisal`), unknown emotions are **filtered silently**
+(different policy — see Parser section).
+
+### Deep immutability
+
+`discrete_emotions` is stored as a `MappingProxyType`. This means:
+
+- The object passed by the caller is **copied defensively** at construction time.
+- Mutations to the original dict after construction have **no effect** on the model.
+- The stored mapping **cannot be mutated** (`TypeError` if attempted).
+- `to_dict()` returns a **fresh mutable copy** for serialisation; this copy does not
+  share state with the stored proxy.
+
+```python
+src = {"joy": 0.5}
+ap = AppraisalV1.create(..., discrete_emotions=src)
+src["joy"] = 99.0      # no effect
+ap.discrete_emotions["joy"] = 0.9  # raises TypeError
+d = ap.to_dict()
+d["discrete_emotions"]["joy"] = 0.9  # no effect on ap
+```
 
 ### Neutral appraisal
 
 ```python
 neutral = AppraisalV1.neutral()
 # → valence_shift=0.0, arousal_shift=0.0, dominance_shift=0.0, discrete_emotions={}
-```
-
-### Valid JSON example
-
-```json
-{
-  "arousal_shift": -0.1,
-  "discrete_emotions": {
-    "joy": 0.5,
-    "trust": 0.3
-  },
-  "dominance_shift": 0.0,
-  "schema_version": 1,
-  "valence_shift": 0.2
-}
 ```
 
 ---
@@ -182,74 +196,133 @@ neutral = AppraisalV1.neutral()
 from backend.emotional_domain import serialize_state, deserialize_state
 from backend.emotional_domain import serialize_appraisal, deserialize_appraisal
 
-# EmotionalStateV1
 json_str = serialize_state(state)    # deterministic JSON, sorted keys
 restored = deserialize_state(json_str)
 assert state == restored
-
-# AppraisalV1
-json_str = serialize_appraisal(appraisal)
-restored = deserialize_appraisal(json_str)
-assert appraisal == restored
 ```
 
 **Guarantees:**
 - Output always includes `schema_version`.
 - Keys are sorted (deterministic format).
-- No prompt text, metacognition, relationship, or memory fields exposed.
+- No prompt, metacognition, relationship, or memory fields.
 - Round-trip produces an equivalent object.
+- Output remains valid even after the `to_dict()` copy is mutated (deep immutability).
 
 ---
 
 ## Migration from legacy snapshots
 
-The legacy `EmotionalState.to_dict()` format uses `last_update` (float) instead of
-`timestamp` and has no `schema_version`.
+### Legacy format (exact field set)
+
+The legacy `EmotionalState.to_dict()` format uses `last_update` instead of `timestamp`,
+and has no `schema_version` key.
+
+**Exactly these fields are accepted in a legacy snapshot:**
+
+```
+pleasure, arousal, dominance, libido, aggression, connection,
+energy, tension, coping_mode, last_update
+```
+
+Any additional field (including `timestamp`, `schema_version`, `memory`, `system_prompt`,
+`relationship_score`, `acting_label`, etc.) causes `EmotionalDomainError`.
+
+### Migration contract
 
 ```python
 from backend.emotional_domain import migrate_legacy_snapshot
 
-# From storage (legacy format — no schema_version key)
-legacy = {
-    "pleasure": 0.1, "arousal": -0.2, "dominance": 0.3,
-    "libido": 0.0, "aggression": 0.1, "connection": 0.5,
-    "energy": 0.8, "tension": 0.2, "coping_mode": "HEALTHY",
-    "last_update": 1700000000.0,
-}
-state_v1 = migrate_legacy_snapshot(legacy)
+state_v1 = migrate_legacy_snapshot(legacy_dict)
 ```
 
-**Migration contract:**
-- Input is never mutated.
-- `last_update` → `timestamp`.
-- Missing required fields → `EmotionalDomainError`.
-- Invalid values → `EmotionalDomainError` (fails closed).
-- If `schema_version=1` is already present, re-validates and returns as-is (idempotent).
-- Any other `schema_version` → `EmotionalDomainError`.
-- No I/O, no Supabase, pure function.
+| Condition | Result |
+|---|---|
+| Key `schema_version` absent | Treated as legacy snapshot |
+| `schema_version` key present, value `None` | `EmotionalDomainError` (not "absent") |
+| `schema_version` key present, value `True`/`False`/`"1"` | `EmotionalDomainError` |
+| `schema_version=1` present | V1 idempotent path (re-validates) |
+| Both `last_update` and `timestamp` present | `EmotionalDomainError` (ambiguous) |
+| Any extra field in legacy snapshot | `EmotionalDomainError` |
+| Missing required legacy field | `EmotionalDomainError` |
+| Any field value violating invariants | `EmotionalDomainError` |
+
+Input dict is **never mutated**.
 
 ---
 
-## Fallback policy for invalid LLM appraisal
+## LLM appraisal parser
+
+### Minimum structure
+
+An appraisal from LLM output must contain all three shift fields (after alias
+translation). An empty dict `{}` is **not valid** and produces a fallback.
+
+### Top-level key allowlist
+
+Only these keys are accepted at the top level:
+
+```
+valence_shift, valence,          (canonical + legacy alias)
+arousal_shift,
+dominance_shift,
+discrete_emotions, triggered_emotions   (canonical + legacy alias)
+```
+
+Any unknown key produces `unknown_top_level_key` fallback.
+
+### Legacy alias translation (explicit, tested)
+
+| Production key | V1 canonical key |
+|---|---|
+| `valence` | `valence_shift` |
+| `triggered_emotions` | `discrete_emotions` |
+
+**Conflict policy:** if both alias and canonical key are present with **different** values,
+the result is `conflicting_aliases` fallback. If they carry the **same** value, the
+canonical is used.
+
+### discrete_emotions handling
+
+| `discrete_emotions` value | Result |
+|---|---|
+| Key absent from dict | Empty emotions (no fallback) |
+| `{}` (explicit empty dict) | Empty emotions (valid) |
+| `None` (key present, value None) | `unsupported_emotion` fallback |
+| `str`, `list`, `number`, `bool` | `unsupported_emotion` fallback |
+| Dict with unknown emotion keys | Keys silently filtered |
+| Dict with invalid intensity | `invalid_numeric_value` fallback |
+
+### Fallback codes (ParseErrorCode enum)
+
+| Code | Meaning |
+|---|---|
+| `invalid_structure` | Not a dict |
+| `unknown_top_level_key` | Dict contains key outside allowlist |
+| `missing_required_field` | A shift field is absent |
+| `conflicting_aliases` | Alias and canonical present with different values |
+| `invalid_numeric_value` | Bad type, NaN/Inf, or out-of-range shift/intensity |
+| `unsupported_emotion` | `discrete_emotions` is not a mapping |
+| `unexpected_parser_failure` | Anything else (unexpected error) |
+
+### Observable result
 
 ```python
-from backend.emotional_domain import parse_llm_appraisal
+from backend.emotional_domain import parse_llm_appraisal, ParseErrorCode
 
 result = parse_llm_appraisal(raw_llm_dict)
 
 if result.is_fallback:
-    # Log result.error — LLM produced invalid output
-    appraisal = result.appraisal  # always AppraisalV1.neutral()
+    # Log result.error_code — stable enum value, safe to log
+    # DO NOT log str(result.error_code) to an external system that sees LLM data
+    code = result.error_code  # ParseErrorCode enum
+    appraisal = result.appraisal  # AppraisalV1.neutral()
 else:
     appraisal = result.appraisal  # valid AppraisalV1
 ```
 
-**Policy:**
-- Any validation error → neutral fallback, error recorded in `result.error`.
-- Never raises.
-- Unknown emotion keys from LLM output are silently filtered (not rejected).
-- Invalid intensity values → fallback.
-- Result is never an empty dict; always an explicit `AppraisalV1`.
+> **Never log `str(exc)` from the parser.** Use `result.error_code.value` (a stable enum
+> string) for observability. The error code never contains raw LLM text, user content,
+> field names from untrusted input, or exception repr.
 
 ---
 

@@ -6,6 +6,7 @@ This package defines the typed contracts for:
 - AppraisalV1: versioned appraisal of messages/events
 - Migration utilities for legacy snapshots
 - Serialization helpers
+- LLM appraisal parser with explicit fallback
 
 No FastAPI, Groq, Supabase, sentence_transformers, or I/O allowed here.
 """
@@ -20,7 +21,7 @@ from .models import (
 )
 from .migration import migrate_legacy_snapshot
 from .serialization import serialize_state, deserialize_state, serialize_appraisal, deserialize_appraisal
-from .appraisal_parser import parse_llm_appraisal
+from .appraisal_parser import parse_llm_appraisal, ParseResult, ParseErrorCode
 
 __all__ = [
     "EMOTIONAL_SCHEMA_VERSION",
@@ -35,4 +36,6 @@ __all__ = [
     "serialize_appraisal",
     "deserialize_appraisal",
     "parse_llm_appraisal",
+    "ParseResult",
+    "ParseErrorCode",
 ]

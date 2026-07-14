@@ -39,14 +39,22 @@ VALID_COPING_MODES: FrozenSet[str] = frozenset({
 })
 
 DISCRETE_EMOTIONS: FrozenSet[str] = frozenset({
+    # Core emotions
     "joy",
     "sadness",
     "anger",
     "fear",
     "disgust",
     "surprise",
+    # Extended emotions (from v1 model)
     "trust",
     "anticipation",
+    # Production emotions (consumed by RelationshipManager via _perceive)
+    "tenderness",
+    "guilt",
+    "pride",
+    "jealousy",
+    "gratitude",
 })
 
 # ─── Domain error ────────────────────────────────────────────────────────────
@@ -232,11 +240,12 @@ class EmotionalStateV1:
 
     def __post_init__(self) -> None:
         """
-        Validate all fields on every construction path (including direct __init__).
-        Because the dataclass is frozen, we must use object.__setattr__ only
-        during __post_init__ if we need to normalise values; here we only validate.
+        Validate all fields on every construction path (including direct __init__)
+        AND normalize values (e.g. int → float) to ensure type-stable representation.
+        Because the dataclass is frozen, we must use object.__setattr__ during
+        __post_init__.
         """
-        _validate_state_fields(
+        sv, p, a, d, lib, agg, con, eng, ten, cm, ts = _validate_state_fields(
             schema_version=self.schema_version,
             pleasure=self.pleasure,
             arousal=self.arousal,
@@ -249,6 +258,17 @@ class EmotionalStateV1:
             coping_mode=self.coping_mode,
             timestamp=self.timestamp,
         )
+        # Assign normalized values back (int → float, etc.)
+        object.__setattr__(self, "pleasure", p)
+        object.__setattr__(self, "arousal", a)
+        object.__setattr__(self, "dominance", d)
+        object.__setattr__(self, "libido", lib)
+        object.__setattr__(self, "aggression", agg)
+        object.__setattr__(self, "connection", con)
+        object.__setattr__(self, "energy", eng)
+        object.__setattr__(self, "tension", ten)
+        object.__setattr__(self, "timestamp", ts)
+        object.__setattr__(self, "schema_version", sv)
 
     # ── Factory methods ───────────────────────────────────────────────────────
 
@@ -377,6 +397,11 @@ class EmotionalStateV1:
         }
 
 
+# ─── Sentinel for "argument omitted" vs "None" distinction ──────────────────────
+
+_UNSET = object()
+
+
 # ─── AppraisalV1 ─────────────────────────────────────────────────────────────
 
 _APPRAISAL_SCALAR_FIELDS: FrozenSet[str] = frozenset({
@@ -461,16 +486,21 @@ class AppraisalV1:
 
     def __post_init__(self) -> None:
         """
-        Validate all fields and enforce deep immutability on every construction path.
+        Validate all fields, normalize values (int → float), and enforce deep
+        immutability on every construction path.
         Converts a plain dict input into a MappingProxyType.
         """
         # schema_version
-        _require_schema_version(self.schema_version)
+        sv = _require_schema_version(self.schema_version)
+        object.__setattr__(self, "schema_version", sv)
 
-        # Scalar shifts
-        _require_finite_float_in_range(self.valence_shift, "valence_shift", -1.0, 1.0)
-        _require_finite_float_in_range(self.arousal_shift, "arousal_shift", -1.0, 1.0)
-        _require_finite_float_in_range(self.dominance_shift, "dominance_shift", -1.0, 1.0)
+        # Scalar shifts — validate AND normalize
+        vs = _require_finite_float_in_range(self.valence_shift, "valence_shift", -1.0, 1.0)
+        ar = _require_finite_float_in_range(self.arousal_shift, "arousal_shift", -1.0, 1.0)
+        ds = _require_finite_float_in_range(self.dominance_shift, "dominance_shift", -1.0, 1.0)
+        object.__setattr__(self, "valence_shift", vs)
+        object.__setattr__(self, "arousal_shift", ar)
+        object.__setattr__(self, "dominance_shift", ds)
 
         # Validate and convert discrete_emotions to an immutable proxy.
         # We always make a fresh copy to prevent the caller's dict from being
@@ -506,16 +536,17 @@ class AppraisalV1:
         valence_shift: object,
         arousal_shift: object,
         dominance_shift: object,
-        discrete_emotions: object = None,
+        discrete_emotions: object = _UNSET,
         schema_version: object = EMOTIONAL_SCHEMA_VERSION,
     ) -> "AppraisalV1":
         """
         Validated factory. Raises EmotionalDomainError on any invariant violation.
         ``__post_init__`` will also run and validate, providing defence-in-depth.
 
-        ``discrete_emotions=None`` is treated as an empty mapping (no emotions).
-        ``discrete_emotions={}`` is a valid empty mapping.
-        Any other non-dict type raises EmotionalDomainError.
+        - Omitted ``discrete_emotions`` (default) → empty mapping.
+        - Explicit ``discrete_emotions=None`` → raises EmotionalDomainError.
+        - ``discrete_emotions={}`` → valid empty mapping.
+        - Any other non-dict type raises EmotionalDomainError.
         """
         sv = _require_schema_version(schema_version)
 
@@ -523,8 +554,12 @@ class AppraisalV1:
         as_ = _require_finite_float_in_range(arousal_shift, "arousal_shift", -1.0, 1.0)
         ds = _require_finite_float_in_range(dominance_shift, "dominance_shift", -1.0, 1.0)
 
-        # None → empty mapping (only in the create() factory, not from_dict)
-        de_raw = {} if discrete_emotions is None else discrete_emotions
+        # Sentinel: omitted → empty dict. Explicit None → rejected.
+        if discrete_emotions is None:
+            raise EmotionalDomainError(
+                "discrete_emotions must be a dict, got None."
+            )
+        de_raw: object = {} if discrete_emotions is _UNSET else discrete_emotions
         de = _validate_discrete_emotions(de_raw)
 
         return cls(
@@ -566,12 +601,19 @@ class AppraisalV1:
                 "Missing required fields in AppraisalV1 payload."
             )
 
-        # discrete_emotions is optional in serialised form, but if present must be a dict
-        de_raw = data.get("discrete_emotions")
-        if de_raw is None:
-            de_input: object = {}
+        # discrete_emotions is optional in serialised form.
+        # If the key is absent → empty mapping.
+        # If the key is present with None → reject (fail-closed).
+        if "discrete_emotions" not in data:
+            de_input: object = _UNSET  # will resolve to empty in create()
         else:
+            de_raw = data["discrete_emotions"]
+            if de_raw is None:
+                raise EmotionalDomainError(
+                    "discrete_emotions must be a dict, got None."
+                )
             de_input = de_raw  # will be validated in create()
+        
 
         return cls.create(
             valence_shift=data["valence_shift"],

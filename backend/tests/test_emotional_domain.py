@@ -46,6 +46,16 @@ H17. Migration rejects schema_version=None
 H18. Migration rejects both last_update and timestamp simultaneously
 H19. Migration v1 idempotent
 H20. Isolated subprocess import of package — no infra modules loaded
+
+Hardening (v1.2 — second audit):
+N1.  Direct constructor normalizes int→float (EmotionalStateV1)
+N2.  Direct constructor normalizes int→float (AppraisalV1 shifts)
+N3.  create() and direct ctor produce identical types and JSON
+N4.  Explicit None discrete_emotions rejected by create()
+N5.  Explicit None discrete_emotions rejected by from_dict()
+N6.  Omitted discrete_emotions defaults to empty mapping
+N7.  Production _perceive() payload passes through parser without loss
+N8.  DISCRETE_EMOTIONS includes all production emotions used by RelationshipManager
 """
 
 from __future__ import annotations
@@ -341,6 +351,187 @@ class TestAppraisalDeepImmutability:
         d["discrete_emotions"]["joy"] = 99.0
         # Object is unchanged
         assert ap.discrete_emotions["joy"] == 0.5
+
+
+# ─── N1 & N2: Normalization in direct constructors ──────────────────────────
+
+class TestStateNormalization:
+    """N1 — Direct EmotionalStateV1(...) normalizes int → float."""
+
+    def test_direct_ctor_normalizes_int_to_float(self):
+        state = EmotionalStateV1(**_valid_state_kwargs(pleasure=1, libido=0))
+        assert state.pleasure == 1.0
+        assert isinstance(state.pleasure, float)
+        assert isinstance(state.libido, float)
+
+    def test_factory_and_direct_ctor_equal(self):
+        direct = EmotionalStateV1(**_valid_state_kwargs(pleasure=1, arousal=0, tension=0))
+        factory = EmotionalStateV1.create(
+            pleasure=1, arousal=0, dominance=0.3,
+            libido=0.0, aggression=0.1, connection=0.5,
+            energy=0.8, tension=0, coping_mode="HEALTHY",
+            timestamp=1_700_000_000.0,
+        )
+        assert direct == factory
+        assert direct.to_dict() == factory.to_dict()
+
+    def test_direct_and_factory_json_identical(self):
+        direct = EmotionalStateV1(**_valid_state_kwargs(pleasure=1, arousal=0, tension=0))
+        factory = EmotionalStateV1.create(
+            pleasure=1, arousal=0, dominance=0.3,
+            libido=0.0, aggression=0.1, connection=0.5,
+            energy=0.8, tension=0, coping_mode="HEALTHY",
+            timestamp=1_700_000_000.0,
+        )
+        from backend.emotional_domain.serialization import serialize_state
+        assert serialize_state(direct) == serialize_state(factory)
+
+    def test_normalization_uses_float_in_to_dict(self):
+        state = EmotionalStateV1(**_valid_state_kwargs(pleasure=1))
+        d = state.to_dict()
+        assert d["pleasure"] == 1.0
+        assert isinstance(d["pleasure"], float)
+
+
+class TestAppraisalNormalization:
+    """N2 — Direct AppraisalV1(...) normalizes int → float for shifts."""
+
+    def test_direct_ctor_normalizes_int_shifts(self):
+        a = AppraisalV1(
+            valence_shift=1, arousal_shift=0, dominance_shift=-1,
+            discrete_emotions={}, schema_version=EMOTIONAL_SCHEMA_VERSION,
+        )
+        assert a.valence_shift == 1.0
+        assert isinstance(a.valence_shift, float)
+        assert isinstance(a.arousal_shift, float)
+        assert isinstance(a.dominance_shift, float)
+
+    def test_factory_and_direct_ctor_equal(self):
+        direct = AppraisalV1(
+            valence_shift=1, arousal_shift=0, dominance_shift=-1,
+            discrete_emotions={"joy": 0.5}, schema_version=EMOTIONAL_SCHEMA_VERSION,
+        )
+        factory = AppraisalV1.create(
+            valence_shift=1, arousal_shift=0, dominance_shift=-1,
+            discrete_emotions={"joy": 0.5},
+        )
+        assert direct == factory
+        assert direct.to_dict() == factory.to_dict()
+
+    def test_direct_and_factory_json_identical(self):
+        direct = AppraisalV1(
+            valence_shift=1, arousal_shift=0, dominance_shift=0,
+            discrete_emotions={"joy": 0.5}, schema_version=EMOTIONAL_SCHEMA_VERSION,
+        )
+        factory = AppraisalV1.create(
+            valence_shift=1, arousal_shift=0, dominance_shift=0,
+            discrete_emotions={"joy": 0.5},
+        )
+        from backend.emotional_domain.serialization import serialize_appraisal
+        assert serialize_appraisal(direct) == serialize_appraisal(factory)
+
+
+# ─── N4 & N5: None rejection in Appraisal API ────────────────────────────────
+
+class TestAppraisalNoneRejection:
+    """N4 — Explicit None in discrete_emotions raises EmotionalDomainError."""
+
+    _BASE = dict(valence_shift=0.0, arousal_shift=0.0, dominance_shift=0.0)
+
+    def test_create_explicit_none_rejected(self):
+        with pytest.raises(EmotionalDomainError, match="discrete_emotions"):
+            AppraisalV1.create(**self._BASE, discrete_emotions=None)
+
+    def test_create_omitted_defaults_to_empty(self):
+        """Omitting discrete_emotions entirely should produce empty mapping."""
+        a = AppraisalV1.create(**self._BASE)
+        assert dict(a.discrete_emotions) == {}
+
+    def test_create_explicit_empty_accepted(self):
+        a = AppraisalV1.create(**self._BASE, discrete_emotions={})
+        assert dict(a.discrete_emotions) == {}
+
+    def test_from_dict_explicit_none_rejected(self):
+        d = _valid_appraisal_dict(discrete_emotions=None)
+        with pytest.raises(EmotionalDomainError, match="discrete_emotions"):
+            AppraisalV1.from_dict(d)
+
+    def test_from_dict_absent_key_defaults_to_empty(self):
+        d = {k: v for k, v in _valid_appraisal_dict().items() if k != "discrete_emotions"}
+        a = AppraisalV1.from_dict(d)
+        assert dict(a.discrete_emotions) == {}
+
+    def test_from_dict_unknown_keys_still_rejected(self):
+        d = _valid_appraisal_dict()
+        d["extra"] = "value"
+        with pytest.raises(EmotionalDomainError):
+            AppraisalV1.from_dict(d)
+
+
+# ─── N7: Production _perceive() payload regression test ──────────────────────
+
+class TestParserProductionPayload:
+    """N7 — The actual _perceive() payload from engine.py must pass through
+    the parser without loss of emotions consumed by RelationshipManager."""
+
+    _PRODUCTION_EMOTIONS = [
+        "joy", "sadness", "anger", "fear", "disgust", "surprise",
+        "tenderness", "guilt", "pride", "jealousy", "gratitude",
+    ]
+
+    def test_parser_preserves_all_production_emotions(self):
+        """The full payload from engine.py _perceive() must preserve all 11
+        emotions used by RelationshipManager."""
+        triggered = {emo: 0.5 for emo in self._PRODUCTION_EMOTIONS}
+        raw = {
+            "valence": 0.3,
+            "arousal_shift": -0.1,
+            "dominance_shift": 0.0,
+            "triggered_emotions": triggered,
+        }
+        result = parse_llm_appraisal(raw)
+        assert not result.is_fallback, f"Fallback: {result.error_code}"
+        parsed_emotions = dict(result.appraisal.discrete_emotions)
+        for emo in self._PRODUCTION_EMOTIONS:
+            assert emo in parsed_emotions, f"Missing emotion: {emo}"
+            assert parsed_emotions[emo] == 0.5
+
+    def test_tenderness_and_gratitude_preserved_for_relationship(self):
+        """Specifically test the emotions consumed by RelationshipManager:
+        tenderness (affection), joy (affection), gratitude (affection),
+        anger (tension), disgust (tension)."""
+        triggered = {
+            "tenderness": 0.8, "joy": 0.3, "gratitude": 0.6,
+            "anger": 0.4, "disgust": 0.0,
+        }
+        raw = {
+            "valence": 0.5,
+            "arousal_shift": 0.0,
+            "dominance_shift": 0.0,
+            "triggered_emotions": triggered,
+        }
+        result = parse_llm_appraisal(raw)
+        assert not result.is_fallback
+        de = dict(result.appraisal.discrete_emotions)
+        assert de["tenderness"] == 0.8
+        assert de["gratitude"] == 0.6
+        assert de["anger"] == 0.4
+
+    def test_parser_preserves_all_emotions_from_legacy_triggered(self):
+        """Using triggered_emotions alias (as in _perceive output)."""
+        triggered = {emo: 0.3 for emo in self._PRODUCTION_EMOTIONS}
+        raw = {
+            "valence": -0.2,
+            "arousal_shift": 0.1,
+            "dominance_shift": -0.1,
+            "triggered_emotions": triggered,
+        }
+        result = parse_llm_appraisal(raw)
+        assert not result.is_fallback
+        de = dict(result.appraisal.discrete_emotions)
+        assert len(de) == len(self._PRODUCTION_EMOTIONS)
+        for emo in self._PRODUCTION_EMOTIONS:
+            assert de[emo] == 0.3
 
 
 # ─── H6: Serialization valid after mutation attempt ──────────────────────────
@@ -1116,10 +1307,16 @@ class TestUnknownKeys:
 # ─── Discrete emotion allowlist (9 & 10) ─────────────────────────────────────
 
 class TestDiscreteEmotionAllowlist:
-    def test_allowlist_is_exact(self):
+    def test_allowlist_includes_production_emotions(self):
+        """All emotions used by _perceive() and RelationshipManager must be present."""
+        for emo in ["tenderness", "guilt", "pride", "jealousy", "gratitude"]:
+            assert emo in DISCRETE_EMOTIONS, f"Missing production emotion: {emo}"
+
+    def test_allowlist_contains_expected_set(self):
         expected = frozenset({
             "joy", "sadness", "anger", "fear",
             "disgust", "surprise", "trust", "anticipation",
+            "tenderness", "guilt", "pride", "jealousy", "gratitude",
         })
         assert DISCRETE_EMOTIONS == expected
 

@@ -291,9 +291,29 @@ Any unknown key produces `unknown_top_level_key` fallback.
 | `valence` | `valence_shift` |
 | `triggered_emotions` | `discrete_emotions` |
 
-**Conflict policy:** if both alias and canonical key are present with **different** values,
-the result is `conflicting_aliases` fallback. If they carry the **same** value, the
-canonical is used.
+**Conflict policy (validated+normalised comparison):**
+
+When both alias and canonical key are present, **each side is validated and
+normalised independently** using the same rules as the parser:
+
+1. **Validate** each side — reject bool, None, string, NaN, Inf, out-of-range,
+   non-mapping types, and invalid intensities.
+2. **Normalise** each side — convert int → float, filter unknown emotion keys
+   silently (mappings that differ only by unknown emotions normalise to the
+   same result).
+3. **Compare** only normalised values:
+   - If **either** side is invalid → the parser returns the corresponding
+     validation error code (`invalid_numeric_value` or `unsupported_emotion`),
+     **not** `conflicting_aliases`.
+   - If both are valid and normalised values **match** → drop the alias, use
+     the canonical key.
+   - If both are valid and normalised values **differ** → `conflicting_aliases`
+     fallback.
+
+`1` and `1.0` are equivalent **only after both are validated** as finite floats.
+
+`{"invented": 0.5}` and `{}` are equivalent because unknown emotion keys are
+filtered during normalisation, producing `{}` in both cases.
 
 ### discrete_emotions handling
 
@@ -313,9 +333,9 @@ canonical is used.
 | `invalid_structure` | Not a dict |
 | `unknown_top_level_key` | Dict contains key outside allowlist |
 | `missing_required_field` | A shift field is absent |
-| `conflicting_aliases` | Alias and canonical present with different values |
-| `invalid_numeric_value` | Bad type, NaN/Inf, or out-of-range shift/intensity |
-| `unsupported_emotion` | `discrete_emotions` is not a mapping |
+| `conflicting_aliases` | Alias and canonical both valid but **normalised** values differ |
+| `invalid_numeric_value` | Bad type (bool, None, string), NaN/Inf, out-of-range, or overflow in shift/intensity |
+| `unsupported_emotion` | `discrete_emotions`/`triggered_emotions` is not a mapping (None, bool, str, list, number) |
 | `unexpected_parser_failure` | Anything else (unexpected error) |
 
 ### Observable result

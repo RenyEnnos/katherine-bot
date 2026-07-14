@@ -21,9 +21,9 @@ Fallback codes
 - ``invalid_structure``       — not a dict, or structurally malformed
 - ``unknown_top_level_key``   — dict contains key not in the allowlist
 - ``missing_required_field``  — a shift field is absent
-- ``conflicting_aliases``     — both alias and canonical name present with different values
-- ``invalid_numeric_value``   — bad type, NaN/Inf, or out-of-range shift/intensity
-- ``unsupported_emotion``     — discrete_emotions present but not a mapping
+- ``conflicting_aliases``     — alias and canonical both valid but **normalised** values differ
+- ``invalid_numeric_value``   — bad type (bool, None, str), NaN/Inf, out-of-range, or overflow in shift/intensity
+- ``unsupported_emotion``     — ``discrete_emotions``/``triggered_emotions`` is not a mapping (None, bool, str, list, number)
 - ``unexpected_parser_failure`` — anything not covered by the above
 
 Legacy key translation (explicit, tested)
@@ -34,9 +34,22 @@ The current production format uses:
   ``dominance_shift``    → ``dominance_shift`` (unchanged)
   ``triggered_emotions`` → ``discrete_emotions``
 
-If both alias and canonical name are present with *the same* value, the
-canonical is used. If they are present with *different* values, the parser
-produces ``conflicting_aliases`` fallback.
+If both alias and canonical key are present, each side is **validated and
+normalised independently** using the same rules as the parser
+(``_validate_normalize_shift`` for scalars,
+``_validate_normalize_emotions`` for mappings).
+
+- If **either** side is invalid (bool, None, string, NaN, Inf, out-of-range,
+  non-mapping emotions, invalid intensity), the parser returns the
+  corresponding validation error code (``invalid_numeric_value`` or
+  ``unsupported_emotion``), **not** ``conflicting_aliases``.
+- If **both** sides are valid, their **normalised** values are compared:
+  * ``1`` and ``1.0`` are equivalent after normalisation.
+  * Unknown emotion keys in mappings are **filtered** before comparison
+    (e.g. ``{"invented": 0.5}`` normalises to ``{}``).
+  * If normalised values differ, the parser produces
+    ``conflicting_aliases`` fallback.
+  * If normalised values match, the canonical is used.
 
 Top-level key allowlist
 =======================

@@ -217,31 +217,47 @@ def _do_parse(raw: Any) -> ParseResult:
     return ParseResult(appraisal=appraisal, is_fallback=False, error_code=None)
 
 
-def _values_are_equivalent(a: object, b: object) -> bool:
+def _validate_normalize_shift(value: object, field_name: str) -> float:
     """
-    Type-strict equality check that prevents ``bool == int`` bypass.
+    Validate and normalise a shift value using the same rules as the parser.
 
-    In Python ``True == 1`` and ``False == 0``.  This helper returns
-    ``False`` when *either* side is a ``bool`` so that alias/canonical
-    pairs like ``valence=True`` / ``valence_shift=1`` are detected as
-    conflicting rather than silently accepted.
-
-    For dict values (e.g. ``triggered_emotions`` / ``discrete_emotions``)
-    the check recurses into values so that ``{"joy": True} != {"joy": 1}``
-    is correctly recognised as inequivalent.
+    Returns a normalised ``float``.  Raises ``_ParserFailure(invalid_numeric_value)``
+    when *value* is bool, None, str, list, NaN, Inf, or out of range.
     """
-    if isinstance(a, bool) or isinstance(b, bool):
-        return False  # Never treat bool as equivalent to int/float/dict/etc.
+    try:
+        return _require_finite_float_in_range(value, field_name, -1.0, 1.0)
+    except EmotionalDomainError:
+        raise _ParserFailure(ParseErrorCode.invalid_numeric_value)
 
-    if isinstance(a, dict) and isinstance(b, dict):
-        if set(a.keys()) != set(b.keys()):
-            return False
-        return all(_values_are_equivalent(a[k], b[k]) for k in a)
 
-    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-        return a == b  # 1 and 1.0 are equivalent; float comparison is fine
+def _validate_normalize_emotions(value: object) -> Dict[str, float]:
+    """
+    Validate and normalise an emotions mapping using the same rules as the parser.
 
-    return a == b
+    Unknown emotion keys are **filtered** (same policy as ``_parse_discrete_emotions``).
+    Invalid types (None, bool, str, list, number) raise ``_ParserFailure(unsupported_emotion)``.
+    Invalid intensities raise ``_ParserFailure(invalid_numeric_value)``.
+
+    Returns a plain ``dict`` with only known emotions and validated intensities.
+    """
+    if isinstance(value, bool) or not isinstance(value, dict):
+        raise _ParserFailure(ParseErrorCode.unsupported_emotion)
+
+    result: Dict[str, float] = {}
+    for k, v in value.items():
+        if not isinstance(k, str):
+            raise _ParserFailure(ParseErrorCode.unsupported_emotion)
+        if k not in DISCRETE_EMOTIONS:
+            # Unknown emotions from LLM are silently filtered (same as _parse_discrete_emotions).
+            continue
+        try:
+            result[k] = _require_finite_float_in_range(
+                v, f"discrete_emotions['{k}']", 0.0, 1.0
+            )
+        except EmotionalDomainError:
+            raise _ParserFailure(ParseErrorCode.invalid_numeric_value)
+
+    return result
 
 
 def _translate_aliases(raw: dict) -> dict:
@@ -252,13 +268,15 @@ def _translate_aliases(raw: dict) -> dict:
       ``valence``            ↔ ``valence_shift``
       ``triggered_emotions`` ↔ ``discrete_emotions``
 
-    Conflict policy:
-      A type-strict equality check (``_values_are_equivalent``) is used so
-      that ``bool == int`` does **not** bypass the comparison.
-
-      If both alias and canonical key are present AND their values are
-      *not* equivalent, raise ``_ParserFailure(conflicting_aliases)``.
-      If they are equivalent (or only one is present), use the canonical.
+    Policy (per audit requirement):
+    1. Validate alias and canonical **independently** using the same rules
+       as the parser (``_validate_normalize_shift`` / ``_validate_normalize_emotions``).
+    2. Produce normalised values/mappings (int → float, unknown emotions filtered).
+    3. Compare only the normalised results.
+    4. If either side is invalid, return the **validation error code**
+       (``invalid_numeric_value`` or ``unsupported_emotion``), not ``conflicting_aliases``.
+    5. If both are valid but differ, raise ``conflicting_aliases``.
+    6. ``1`` and ``1.0`` are equivalent only after both are validated as finite floats.
     """
     result = dict(raw)
 
@@ -266,7 +284,10 @@ def _translate_aliases(raw: dict) -> dict:
     has_alias = "valence" in raw
     has_canonical = "valence_shift" in raw
     if has_alias and has_canonical:
-        if not _values_are_equivalent(raw["valence"], raw["valence_shift"]):
+        # Validate + normalise each side independently
+        alias_norm = _validate_normalize_shift(raw["valence"], "valence")
+        canonical_norm = _validate_normalize_shift(raw["valence_shift"], "valence_shift")
+        if alias_norm != canonical_norm:
             raise _ParserFailure(ParseErrorCode.conflicting_aliases)
         # Same value — drop alias, keep canonical
         result.pop("valence", None)
@@ -277,7 +298,10 @@ def _translate_aliases(raw: dict) -> dict:
     has_alias_te = "triggered_emotions" in raw
     has_canonical_de = "discrete_emotions" in raw
     if has_alias_te and has_canonical_de:
-        if not _values_are_equivalent(raw["triggered_emotions"], raw["discrete_emotions"]):
+        # Validate + normalise each side independently
+        alias_norm = _validate_normalize_emotions(raw["triggered_emotions"])
+        canonical_norm = _validate_normalize_emotions(raw["discrete_emotions"])
+        if alias_norm != canonical_norm:
             raise _ParserFailure(ParseErrorCode.conflicting_aliases)
         result.pop("triggered_emotions", None)
     elif has_alias_te:

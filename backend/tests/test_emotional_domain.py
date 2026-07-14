@@ -65,12 +65,20 @@ O4.  Huge int in appraisal shift → EmotionalDomainError
 O5.  Huge int in emotion intensity → EmotionalDomainError
 O6.  Legacy migration with huge int → EmotionalDomainError
 O7.  Parser maps huge int to invalid_numeric_value (not unexpected_parser_failure)
-B1.  valence=True vs valence_shift=1 → conflicting_aliases
-B2.  valence=False vs valence_shift=0 → conflicting_aliases
-B3.  triggered_emotions with bool joy vs discrete_emotions with int joy → conflicting_aliases
-B4.  triggered_emotions with bool False vs discrete_emotions with int 0 → conflicting_aliases
+B1.  valence=True vs valence_shift=1 → invalid_numeric_value (bool invalid)
+B2.  valence=False vs valence_shift=0 → invalid_numeric_value (bool invalid)
+B3.  triggered_emotions with bool joy vs discrete_emotions with int joy → invalid_numeric_value
+B4.  triggered_emotions with bool False vs discrete_emotions with int 0 → invalid_numeric_value
 B5.  Both aliases equally invalid → predictable fallback (invalid_numeric_value)
 B6.  1 vs 1.0 policy: int/float equivalence accepted (not rejected)
+
+Hardening (v1.4 — fourth audit / alias validation+normalisation):
+C1.  Aliases differing only by filtered unknown emotions → equivalent (accepted)
+C2.  Alias valid, canonical invalid shift → invalid_numeric_value (not conflicting_aliases)
+C3.  Alias invalid, canonical valid shift → invalid_numeric_value
+C4.  Alias valid, canonical invalid emotions → unsupported_emotion
+C5.  Known+unknown emotions normalise to same known set → accepted
+C6.  int/float equivalence after normalisation → accepted
 """
 
 from __future__ import annotations
@@ -1689,25 +1697,27 @@ class TestOverflowError:
 
 class TestBoolAliasEquivalence:
     """
-    B1-B6 — bool and int must not be treated as equivalent in alias checking.
-    True == 1 and False == 0 in Python, which would otherwise allow bypass.
+    B1-B6 — Alias comparison now validates each side independently.
+    Bool values are invalid numeric types, so they produce validation
+    error codes (invalid_numeric_value / unsupported_emotion), not
+    conflicting_aliases.
     """
 
     _BASE = {"arousal_shift": 0.0, "dominance_shift": 0.0}
 
-    # B1: valence=True, valence_shift=1 → conflicting_aliases
+    # B1: valence=True, valence_shift=1 → invalid_numeric_value (bool invalid)
     def test_valence_true_vs_int_one(self):
         raw = {"valence": True, "valence_shift": 1, **self._BASE}
         result = parse_llm_appraisal(raw)
         assert result.is_fallback
-        assert result.error_code == ParseErrorCode.conflicting_aliases
+        assert result.error_code == ParseErrorCode.invalid_numeric_value
 
-    # B2: valence=False, valence_shift=0 → conflicting_aliases
+    # B2: valence=False, valence_shift=0 → invalid_numeric_value (bool invalid)
     def test_valence_false_vs_int_zero(self):
         raw = {"valence": False, "valence_shift": 0, **self._BASE}
         result = parse_llm_appraisal(raw)
         assert result.is_fallback
-        assert result.error_code == ParseErrorCode.conflicting_aliases
+        assert result.error_code == ParseErrorCode.invalid_numeric_value
 
     # B3: triggered_emotions with bool values vs discrete_emotions with int
     def test_triggered_bool_vs_discrete_int_joy(self):
@@ -1719,7 +1729,8 @@ class TestBoolAliasEquivalence:
         }
         result = parse_llm_appraisal(raw)
         assert result.is_fallback
-        assert result.error_code == ParseErrorCode.conflicting_aliases
+        # Bool intensity is invalid; validation happens before comparison
+        assert result.error_code == ParseErrorCode.invalid_numeric_value
 
     # B4: triggered_emotions with bool False vs discrete_emotions with int 0
     def test_triggered_bool_false_vs_discrete_int_zero(self):
@@ -1731,13 +1742,12 @@ class TestBoolAliasEquivalence:
         }
         result = parse_llm_appraisal(raw)
         assert result.is_fallback
-        assert result.error_code == ParseErrorCode.conflicting_aliases
+        assert result.error_code == ParseErrorCode.invalid_numeric_value
 
     # B5: Both aliases with equally invalid values → fallback (not success)
     def test_both_aliases_equally_invalid(self):
-        """Both alias and canonical have the same string value → they ARE
-        equivalent (same value), so no conflict.  The invalid string is caught
-        by later validation as invalid_numeric_value."""
+        """Both alias and canonical have the same invalid value.
+        Validation catches the first one; result is invalid_numeric_value."""
         raw = {
             "valence": "invalid",
             "valence_shift": "invalid",
@@ -1745,13 +1755,11 @@ class TestBoolAliasEquivalence:
         }
         result = parse_llm_appraisal(raw)
         assert result.is_fallback
-        # Same (invalid) value → no alias conflict; validation catches it.
         assert result.error_code == ParseErrorCode.invalid_numeric_value
 
     def test_both_triggered_equally_invalid(self):
         """Both triggered_emotions and discrete_emotions have the same
-        invalid intensity string → they ARE equivalent (same values inside).
-        No alias conflict; the invalid intensity is caught later."""
+        invalid intensity string. Validation catches the first one."""
         raw = {
             **self._BASE,
             "valence_shift": 0.0,
@@ -1762,7 +1770,7 @@ class TestBoolAliasEquivalence:
         assert result.is_fallback
         assert result.error_code == ParseErrorCode.invalid_numeric_value
 
-    # B6: 1 vs 1.0 is accepted (normal float equivalence)
+    # B6: 1 vs 1.0 is accepted (normal float equivalence after validation)
     def test_one_vs_one_point_zero_accepted(self):
         """1 and 1.0 are both valid floats with the same value."""
         raw = {"valence": 1.0, "valence_shift": 1, **self._BASE}
@@ -1775,6 +1783,106 @@ class TestBoolAliasEquivalence:
         raw = {"valence": 0, "valence_shift": 0.0, **self._BASE}
         result = parse_llm_appraisal(raw)
         assert not result.is_fallback, f"Should be accepted, got {result.error_code}"
+        assert result.appraisal.valence_shift == 0.0
+
+
+# ─── C1-C6: Alias validation+normalisation (fourth audit) ───────────────────
+
+class TestAliasValidationNormalisation:
+    """
+    C1-C6 — Alias comparison validates and normalises each side independently
+    before comparing, using the same rules as the parser.
+    """
+
+    _BASE = {"arousal_shift": 0.0, "dominance_shift": 0.0}
+
+    # C1: Aliases that differ only by filtered unknown emotions → accepted
+    def test_unknown_emotions_filtered_make_aliases_equal(self):
+        """triggered_emotions has unknown emotion 'invented' which is filtered
+        during normalisation, producing the same result as empty discrete_emotions."""
+        raw = {
+            **self._BASE,
+            "valence_shift": 0.0,
+            "triggered_emotions": {"invented": 0.5},
+            "discrete_emotions": {},
+        }
+        result = parse_llm_appraisal(raw)
+        assert not result.is_fallback, f"Should be accepted, got {result.error_code}"
+        assert dict(result.appraisal.discrete_emotions) == {}
+
+    def test_both_unknown_emotions_filtered_make_aliases_equal(self):
+        """Both sides have only unknown emotions -> both normalise to {}."""
+        raw = {
+            **self._BASE,
+            "valence_shift": 0.0,
+            "triggered_emotions": {"unknown1": 0.5, "unknown2": 0.3},
+            "discrete_emotions": {"unknown3": 0.1},
+        }
+        result = parse_llm_appraisal(raw)
+        assert not result.is_fallback, f"Should be accepted, got {result.error_code}"
+        assert dict(result.appraisal.discrete_emotions) == {}
+
+    # C2: Alias valid, canonical invalid → validation error code
+    def test_alias_valid_canonical_invalid_shift(self):
+        """valence is valid, valence_shift is a string -> invalid_numeric_value."""
+        raw = {"valence": 0.5, "valence_shift": "bad", **self._BASE}
+        result = parse_llm_appraisal(raw)
+        assert result.is_fallback
+        assert result.error_code == ParseErrorCode.invalid_numeric_value
+
+    # C3: Alias invalid, canonical valid → validation error code
+    def test_alias_invalid_canonical_valid_shift(self):
+        """valence is a string, valence_shift is valid -> invalid_numeric_value."""
+        raw = {"valence": "bad", "valence_shift": 0.5, **self._BASE}
+        result = parse_llm_appraisal(raw)
+        assert result.is_fallback
+        assert result.error_code == ParseErrorCode.invalid_numeric_value
+
+    # C4: Alias valid, canonical invalid emotion mapping
+    def test_alias_valid_canonical_invalid_emotions(self):
+        """triggered_emotions is valid, discrete_emotions is None -> unsupported_emotion."""
+        raw = {
+            **self._BASE,
+            "valence_shift": 0.0,
+            "triggered_emotions": {"joy": 0.5},
+            "discrete_emotions": None,
+        }
+        result = parse_llm_appraisal(raw)
+        assert result.is_fallback
+        assert result.error_code == ParseErrorCode.unsupported_emotion
+
+    def test_alias_invalid_canonical_valid_emotions(self):
+        """triggered_emotions is None, discrete_emotions is valid -> unsupported_emotion."""
+        raw = {
+            **self._BASE,
+            "valence_shift": 0.0,
+            "triggered_emotions": None,
+            "discrete_emotions": {"joy": 0.5},
+        }
+        result = parse_llm_appraisal(raw)
+        assert result.is_fallback
+        assert result.error_code == ParseErrorCode.unsupported_emotion
+
+    # C5: Not conflicting when known+unknown emotions equal after filtering
+    def test_known_plus_unknown_equals_same_known(self):
+        """triggered_emotions has known emotions 'joy': 0.5 plus unknown 'invented': 0.9.
+        After filtering, both sides normalise to {'joy': 0.5}. Should be accepted."""
+        raw = {
+            **self._BASE,
+            "valence_shift": 0.0,
+            "triggered_emotions": {"joy": 0.5, "invented": 0.9},
+            "discrete_emotions": {"joy": 0.5},
+        }
+        result = parse_llm_appraisal(raw)
+        assert not result.is_fallback, f"Should be accepted, got {result.error_code}"
+        assert result.appraisal.discrete_emotions["joy"] == 0.5
+
+    # C6: Int and float equivalence (same as B6 but explicitly labeled)
+    def test_normalised_int_float_equivalence(self):
+        """Both sides normalise to 0.5 (int→float). Equals after validation."""
+        raw = {"valence": 0, "valence_shift": 0.0, **self._BASE}
+        result = parse_llm_appraisal(raw)
+        assert not result.is_fallback
         assert result.appraisal.valence_shift == 0.0
 
 

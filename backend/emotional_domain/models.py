@@ -92,6 +92,8 @@ def _require_finite_float(value: object, name: str) -> float:
     Returns ``float(value)`` when *value* is a finite real number.
 
     Rejects: bool, None, str, list, dict, NaN, ±Inf.
+    Also catches ``OverflowError`` for integers too large to represent as float
+    and converts it to a sanitised ``EmotionalDomainError`` (no raw value leaked).
     """
     if isinstance(value, bool):
         raise EmotionalDomainError(
@@ -101,7 +103,12 @@ def _require_finite_float(value: object, name: str) -> float:
         raise EmotionalDomainError(
             f"Field '{name}' must be a finite float, got {type(value).__name__}."
         )
-    f = float(value)
+    try:
+        f = float(value)
+    except (OverflowError, ValueError, TypeError):
+        raise EmotionalDomainError(
+            f"Field '{name}' must be a finite float, got non-convertible value."
+        )
     if not math.isfinite(f):
         raise EmotionalDomainError(
             f"Field '{name}' must be finite, got non-finite value."

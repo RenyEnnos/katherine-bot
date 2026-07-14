@@ -217,6 +217,33 @@ def _do_parse(raw: Any) -> ParseResult:
     return ParseResult(appraisal=appraisal, is_fallback=False, error_code=None)
 
 
+def _values_are_equivalent(a: object, b: object) -> bool:
+    """
+    Type-strict equality check that prevents ``bool == int`` bypass.
+
+    In Python ``True == 1`` and ``False == 0``.  This helper returns
+    ``False`` when *either* side is a ``bool`` so that alias/canonical
+    pairs like ``valence=True`` / ``valence_shift=1`` are detected as
+    conflicting rather than silently accepted.
+
+    For dict values (e.g. ``triggered_emotions`` / ``discrete_emotions``)
+    the check recurses into values so that ``{"joy": True} != {"joy": 1}``
+    is correctly recognised as inequivalent.
+    """
+    if isinstance(a, bool) or isinstance(b, bool):
+        return False  # Never treat bool as equivalent to int/float/dict/etc.
+
+    if isinstance(a, dict) and isinstance(b, dict):
+        if set(a.keys()) != set(b.keys()):
+            return False
+        return all(_values_are_equivalent(a[k], b[k]) for k in a)
+
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return a == b  # 1 and 1.0 are equivalent; float comparison is fine
+
+    return a == b
+
+
 def _translate_aliases(raw: dict) -> dict:
     """
     Translate legacy production keys to canonical v1 keys.
@@ -226,9 +253,12 @@ def _translate_aliases(raw: dict) -> dict:
       ``triggered_emotions`` ↔ ``discrete_emotions``
 
     Conflict policy:
-      If both alias and canonical key are present AND their values differ,
-      raise ``_ParserFailure(conflicting_aliases)``.
-      If they are the same value (or only one is present), use the canonical.
+      A type-strict equality check (``_values_are_equivalent``) is used so
+      that ``bool == int`` does **not** bypass the comparison.
+
+      If both alias and canonical key are present AND their values are
+      *not* equivalent, raise ``_ParserFailure(conflicting_aliases)``.
+      If they are equivalent (or only one is present), use the canonical.
     """
     result = dict(raw)
 
@@ -236,7 +266,7 @@ def _translate_aliases(raw: dict) -> dict:
     has_alias = "valence" in raw
     has_canonical = "valence_shift" in raw
     if has_alias and has_canonical:
-        if raw["valence"] != raw["valence_shift"]:
+        if not _values_are_equivalent(raw["valence"], raw["valence_shift"]):
             raise _ParserFailure(ParseErrorCode.conflicting_aliases)
         # Same value — drop alias, keep canonical
         result.pop("valence", None)
@@ -247,7 +277,7 @@ def _translate_aliases(raw: dict) -> dict:
     has_alias_te = "triggered_emotions" in raw
     has_canonical_de = "discrete_emotions" in raw
     if has_alias_te and has_canonical_de:
-        if raw["triggered_emotions"] != raw["discrete_emotions"]:
+        if not _values_are_equivalent(raw["triggered_emotions"], raw["discrete_emotions"]):
             raise _ParserFailure(ParseErrorCode.conflicting_aliases)
         result.pop("triggered_emotions", None)
     elif has_alias_te:

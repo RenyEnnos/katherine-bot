@@ -153,10 +153,24 @@ state = EmotionalStateV1(pleasure=0.1, ..., schema_version=1)  # raises if inval
 
 ```python
 DISCRETE_EMOTIONS = frozenset({
+    # Core emotions
     "joy", "sadness", "anger", "fear",
-    "disgust", "surprise", "trust", "anticipation",
+    "disgust", "surprise",
+    # Extended emotions (from v1 model)
+    "trust", "anticipation",
+    # Production emotions (consumed by RelationshipManager via _perceive)
+    "tenderness", "guilt", "pride", "jealousy", "gratitude",
 })
 ```
+
+**Total: 13 emotions.** This allowlist is compatible with the production
+`_perceive()` output and the emotions used by `RelationshipManager`
+(tenderness and gratitude for affection, anger and disgust for tension).
+
+The LLM parser (`parse_llm_appraisal`) **filters** unknown emotion keys
+from LLM output silently, while the constructors (`create`, `from_dict`,
+direct `__init__`) **reject** unknown emotion keys with
+`EmotionalDomainError`.
 
 Unknown emotion keys are **rejected** via `create`/`from_dict`/direct constructor.
 In the LLM parser (`parse_llm_appraisal`), unknown emotions are **filtered silently**

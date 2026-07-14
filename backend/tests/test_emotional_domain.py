@@ -56,6 +56,21 @@ N5.  Explicit None discrete_emotions rejected by from_dict()
 N6.  Omitted discrete_emotions defaults to empty mapping
 N7.  Production _perceive() payload passes through parser without loss
 N8.  DISCRETE_EMOTIONS includes all production emotions used by RelationshipManager
+
+Hardening (v1.3 — third audit / PR #246 corrections):
+O1.  Huge int (10**10000) in PAD field → EmotionalDomainError
+O2.  Huge int in drive field → EmotionalDomainError
+O3.  Huge int in timestamp → EmotionalDomainError
+O4.  Huge int in appraisal shift → EmotionalDomainError
+O5.  Huge int in emotion intensity → EmotionalDomainError
+O6.  Legacy migration with huge int → EmotionalDomainError
+O7.  Parser maps huge int to invalid_numeric_value (not unexpected_parser_failure)
+B1.  valence=True vs valence_shift=1 → conflicting_aliases
+B2.  valence=False vs valence_shift=0 → conflicting_aliases
+B3.  triggered_emotions with bool joy vs discrete_emotions with int joy → conflicting_aliases
+B4.  triggered_emotions with bool False vs discrete_emotions with int 0 → conflicting_aliases
+B5.  Both aliases equally invalid → predictable fallback (invalid_numeric_value)
+B6.  1 vs 1.0 policy: int/float equivalence accepted (not rejected)
 """
 
 from __future__ import annotations
@@ -1526,6 +1541,243 @@ class TestAppraisalParserFallback:
     def test_parse_error_code_is_enum(self):
         result = parse_llm_appraisal(None)
         assert isinstance(result.error_code, ParseErrorCode)
+
+
+# ─── O1-O7: OverflowError tests ────────────────────────────────────────────
+
+class TestOverflowError:
+    """
+    O1-O7 — Integers too large to convert to float (e.g. 10**10000) must
+    produce EmotionalDomainError, never OverflowError.
+    """
+
+    _HUGE = 10 ** 10000
+
+    # -- State PAD fields (O1) --
+    @pytest.mark.parametrize("field", ["pleasure", "arousal", "dominance"])
+    def test_huge_int_in_pad_rejected(self, field):
+        with pytest.raises(EmotionalDomainError):
+            EmotionalStateV1(**_valid_state_kwargs(**{field: self._HUGE}))
+
+    def test_huge_int_in_pad_create_rejected(self):
+        with pytest.raises(EmotionalDomainError):
+            EmotionalStateV1.create(
+                **_valid_state_kwargs(pleasure=self._HUGE, **{k: v for k, v in
+                    _valid_state_kwargs().items() if k != "pleasure" and k != "schema_version"},
+                    schema_version=EMOTIONAL_SCHEMA_VERSION
+                )
+            )
+
+    def test_huge_int_in_pad_from_dict_rejected(self):
+        d = _valid_state_dict(pleasure=self._HUGE)
+        with pytest.raises(EmotionalDomainError):
+            EmotionalStateV1.from_dict(d)
+
+    # -- State drive fields (O2) --
+    @pytest.mark.parametrize("field", ["libido", "aggression", "connection", "energy", "tension"])
+    def test_huge_int_in_drive_rejected(self, field):
+        with pytest.raises(EmotionalDomainError):
+            EmotionalStateV1(**_valid_state_kwargs(**{field: self._HUGE}))
+
+    def test_huge_int_in_drive_create_rejected(self):
+        with pytest.raises(EmotionalDomainError):
+            EmotionalStateV1.create(
+                **{k: v for k, v in _valid_state_kwargs(libido=self._HUGE).items()
+                   if k != "schema_version"},
+                schema_version=EMOTIONAL_SCHEMA_VERSION,
+            )
+
+    # -- State timestamp (O3) --
+    def test_huge_int_in_timestamp_rejected(self):
+        with pytest.raises(EmotionalDomainError):
+            EmotionalStateV1(**_valid_state_kwargs(timestamp=self._HUGE))
+
+    def test_huge_int_in_timestamp_create_rejected(self):
+        with pytest.raises(EmotionalDomainError):
+            EmotionalStateV1.create(
+                **{k: v for k, v in _valid_state_kwargs().items()
+                   if k != "timestamp" and k != "schema_version"},
+                timestamp=self._HUGE,
+                schema_version=EMOTIONAL_SCHEMA_VERSION,
+            )
+
+    def test_huge_int_in_timestamp_from_dict_rejected(self):
+        d = _valid_state_dict(timestamp=self._HUGE)
+        with pytest.raises(EmotionalDomainError):
+            EmotionalStateV1.from_dict(d)
+
+    def test_huge_int_in_timestamp_neutral_rejected(self):
+        with pytest.raises(EmotionalDomainError):
+            EmotionalStateV1.neutral(timestamp=self._HUGE)
+
+    # -- Appraisal shift fields (O4) --
+    @pytest.mark.parametrize("field", ["valence_shift", "arousal_shift", "dominance_shift"])
+    def test_huge_int_in_shift_rejected(self, field):
+        d = _valid_appraisal_dict(**{field: self._HUGE})
+        with pytest.raises(EmotionalDomainError):
+            AppraisalV1.from_dict(d)
+
+    def test_huge_int_in_shift_direct_rejected(self):
+        with pytest.raises(EmotionalDomainError):
+            AppraisalV1(
+                valence_shift=self._HUGE, arousal_shift=0.0, dominance_shift=0.0,
+                discrete_emotions={}, schema_version=EMOTIONAL_SCHEMA_VERSION,
+            )
+
+    def test_huge_int_in_shift_create_rejected(self):
+        with pytest.raises(EmotionalDomainError):
+            AppraisalV1.create(
+                valence_shift=self._HUGE, arousal_shift=0.0, dominance_shift=0.0,
+            )
+
+    # -- Emotion intensity (O5) --
+    def test_huge_int_in_emotion_intensity_rejected(self):
+        d = _valid_appraisal_dict(discrete_emotions={"joy": self._HUGE})
+        with pytest.raises(EmotionalDomainError):
+            AppraisalV1.from_dict(d)
+
+    def test_huge_int_in_emotion_intensity_direct_rejected(self):
+        with pytest.raises(EmotionalDomainError):
+            AppraisalV1(
+                valence_shift=0.0, arousal_shift=0.0, dominance_shift=0.0,
+                discrete_emotions={"joy": self._HUGE},
+                schema_version=EMOTIONAL_SCHEMA_VERSION,
+            )
+
+    def test_huge_int_in_emotion_intensity_create_rejected(self):
+        with pytest.raises(EmotionalDomainError):
+            AppraisalV1.create(
+                valence_shift=0.0, arousal_shift=0.0, dominance_shift=0.0,
+                discrete_emotions={"joy": self._HUGE},
+            )
+
+    # -- Legacy migration with huge int (O6) --
+    def test_migration_legacy_huge_int_rejected(self):
+        legacy = _legacy_dict(pleasure=self._HUGE)
+        with pytest.raises(EmotionalDomainError):
+            migrate_legacy_snapshot(legacy)
+
+    def test_migration_v1_huge_int_rejected(self):
+        v1 = _valid_state_dict(timestamp=self._HUGE)
+        with pytest.raises(EmotionalDomainError):
+            migrate_legacy_snapshot(v1)
+
+    # -- Parser maps huge int to invalid_numeric_value (O7) --
+    def test_parser_huge_int_maps_to_invalid_numeric_value(self):
+        raw = {"valence_shift": 0.1, "arousal_shift": self._HUGE, "dominance_shift": 0.0}
+        result = parse_llm_appraisal(raw)
+        assert result.is_fallback
+        assert result.error_code == ParseErrorCode.invalid_numeric_value
+
+    def test_parser_huge_int_in_emotion_maps_to_invalid_numeric_value(self):
+        raw = {
+            "valence_shift": 0.0, "arousal_shift": 0.0, "dominance_shift": 0.0,
+            "discrete_emotions": {"joy": self._HUGE},
+        }
+        result = parse_llm_appraisal(raw)
+        assert result.is_fallback
+        # huge int in emotion intensity goes through _parse_discrete_emotions
+        # which catches EmotionalDomainError and raises _ParserFailure(invalid_numeric_value)
+        assert result.error_code == ParseErrorCode.invalid_numeric_value
+
+    def test_parser_huge_int_in_valence_maps_to_invalid_numeric_value(self):
+        raw = {"valence": self._HUGE, "arousal_shift": 0.0, "dominance_shift": 0.0}
+        result = parse_llm_appraisal(raw)
+        assert result.is_fallback
+        assert result.error_code == ParseErrorCode.invalid_numeric_value
+
+
+# ─── B1-B6: Bool vs int alias tests ─────────────────────────────────────────
+
+class TestBoolAliasEquivalence:
+    """
+    B1-B6 — bool and int must not be treated as equivalent in alias checking.
+    True == 1 and False == 0 in Python, which would otherwise allow bypass.
+    """
+
+    _BASE = {"arousal_shift": 0.0, "dominance_shift": 0.0}
+
+    # B1: valence=True, valence_shift=1 → conflicting_aliases
+    def test_valence_true_vs_int_one(self):
+        raw = {"valence": True, "valence_shift": 1, **self._BASE}
+        result = parse_llm_appraisal(raw)
+        assert result.is_fallback
+        assert result.error_code == ParseErrorCode.conflicting_aliases
+
+    # B2: valence=False, valence_shift=0 → conflicting_aliases
+    def test_valence_false_vs_int_zero(self):
+        raw = {"valence": False, "valence_shift": 0, **self._BASE}
+        result = parse_llm_appraisal(raw)
+        assert result.is_fallback
+        assert result.error_code == ParseErrorCode.conflicting_aliases
+
+    # B3: triggered_emotions with bool values vs discrete_emotions with int
+    def test_triggered_bool_vs_discrete_int_joy(self):
+        raw = {
+            **self._BASE,
+            "valence_shift": 0.0,
+            "triggered_emotions": {"joy": True},
+            "discrete_emotions": {"joy": 1},
+        }
+        result = parse_llm_appraisal(raw)
+        assert result.is_fallback
+        assert result.error_code == ParseErrorCode.conflicting_aliases
+
+    # B4: triggered_emotions with bool False vs discrete_emotions with int 0
+    def test_triggered_bool_false_vs_discrete_int_zero(self):
+        raw = {
+            **self._BASE,
+            "valence_shift": 0.0,
+            "triggered_emotions": {"joy": False},
+            "discrete_emotions": {"joy": 0},
+        }
+        result = parse_llm_appraisal(raw)
+        assert result.is_fallback
+        assert result.error_code == ParseErrorCode.conflicting_aliases
+
+    # B5: Both aliases with equally invalid values → fallback (not success)
+    def test_both_aliases_equally_invalid(self):
+        """Both alias and canonical have the same string value → they ARE
+        equivalent (same value), so no conflict.  The invalid string is caught
+        by later validation as invalid_numeric_value."""
+        raw = {
+            "valence": "invalid",
+            "valence_shift": "invalid",
+            **self._BASE,
+        }
+        result = parse_llm_appraisal(raw)
+        assert result.is_fallback
+        # Same (invalid) value → no alias conflict; validation catches it.
+        assert result.error_code == ParseErrorCode.invalid_numeric_value
+
+    def test_both_triggered_equally_invalid(self):
+        """Both triggered_emotions and discrete_emotions have the same
+        invalid intensity string → they ARE equivalent (same values inside).
+        No alias conflict; the invalid intensity is caught later."""
+        raw = {
+            **self._BASE,
+            "valence_shift": 0.0,
+            "triggered_emotions": {"joy": "high"},
+            "discrete_emotions": {"joy": "high"},
+        }
+        result = parse_llm_appraisal(raw)
+        assert result.is_fallback
+        assert result.error_code == ParseErrorCode.invalid_numeric_value
+
+    # B6: 1 vs 1.0 is accepted (normal float equivalence)
+    def test_one_vs_one_point_zero_accepted(self):
+        """1 and 1.0 are both valid floats with the same value."""
+        raw = {"valence": 1.0, "valence_shift": 1, **self._BASE}
+        result = parse_llm_appraisal(raw)
+        assert not result.is_fallback, f"Should be accepted, got {result.error_code}"
+        assert result.appraisal.valence_shift == 1.0
+
+    def test_int_vs_float_equivalence(self):
+        """int and float with same value should be equivalent."""
+        raw = {"valence": 0, "valence_shift": 0.0, **self._BASE}
+        result = parse_llm_appraisal(raw)
+        assert not result.is_fallback, f"Should be accepted, got {result.error_code}"
+        assert result.appraisal.valence_shift == 0.0
 
 
 # ─── Package public API exports ───────────────────────────────────────────────

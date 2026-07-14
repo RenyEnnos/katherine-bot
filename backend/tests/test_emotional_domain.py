@@ -398,7 +398,6 @@ class TestStateNormalization:
             energy=0.8, tension=0, coping_mode="HEALTHY",
             timestamp=1_700_000_000.0,
         )
-        from backend.emotional_domain.serialization import serialize_state
         assert serialize_state(direct) == serialize_state(factory)
 
     def test_normalization_uses_float_in_to_dict(self):
@@ -442,7 +441,6 @@ class TestAppraisalNormalization:
             valence_shift=1, arousal_shift=0, dominance_shift=0,
             discrete_emotions={"joy": 0.5},
         )
-        from backend.emotional_domain.serialization import serialize_appraisal
         assert serialize_appraisal(direct) == serialize_appraisal(factory)
 
 

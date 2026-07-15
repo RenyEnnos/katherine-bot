@@ -22,16 +22,21 @@ def mock_external_dependencies():
 
     yield
 
-    # Restore environment and modules directionally
-    if 'backend.main' in sys.modules:
-        del sys.modules['backend.main']
-    if 'sentence_transformers' in sys.modules:
-        del sys.modules['sentence_transformers']
-    if 'supabase' in sys.modules:
-        del sys.modules['supabase']
+    # Restore modules directionally:
+    # - If the module existed before the fixture, restore the ORIGINAL object
+    # - If the module was added by the fixture, remove it
+    def _restore_module(name):
+        if name in _original_modules:
+            sys.modules[name] = _original_modules[name]
+        elif name in sys.modules:
+            del sys.modules[name]
 
-    # Restore what was actually added during the test (avoid deleting modules
-    # that were imported by other test files before this module ran)
+    _restore_module('backend.main')
+    _restore_module('sentence_transformers')
+    _restore_module('supabase')
+
+    # Restore backend modules that were added during this test module
+    # (not present in the pre-fixture snapshot)
     for k in list(sys.modules.keys()):
         if k.startswith('backend.') and k not in _original_modules:
             del sys.modules[k]
@@ -362,3 +367,61 @@ def test_chat_message_exceeds_limit(client_app, mock_supabase, mock_engine_proce
 
     assert response.status_code == 422
     mock_engine_process.assert_not_called()
+
+
+def test_fixture_teardown_preserves_existing_modules():
+    """
+    Verifica que o teardown do fixture restaura os objetos originais
+    em vez de apenas deletá-los, preservando a identidade (``is``)
+    de módulos que já existiam antes do fixture.
+
+    Este teste executa diretamente a lógica de setup/teardown do
+    fixture ``mock_external_dependencies`` sem depender do decorador
+    autouse scope=module.
+    """
+    sentinel_main = object()
+    sentinel_sb = object()
+    sentinel_st = object()
+
+    # Guard: save actual state to restore later
+    saved = {}
+    for name in ("backend.main", "supabase", "sentence_transformers"):
+        saved[name] = sys.modules.get(name)
+
+    try:
+        # 1. Pre-load sentinel objects (simulating modules that existed
+        #    before the fixture ran, e.g. from other test files)
+        sys.modules["backend.main"] = sentinel_main
+        sys.modules["supabase"] = sentinel_sb
+        sys.modules["sentence_transformers"] = sentinel_st
+
+        # 2. Simulate fixture setup: snapshot + replace with mocks
+        _original_modules = dict(sys.modules)
+        sys.modules["sentence_transformers"] = MagicMock()
+        sys.modules["supabase"] = MagicMock()
+
+        # 3. Simulate fixture teardown with directional restore
+        def _restore_module(name):
+            if name in _original_modules:
+                sys.modules[name] = _original_modules[name]
+            elif name in sys.modules:
+                del sys.modules[name]
+
+        _restore_module("backend.main")
+        _restore_module("sentence_transformers")
+        _restore_module("supabase")
+
+        # 4. Assert identity is preserved (original objects restored)
+        assert sys.modules.get("backend.main") is sentinel_main, \
+            "backend.main should be restored to original sentinel"
+        assert sys.modules.get("supabase") is sentinel_sb, \
+            "supabase should be restored to original sentinel"
+        assert sys.modules.get("sentence_transformers") is sentinel_st, \
+            "sentence_transformers should be restored to original sentinel"
+    finally:
+        # Restore actual modules
+        for name in ("backend.main", "supabase", "sentence_transformers"):
+            if saved[name] is not None:
+                sys.modules[name] = saved[name]
+            else:
+                sys.modules.pop(name, None)

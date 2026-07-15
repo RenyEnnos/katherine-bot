@@ -3,8 +3,9 @@ import logging
 from datetime import datetime, UTC
 from supabase import create_client, Client
 from sentence_transformers import SentenceTransformer
+import time
 from .relationship import UserRelationship
-from .emotional_core import EmotionalState
+from .emotional_domain import EmotionalStateV1
 from .archival_memory import PersistedTurnRef, ArchivalExtractionEnvelope, ArchivalDuplicateError
 
 logger = logging.getLogger(__name__)
@@ -115,16 +116,18 @@ class MemoryManager:
             raise StateLoadError("Falha ao carregar estado do usuário.") from e
 
     def _get_default_state(self, user_id: str):
+        v1_state = EmotionalStateV1.neutral(timestamp=time.time())
         return {
             "persona_config": "Katherine...",
             "user_profile": {},
             "relationship_state": UserRelationship(user_id=user_id).to_dict(),
-            "emotional_state": EmotionalState().to_dict()
+            "emotional_state": v1_state.to_dict()
         }
 
-    def sync_state(self, user_id: str, emotional_state: EmotionalState, relationship: UserRelationship, user_profile: dict = None):
+    def sync_state(self, user_id: str, emotional_state: EmotionalStateV1, relationship: UserRelationship, user_profile: dict = None):
         """
         Persists the current state to Supabase.
+        Accepts ``EmotionalStateV1`` (serialized to versioned JSON).
         Raises StatePersistenceError if persistence fails.
         """
         if not self.supabase:

@@ -6,6 +6,23 @@ from unittest.mock import MagicMock, patch, ANY
 from backend.memory import MemoryManager, ContextLoadError, TurnPersistenceError
 from backend.engine import ConversationEngine
 
+
+def _valid_legacy_emotion_dict():
+    import time
+    return {
+        "pleasure": 0.0,
+        "arousal": 0.0,
+        "dominance": 0.0,
+        "libido": 0.5,
+        "aggression": 0.0,
+        "connection": 0.5,
+        "energy": 0.8,
+        "tension": 0.0,
+        "coping_mode": "HEALTHY",
+        "last_update": time.time(),
+    }
+
+
 def test_memory_manager_has_no_short_term_memory():
     mm = MemoryManager()
     assert not hasattr(mm, 'short_term_memory')
@@ -349,7 +366,10 @@ def test_tied_timestamps_ordering():
 def test_process_turn_awaits_save_turn_inside_lock():
     async def run_test():
         engine = ConversationEngine()
-        engine.memory_manager.load_user_state = MagicMock(return_value={})
+        engine.memory_manager.load_user_state = MagicMock(return_value={
+            "emotional_state": _valid_legacy_emotion_dict(),
+            "relationship_state": {}
+        })
         engine.memory_manager.sync_state = MagicMock()
         engine._perceive = MagicMock(return_value={})
         
@@ -383,7 +403,10 @@ def test_recreate_engine_preserves_context():
     async def run_test():
         engine1 = ConversationEngine()
         engine1._perceive = MagicMock(return_value={})
-        engine1.memory_manager.load_user_state = MagicMock(return_value={})
+        engine1.memory_manager.load_user_state = MagicMock(return_value={
+            "emotional_state": _valid_legacy_emotion_dict(),
+            "relationship_state": {}
+        })
         engine1.memory_manager.sync_state = MagicMock()
         
         mock_chat = MagicMock()
@@ -421,7 +444,10 @@ def test_get_context_propagates_load_failure():
 def test_process_turn_fails_closed_on_load_failure():
     async def run_test():
         engine = ConversationEngine()
-        engine.memory_manager.load_user_state = MagicMock(return_value={})
+        engine.memory_manager.load_user_state = MagicMock(return_value={
+            "emotional_state": _valid_legacy_emotion_dict(),
+            "relationship_state": {}
+        })
         engine.memory_manager.sync_state = MagicMock()
         engine._perceive = MagicMock()
         engine.groq_manager.chat_completion = MagicMock()
@@ -445,7 +471,10 @@ def test_process_turn_fails_closed_on_load_failure():
 def test_concurrent_process_turn_serialization():
     async def run_test():
         engine = ConversationEngine()
-        engine.memory_manager.load_user_state = MagicMock(return_value={})
+        engine.memory_manager.load_user_state = MagicMock(return_value={
+            "emotional_state": _valid_legacy_emotion_dict(),
+            "relationship_state": {}
+        })
         engine.memory_manager.sync_state = MagicMock()
         engine._perceive = MagicMock(return_value={})
         
@@ -508,7 +537,10 @@ def test_concurrent_process_turn_serialization():
 def test_concurrent_different_users_not_blocked():
     async def run_test():
         engine = ConversationEngine()
-        engine.memory_manager.load_user_state = MagicMock(return_value={})
+        engine.memory_manager.load_user_state = MagicMock(return_value={
+            "emotional_state": _valid_legacy_emotion_dict(),
+            "relationship_state": {}
+        })
         engine.memory_manager.sync_state = MagicMock()
         engine._perceive = MagicMock(return_value={})
         
@@ -559,7 +591,10 @@ def test_concurrent_different_users_not_blocked():
 def test_repeated_cancellation_during_save_turn():
     async def run_test():
         engine = ConversationEngine()
-        engine.memory_manager.load_user_state = MagicMock(return_value={})
+        engine.memory_manager.load_user_state = MagicMock(return_value={
+            "emotional_state": _valid_legacy_emotion_dict(),
+            "relationship_state": {}
+        })
         engine.memory_manager.sync_state = MagicMock()
         engine._perceive = MagicMock(return_value={})
         

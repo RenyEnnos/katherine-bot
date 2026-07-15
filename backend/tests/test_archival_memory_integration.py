@@ -188,6 +188,22 @@ async def test_run_archival_extraction_store_failed(backend, caplog):
     assert "DB connection failed secret token" not in caplog.text
 
 
+def _valid_legacy_emotion_dict():
+    import time
+    return {
+        "pleasure": 0.0,
+        "arousal": 0.0,
+        "dominance": 0.0,
+        "libido": 0.5,
+        "aggression": 0.0,
+        "connection": 0.5,
+        "energy": 0.8,
+        "tension": 0.0,
+        "coping_mode": "HEALTHY",
+        "last_update": time.time(),
+    }
+
+
 @pytest.mark.anyio
 async def test_process_turn_schedules_background_task(backend):
     engine = backend.ConversationEngine()
@@ -195,12 +211,11 @@ async def test_process_turn_schedules_background_task(backend):
     # Mock all internal methods of process_turn to focus on orchestration
     engine.memory_manager = MagicMock()
     engine.memory_manager.load_user_state = MagicMock(return_value={
-        "emotional_state": {},
+        "emotional_state": _valid_legacy_emotion_dict(),
         "relationship_state": {}
     })
     engine.memory_manager.get_context = MagicMock(return_value="context")
     engine._perceive = MagicMock(return_value={})
-    engine._normalize_perception = MagicMock(return_value={})
     
     # Mock save_turn and sync_state to track order
     call_order = []
@@ -243,15 +258,14 @@ async def test_process_turn_schedules_background_task(backend):
 
 def test_chat_response_format(client_app, mock_supabase):
     from backend.main import engine
-    from backend.emotional_core import EmotionalState
     from backend.relationship import UserRelationship
     
     mock_user = MockUser(id="user123")
     mock_supabase.auth.get_user.return_value = MockAuthResponse(user=mock_user)
     
-    # Mock load_user_state to succeed
+    # Mock load_user_state to succeed with valid legacy emotion state
     engine.memory_manager.load_user_state = MagicMock(return_value={
-        "emotional_state": EmotionalState().to_dict(),
+        "emotional_state": _valid_legacy_emotion_dict(),
         "relationship_state": UserRelationship(user_id="user123").to_dict()
     })
     

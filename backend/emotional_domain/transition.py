@@ -355,11 +355,21 @@ class RegulationResult:
     def __post_init__(self) -> None:
         """Validate all fields on every construction path."""
 
-        # Validate modes belong to the allowlist
+        # Validate modes belong to the allowlist.
+        # Must check isinstance(str) first because non-hashable types
+        # (list, dict) would raise TypeError on frozenset membership.
+        if not isinstance(self.previous_mode, str):
+            raise EmotionalDomainError(
+                "RegulationResult: previous_mode must be a valid coping mode string."
+            )
         if self.previous_mode not in VALID_COPING_MODES:
             raise EmotionalDomainError(
                 "RegulationResult: previous_mode must be one of "
                 f"{sorted(VALID_COPING_MODES)}."
+            )
+        if not isinstance(self.current_mode, str):
+            raise EmotionalDomainError(
+                "RegulationResult: current_mode must be a valid coping mode string."
             )
         if self.current_mode not in VALID_COPING_MODES:
             raise EmotionalDomainError(

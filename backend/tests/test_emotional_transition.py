@@ -793,6 +793,73 @@ class TestRegulationResultValidation:
                 reason=RegulationReason.HIGH_TENSION_POSITIVE_DOMINANCE,
             )
 
+    # ── Non-string previous_mode values (must not raise TypeError) ───────────
+
+    @pytest.mark.parametrize("bad_previous_mode", [
+        None,
+        [],
+        {},
+        42,
+        True,
+        False,
+        object(),
+    ])
+    def test_previous_mode_non_string_rejected(self, bad_previous_mode):
+        with pytest.raises(EmotionalDomainError):
+            RegulationResult(
+                previous_mode=bad_previous_mode,  # type: ignore[arg-type]
+                current_mode="HEALTHY",
+                changed=True,
+                reason=RegulationReason.RECOVERED,
+            )
+
+    @pytest.mark.parametrize("bad_current_mode", [
+        None,
+        [],
+        {},
+        42,
+        True,
+        False,
+        object(),
+    ])
+    def test_current_mode_non_string_rejected(self, bad_current_mode):
+        with pytest.raises(EmotionalDomainError):
+            RegulationResult(
+                previous_mode="HEALTHY",
+                current_mode=bad_current_mode,  # type: ignore[arg-type]
+                changed=True,
+                reason=RegulationReason.HIGH_TENSION_POSITIVE_DOMINANCE,
+            )
+
+    def test_non_string_modes_never_raise_type_error(self):
+        """Explicitly confirm that non-hashable types produce EmotionalDomainError, not TypeError."""
+        for bad_mode in ([], {}, None, 42, True, object()):
+            try:
+                RegulationResult(
+                    previous_mode=bad_mode,  # type: ignore[arg-type]
+                    current_mode="HEALTHY",
+                    changed=True,
+                    reason=RegulationReason.RECOVERED,
+                )
+                pytest.fail(f"Expected EmotionalDomainError for previous_mode={bad_mode!r}")
+            except TypeError:
+                pytest.fail(f"TypeError escaped for previous_mode={bad_mode!r}")
+            except EmotionalDomainError:
+                pass
+
+            try:
+                RegulationResult(
+                    previous_mode="HEALTHY",
+                    current_mode=bad_mode,  # type: ignore[arg-type]
+                    changed=True,
+                    reason=RegulationReason.HIGH_TENSION_POSITIVE_DOMINANCE,
+                )
+                pytest.fail(f"Expected EmotionalDomainError for current_mode={bad_mode!r}")
+            except TypeError:
+                pytest.fail(f"TypeError escaped for current_mode={bad_mode!r}")
+            except EmotionalDomainError:
+                pass
+
     def test_changed_not_bool_rejected(self):
         for bad in (0, 1, "True", None, [True], {"c": True}):
             with pytest.raises(EmotionalDomainError):

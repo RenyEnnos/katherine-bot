@@ -30,9 +30,10 @@ def mock_external_dependencies():
     if 'supabase' in sys.modules:
         del sys.modules['supabase']
 
-    # Restore what was actually added during the test
+    # Restore what was actually added during the test (avoid deleting modules
+    # that were imported by other test files before this module ran)
     for k in list(sys.modules.keys()):
-        if k.startswith('backend.'):
+        if k.startswith('backend.') and k not in _original_modules:
             del sys.modules[k]
 
     os.environ.clear()

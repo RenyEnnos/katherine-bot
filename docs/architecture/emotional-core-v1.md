@@ -527,9 +527,151 @@ class RegulationResult:
 `RegulationResult` contains no prompt text, no user content, no LLM output, no
 acting instruction, and no metacognitive strategy.
 
+## Production integration — `engine.py` + `memory.py`
+
+### Final flow (issue #234)
+
+```
+persisted snapshot (JSONB in profiles.emotional_state)
+  │
+  ▼ load_user_state()
+  │ returns raw dict (legacy or v1)
+  ▼
+  migrate_legacy_snapshot(raw_dict)
+  │ → EmotionalStateV1 (validated, raises EmotionalDomainError on corruption)
+  ▼
+  _perceive(user_message)
+  │ → raw LLM dict
+  ▼
+  parse_llm_appraisal(raw_dict)
+  │ → AppraisalV1 (or neutral fallback with ParseErrorCode)
+  ▼
+  transition(previous_state, appraisal, current_time, config)
+  │ → TransitionResult with new EmotionalStateV1 + RegulationResult
+  ▼
+  _adapt_appraisal_for_relationship(appraisal)
+  │ → dict with valence + triggered_emotions (for RelationshipManager)
+  ▼
+  sync_state(user_id, emotional_state_v1, relationship)
+  │ persists via to_dict() (includes schema_version, timestamp)
+  ▼
+  _project_emotion_state(state)
+  │ → public dict (maps timestamp → last_update, omits schema_version/regulation)
+  ▼
+  HTTP response (ChatResponse.emotion_state)
+```
+
+### Exatamente um appraisal e uma transição por turno
+
+Cada turno bem-sucedido executa:
+
+1. Exatamente uma chamada a `parse_llm_appraisal()` para converter a percepção
+   bruta do LLM em um `AppraisalV1` canônico.
+2. Exatamente uma chamada a `transition()` para produzir o novo `EmotionalStateV1`.
+
+Nenhum `dict` bruto do LLM chega à transição. Nenhum segundo appraisal é
+produzido por heurísticas ou por combinação implícita de fontes.
+
+### Fallback neutro e observabilidade
+
+Quando `parse_llm_appraisal()` retorna um fallback neutro:
+
+- O `AppraisalV1.neutral()` fornecido pelo domínio é utilizado.
+- Um evento sanitizado é registrado no formato:
+  ```
+  event=emotional_appraisal_fallback code=<stable_error_code>
+  ```
+- Apenas o código estável de `ParseErrorCode` é registrado.
+- Nunca são registrados: payload, mensagem, prompt, resposta do modelo,
+  exceção bruta ou `user_id`.
+
+### Fronteira entre estado emocional e relacionamento
+
+O `RelationshipManager` não recebe o payload bruto do LLM. Recebe uma
+adaptação derivada exclusivamente do `AppraisalV1` validado:
+
+```python
+{
+    "valence": appraisal.valence_shift,
+    "triggered_emotions": dict(appraisal.discrete_emotions),
+}
+```
+
+Esta adaptação é temporária e será redesenhada em uma issue relacional
+apropriada.
+
+### Persistência interna vs. apresentação pública
+
+**Persistência** (`profiles.emotional_state`, JSONB):
+
+- Usa `EmotionalStateV1.to_dict()`
+- Contém `schema_version` e `timestamp`
+- Não contém `last_update`
+- Não contém campos de relacionamento, apresentação, prompt ou metacognição
+
+**Apresentação pública** (`ChatResponse.emotion_state`):
+
+- Mapeia `timestamp → last_update`
+- Remove `schema_version` e `timestamp`
+- Mantém: `pleasure`, `arousal`, `dominance`, `libido`, `aggression`,
+  `connection`, `energy`, `tension`, `coping_mode`, `last_update`
+- Não expõe: `regulation`, `appraisal`, `fallback`, prompt ou metacognição
+
+### Política de fail-closed
+
+Snapshots com:
+
+- Versão desconhecida
+- Campos ausentes
+- Campos extras
+- Tipos incorretos
+- Valores não finitos
+- Estrutura incompatível
+
+...falham fechado com `EmotionalDomainError` **antes** de:
+
+- Recuperar contexto de histórico
+- Chamar Groq
+- Gerar resposta
+- Atualizar relacionamento
+- Salvar o turno
+
+Nenhum snapshot corrompido é substituído por estado neutro.
+
+### Isolamento por usuário
+
+- Estado emocional é variável local de cada execução de turno.
+- Não armazenado em singleton ou atributo compartilhado.
+- `UserLockManager` serializa requisições do mesmo usuário.
+- Usuários diferentes são processáveis concorrentemente.
+- `TransitionConfig` é imutável e compartilhada (stateless).
+
+### Ordem de persistência
+
+1. Resposta é gerada (LLM)
+2. Turno é persistido (`save_turn`)
+3. Estado emocional v1 e relacionamento são sincronizados (`sync_state`)
+4. Extração arquivística é agendada (somente após sucesso de 2 e 3)
+5. Resposta é retornada ao cliente
+
+Falha em `sync_state`:
+- Não retorna sucesso
+- Não agenda extração arquivística
+- Propaga exceção sanitizada
+
+### Cancelamento
+
+A política de `asyncio.shield()` é preservada:
+
+- Cancelamentos repetidos não liberam o lock antes da persistência
+  obrigatória.
+- Cancelamentos repetidos não interrompem `save_turn()` ou `sync_state()`.
+- O lock só é liberado após `save_turn()` e `sync_state()` concluírem.
+
 ## Out of scope (this document)
 
-- Integration of these models into `ConversationEngine` (→ #234).
-- Persistence changes.
-- API or frontend changes.
-- Relationship, memory, prompt, or personality logic.
+- Relationship redesign (→ #235).
+- API or frontend changes beyond the compatibility projection (→ #208).
+- Prompt or personality changes.
+- Meta-cognition restoration (→ #226).
+- Multi-worker coordination (→ #236).

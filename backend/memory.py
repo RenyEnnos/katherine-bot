@@ -3,8 +3,9 @@ import logging
 from datetime import datetime, UTC
 from supabase import create_client, Client
 from sentence_transformers import SentenceTransformer
+import time
 from .relationship import UserRelationship
-from .emotional_core import EmotionalState
+from .emotional_domain import EmotionalStateV1
 from .archival_memory import PersistedTurnRef, ArchivalExtractionEnvelope, ArchivalDuplicateError
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ class TurnPersistenceError(Exception):
         super().__init__(self.message)
 
 class MemoryManager:
-    def __init__(self):
+    def __init__(self, clock=time.time):
         # 1. Initialize Supabase
         url: str = os.environ.get("SUPABASE_URL")
         key: str = os.environ.get("SUPABASE_KEY")
@@ -53,6 +54,9 @@ class MemoryManager:
             self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
         except Exception:
             self.embedding_model = None
+
+        # 3. Clock for deterministic testing
+        self._clock = clock
 
 
 
@@ -115,18 +119,25 @@ class MemoryManager:
             raise StateLoadError("Falha ao carregar estado do usuário.") from e
 
     def _get_default_state(self, user_id: str):
+        v1_state = EmotionalStateV1.neutral(timestamp=self._clock())
         return {
             "persona_config": "Katherine...",
             "user_profile": {},
             "relationship_state": UserRelationship(user_id=user_id).to_dict(),
-            "emotional_state": EmotionalState().to_dict()
+            "emotional_state": v1_state.to_dict()
         }
 
-    def sync_state(self, user_id: str, emotional_state: EmotionalState, relationship: UserRelationship, user_profile: dict = None):
+    def sync_state(self, user_id: str, emotional_state: EmotionalStateV1, relationship: UserRelationship, user_profile: dict = None):
         """
         Persists the current state to Supabase.
-        Raises StatePersistenceError if persistence fails.
+        Accepts only ``EmotionalStateV1`` (serialized via ``.to_dict()`` for JSONB).
+        Raises ``StatePersistenceError`` on invalid type or database failure.
         """
+        if not isinstance(emotional_state, EmotionalStateV1):
+            raise StatePersistenceError(
+                "emotional_state must be an EmotionalStateV1 instance."
+            )
+
         if not self.supabase:
             raise StatePersistenceError("Serviço de persistência não configurado.")
 
@@ -154,8 +165,8 @@ class MemoryManager:
 
         except StatePersistenceError:
             raise
-        except Exception as e:
-            raise StatePersistenceError() from e
+        except Exception:
+            raise StatePersistenceError() from None
 
     def load_recent_history(self, user_id: str, limit: int = 10) -> list:
         if not self.supabase:

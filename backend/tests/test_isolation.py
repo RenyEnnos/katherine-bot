@@ -2,13 +2,30 @@ import asyncio
 import pytest
 import time
 import threading
-import math
-from contextlib import asynccontextmanager
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from backend.engine import ConversationEngine
 from backend.emotional_core import EmotionalState, AffectiveEngine
+from backend.emotional_domain import AppraisalV1, EmotionalStateV1, ParseErrorCode, parse_llm_appraisal
 from backend.relationship import UserRelationship
 from backend.memory import StatePersistenceError, StateLoadError, MemoryManager
+
+
+# ── Helper: minimal valid legacy emotional state dict ────────────────────────
+
+def _legacy_emotion_dict(pleasure=0.0, arousal=0.0, dominance=0.0) -> dict:
+    return {
+        "pleasure": pleasure,
+        "arousal": arousal,
+        "dominance": dominance,
+        "libido": 0.0,
+        "aggression": 0.0,
+        "connection": 0.5,
+        "energy": 0.8,
+        "tension": 0.0,
+        "coping_mode": "HEALTHY",
+        "last_update": time.time(),
+    }
+
 
 @pytest.fixture(autouse=True)
 def mock_load_recent_history(monkeypatch):
@@ -43,8 +60,8 @@ def test_user_isolation():
         engine.memory_manager.sync_state = MagicMock()
         engine.memory_manager.save_turn = MagicMock()
         states = {
-            "A": {"emotional_state": EmotionalState(pleasure=0.5).to_dict()},
-            "B": {"emotional_state": EmotionalState(pleasure=-0.5).to_dict()}
+            "A": {"emotional_state": _legacy_emotion_dict(pleasure=0.5)},
+            "B": {"emotional_state": _legacy_emotion_dict(pleasure=-0.5)}
         }
         engine.memory_manager.load_user_state = MagicMock(side_effect=lambda uid: states.get(uid, {}))
         engine._perceive = MagicMock(return_value={})
@@ -58,7 +75,10 @@ def test_identity_binding():
     async def run_test():
         engine = ConversationEngine()
         auth_id = "auth_user"
-        engine.memory_manager.load_user_state = MagicMock(return_value={"relationship_state": {"user_id": "wrong"}})
+        engine.memory_manager.load_user_state = MagicMock(return_value={
+            "relationship_state": {"user_id": "wrong"},
+            "emotional_state": _legacy_emotion_dict(),
+        })
         m = MagicMock(); m.choices = [MagicMock()]; m.choices[0].message.content = "Hi"
         engine.groq_manager.chat_completion = MagicMock(return_value=m)
         engine.memory_manager.save_turn = MagicMock()
@@ -87,7 +107,7 @@ def test_fail_closed_load():
 def test_persistence_failure_zero_rows():
     async def run_test():
         engine = ConversationEngine()
-        engine.memory_manager.load_user_state = MagicMock(return_value={})
+        engine.memory_manager.load_user_state = MagicMock(return_value={"emotional_state": _legacy_emotion_dict()})
         engine.memory_manager.supabase = MagicMock()
         engine.memory_manager.supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
         m = MagicMock(); m.choices = [MagicMock()]; m.choices[0].message.content = "Hi"
@@ -98,26 +118,23 @@ def test_persistence_failure_zero_rows():
             await engine.process_turn("user", "Msg")
     asyncio.run(run_test())
 
-def test_perception_normalization():
-    engine = ConversationEngine()
-    assert engine._normalize_perception(None)["valence"] == 0.0
-    raw = {"valence": "bad", "arousal_shift": math.inf, "triggered_emotions": {"joy": 2.0, "hate": 1.0}}
-    norm = engine._normalize_perception(raw)
-    assert norm["valence"] == 0.0
-    assert norm["arousal_shift"] == 0.0
-    assert norm["triggered_emotions"]["joy"] == 1.0
-    assert "hate" not in norm["triggered_emotions"]
+def test_appraisal_fallback_sanitized():
+    """parse_llm_appraisal on invalid input returns neutral fallback with sanitized code."""
+    result = parse_llm_appraisal(None)
+    assert result.is_fallback
+    assert result.error_code == ParseErrorCode.invalid_structure
+    assert result.appraisal == AppraisalV1.neutral()
 
 def test_concurrent_requests_serialization():
     async def run_test():
         engine = ConversationEngine()
         user_id = "test_user"
-        db = {user_id: {"emotional_state": {"pleasure": 0.0}}}
+        db = {user_id: {"emotional_state": _legacy_emotion_dict(pleasure=0.0)}}
         engine.memory_manager.load_user_state = MagicMock(side_effect=lambda uid: db[uid].copy())
         def mock_sync(uid, state, rel, profile=None): db[uid]["emotional_state"] = state.to_dict()
         engine.memory_manager.sync_state = MagicMock(side_effect=mock_sync)
         engine.memory_manager.save_turn = MagicMock()
-        engine._perceive = MagicMock(return_value={"valence": 0.1})
+        engine._perceive = MagicMock(return_value={"valence": 0.3, "arousal_shift": 0.0, "dominance_shift": 0.0})
 
         loop = asyncio.get_running_loop()
         req1_in = asyncio.Event()
@@ -144,7 +161,7 @@ def test_no_global_lock():
             m = MagicMock(); m.choices = [MagicMock()]; m.choices[0].message.content = "Hi"
             return m
         engine.groq_manager.chat_completion = MagicMock(side_effect=sync_chat_mock)
-        engine.memory_manager.load_user_state = MagicMock(return_value={})
+        engine.memory_manager.load_user_state = MagicMock(return_value={"emotional_state": _legacy_emotion_dict()})
         engine.memory_manager.sync_state = MagicMock()
         engine.memory_manager.save_turn = MagicMock()
         engine._perceive = MagicMock(return_value={})
@@ -157,7 +174,7 @@ def test_lock_cleanup():
         user_id = "cleanup_user"
         m = MagicMock(); m.choices = [MagicMock()]; m.choices[0].message.content = "Hi"
         engine.groq_manager.chat_completion = MagicMock(return_value=m)
-        engine.memory_manager.load_user_state = MagicMock(return_value={})
+        engine.memory_manager.load_user_state = MagicMock(return_value={"emotional_state": _legacy_emotion_dict()})
         engine.memory_manager.sync_state = MagicMock()
         engine.memory_manager.save_turn = MagicMock()
         engine._perceive = MagicMock(return_value={})
@@ -189,7 +206,7 @@ def test_lock_cleanup_on_cancellation_during_thread_work():
             nonlocal load_finished
             load_finished = True
             return {
-                "emotional_state": EmotionalState().to_dict(),
+                "emotional_state": _legacy_emotion_dict(),
                 "relationship_state": UserRelationship(user_id=uid).to_dict()
             }
 
@@ -266,7 +283,7 @@ def test_lock_cleanup_on_cancellation_during_sync_state():
             nonlocal sync_finished
             sync_finished = True
 
-        engine.memory_manager.load_user_state = MagicMock(return_value={})
+        engine.memory_manager.load_user_state = MagicMock(return_value={"emotional_state": _legacy_emotion_dict()})
         engine.memory_manager.sync_state = MagicMock(side_effect=mock_sync)
         engine.memory_manager.save_turn = MagicMock()
         engine._perceive = MagicMock(return_value={"valence": 0.0})
@@ -319,7 +336,7 @@ def test_lock_cleanup_on_cancellation_during_waiting():
         def mock_load(uid):
             load_reached.set()
             load_release.wait(timeout=2)
-            return {}
+            return {"emotional_state": _legacy_emotion_dict()}
 
         engine.memory_manager.load_user_state = MagicMock(side_effect=mock_load)
         engine.memory_manager.sync_state = MagicMock()
@@ -386,7 +403,7 @@ def test_lock_cleanup_on_repeated_cancellation_during_thread_work():
             nonlocal load_finished
             load_finished = True
             return {
-                "emotional_state": EmotionalState().to_dict(),
+                "emotional_state": _legacy_emotion_dict(),
                 "relationship_state": UserRelationship(user_id=uid).to_dict()
             }
 

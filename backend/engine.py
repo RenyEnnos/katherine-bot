@@ -1,12 +1,19 @@
 import json
 import asyncio
 import time
-import math
 import logging
-from typing import Dict, Any, Optional
+from typing import Optional
 from fastapi import BackgroundTasks
 from .groq_manager import GroqClientManager
-from .emotional_core import AffectiveEngine, EmotionalState
+from .emotional_core import AffectiveEngine
+from .emotional_domain import (
+    AppraisalV1,
+    EmotionalStateV1,
+    TransitionConfig,
+    migrate_legacy_snapshot,
+    parse_llm_appraisal,
+    transition,
+)
 from .memory import MemoryManager
 from .relationship import RelationshipManager, UserRelationship
 from .lock_manager import UserLockManager
@@ -15,17 +22,18 @@ from .archival_memory import (
     parse_archival_extraction,
     compute_idempotency_key,
     EXTRACTOR_VERSION,
-    ArchivalValidationError,
     ArchivalDuplicateError
 )
 
 logger = logging.getLogger(__name__)
 
 class ConversationEngine:
-    def __init__(self):
+    def __init__(self, clock=time.time):
+        self._clock = clock
         self.groq_manager = GroqClientManager()
-        self.affective_engine = AffectiveEngine()
-        self.memory_manager = MemoryManager()
+        self.presentation = AffectiveEngine()  # read-only presentation helpers
+        self.transition_config = TransitionConfig.defaults()  # immutable, stateless
+        self.memory_manager = MemoryManager(clock=clock)
         self.relationship_manager = RelationshipManager()
         self.lock_manager = UserLockManager()
         self.model_main = "llama-3.3-70b-versatile"
@@ -111,16 +119,50 @@ class ConversationEngine:
         except Exception:
             logger.error("Event: archival_extraction_store_failed")
 
+    @staticmethod
+    def _project_emotion_state(state: EmotionalStateV1) -> dict:
+        """Project ``EmotionalStateV1`` to the legacy public response format.
+
+        The persisted format uses ``timestamp`` and ``schema_version``;
+        the public contract exposes ``last_update`` and omits internal fields.
+        """
+        return {
+            "pleasure": state.pleasure,
+            "arousal": state.arousal,
+            "dominance": state.dominance,
+            "libido": state.libido,
+            "aggression": state.aggression,
+            "connection": state.connection,
+            "energy": state.energy,
+            "tension": state.tension,
+            "coping_mode": state.coping_mode,
+            "last_update": state.timestamp,
+        }
+
+    @staticmethod
+    def _adapt_appraisal_for_relationship(appraisal: AppraisalV1) -> dict:
+        """Adapt a validated ``AppraisalV1`` to the dict format expected by
+        ``RelationshipManager.update_relationship()``.
+
+        This is a temporary adapter that should be redesigned in the
+        appropriate relational issue, not here.
+        """
+        return {
+            "valence": appraisal.valence_shift,
+            "triggered_emotions": dict(appraisal.discrete_emotions),
+        }
+
     async def process_turn(self, user_id: str, user_message: str, background_tasks: Optional[BackgroundTasks] = None):
         async def run_under_lock():
-            current_time = time.time()
+            current_time = self._clock()
 
             # 1. Load State from Supabase (Offloaded to thread)
             # Raises StateLoadError on DB failure
             user_state = await asyncio.to_thread(self.memory_manager.load_user_state, user_id)
 
-            # Hydrate Emotional State
-            emotional_state = EmotionalState.from_dict(user_state.get("emotional_state", {}))
+            # Migration boundary: legacy or v1 snapshot → EmotionalStateV1
+            raw_emotional_state = user_state.get("emotional_state", {})
+            emotional_state = migrate_legacy_snapshot(raw_emotional_state)
 
             # Hydrate Relationship State - Enforce authenticated user_id
             rel_data = user_state.get("relationship_state")
@@ -134,22 +176,36 @@ class ConversationEngine:
 
             # 3. Analyze Intent & Sentiment (LLM Perception)
             raw_perception = await asyncio.to_thread(self._perceive, user_message)
-            perception = self._normalize_perception(raw_perception)
+
+            # Parse raw LLM output into a validated AppraisalV1 (may be neutral fallback)
+            parse_result = parse_llm_appraisal(raw_perception)
+            appraisal = parse_result.appraisal
+
+            # Observability: log sanitised fallback code without raw payload
+            if parse_result.is_fallback:
+                logger.info(
+                    f"event=emotional_appraisal_fallback code={parse_result.error_code.value}"
+                )
 
             # 4. Update Emotional State & Relationship (Local computations)
-            new_state, coping_instruction = self.affective_engine.update_state(
-                emotional_state,
-                user_message,
+            # Exactly one transition call per successful turn
+            transition_result = transition(
+                previous_state=emotional_state,
+                appraisal=appraisal,
                 current_time=current_time,
-                perception_override=perception
+                config=self.transition_config,
             )
-            relationship = self.relationship_manager.update_relationship(relationship, perception)
+            new_state = transition_result.state
+
+            # Feed relationship from validated AppraisalV1, never the raw LLM dict
+            perception_for_rel = self._adapt_appraisal_for_relationship(appraisal)
+            relationship = self.relationship_manager.update_relationship(relationship, perception_for_rel)
 
             # 5. Meta-Cognition: DEACTIVATED as per P0 instructions
             adaptation_strategy = ""
 
             # 6. Generate Response (LLM call offloaded to thread)
-            system_prompt = self._build_system_prompt(new_state, context, relationship, adaptation_strategy, coping_instruction)
+            system_prompt = self._build_system_prompt(new_state, context, relationship, adaptation_strategy)
 
             try:
                 chat_completion = await asyncio.to_thread(
@@ -171,6 +227,7 @@ class ConversationEngine:
             turn_ref = await asyncio.to_thread(self.memory_manager.save_turn, user_id, user_message, response_text)
 
             # CRITICAL: sync_state MUST complete before releasing lock.
+            # Persist v1 emotional state via .to_dict() (JSONB column expects a dict, not a JSON string).
             # Raises StatePersistenceError on failure.
             await asyncio.to_thread(self.memory_manager.sync_state, user_id, new_state, relationship)
 
@@ -178,7 +235,8 @@ class ConversationEngine:
             if background_tasks:
                 background_tasks.add_task(self.run_archival_extraction, turn_ref)
 
-            return response_text, new_state.to_dict()
+            # Return projected public format (timestamp → last_update, no internal fields)
+            return response_text, self._project_emotion_state(new_state)
 
         async with self.lock_manager.lock(user_id):
             task = asyncio.create_task(run_under_lock())
@@ -225,54 +283,13 @@ class ConversationEngine:
         except Exception:
             return {}
 
-    def _normalize_perception(self, raw: Any) -> Dict[str, Any]:
-        """
-        Normalizes and sanitizes LLM perception output.
-        Fails closed to neutral defaults for malformed input.
-        """
-        allowed_emotions = [
-            "joy", "sadness", "anger", "fear", "disgust", "surprise",
-            "tenderness", "guilt", "pride", "jealousy", "gratitude"
-        ]
+    def _build_system_prompt(self, emotion_state: EmotionalStateV1, context, relationship, adaptation_strategy=""):
+        acting_instruction = self.presentation.get_acting_instruction(emotion_state)
+        mood_label = self.presentation.get_emotional_label(emotion_state)
 
-        default_emotions = {emo: 0.0 for emo in allowed_emotions}
-        default = {
-            "valence": 0.0,
-            "arousal_shift": 0.0,
-            "dominance_shift": 0.0,
-            "triggered_emotions": default_emotions
-        }
-
-        if not isinstance(raw, dict):
-            return default
-
-        def clean_num(val, min_v, max_v, default_v=0.0):
-            if isinstance(val, bool): # bool is subclass of int/float but not desired here
-                return default_v
-            if not isinstance(val, (int, float)):
-                return default_v
-            if not math.isfinite(val):
-                return default_v
-            return max(min_v, min(float(val), max_v))
-
-        normalized = {
-            "valence": clean_num(raw.get("valence"), -1.0, 1.0),
-            "arousal_shift": clean_num(raw.get("arousal_shift"), -1.0, 1.0),
-            "dominance_shift": clean_num(raw.get("dominance_shift"), -1.0, 1.0),
-            "triggered_emotions": default_emotions.copy()
-        }
-
-        raw_emotions = raw.get("triggered_emotions")
-        if isinstance(raw_emotions, dict):
-            for emo in allowed_emotions:
-                val = raw_emotions.get(emo)
-                normalized["triggered_emotions"][emo] = clean_num(val, 0.0, 1.0)
-
-        return normalized
-
-    def _build_system_prompt(self, emotion_state, context, relationship, adaptation_strategy="", coping_instruction=""):
-        acting_instruction = self.affective_engine.get_acting_instruction(emotion_state)
-        mood_label = self.affective_engine.get_emotional_label(emotion_state)
+        # Regulation effects (coping instruction) are no longer produced by
+        # the emotional transition — the emotion prompt directives handle this.
+        coping_instruction = ""
 
         prompt = f"""
         {context}

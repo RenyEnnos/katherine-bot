@@ -12,7 +12,7 @@ def test_system_prompt_safety():
     state = EmotionalState()
     relationship = UserRelationship(user_id="test_user")
     
-    prompt = engine._build_system_prompt(state, "context", relationship, "strategy", "coping")
+    prompt = engine._build_system_prompt(state, "context", relationship)
     
     # 1. Prompt does not contain instructions to lie/affirm human or deny digital nature
     disallowed = [
@@ -195,7 +195,7 @@ def test_end_to_end_coercion_to_label():
     # Build complete system prompt to check end-to-end output
     conv_engine = ConversationEngine()
     relationship = UserRelationship(user_id="test_user")
-    prompt = conv_engine._build_system_prompt(new_state, "context", relationship, "strategy", coping_inst)
+    prompt = conv_engine._build_system_prompt(new_state, "context", relationship)
     
     # Assert absence of submissive terms in label and acting/coping instructions
     assert "SUBMISSA" not in label

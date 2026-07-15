@@ -1,7 +1,7 @@
 """
 Integration tests for backend/emotional_domain production flow — issue #234.
 
-Coverage map (41 behavioural requirements):
+Coverage map (43 behavioural requirements):
 ─────────────────────────────────────────────────────────────────────────────
  1. Um turno válido produz exatamente um AppraisalV1.
  2. parse_llm_appraisal() é executado exatamente uma vez.
@@ -231,17 +231,21 @@ class TestSpyBasedFlowCounting:
 class TestRelationshipAdaptationSpy:
     """Relationship receives adapted dict from AppraisalV1, not raw payload."""
 
-    def test_relationship_gets_adapted_appraisal_not_raw_dict(self):
+    def test_valid_appraisal_preserves_emotions_in_relationship(self):
+        """
+        Cenário A — appraisal válido sem chaves top-level desconhecidas.
+
+        O relacionamento recebe ``{valence, triggered_emotions}`` com as
+        emoções válidas preservadas e nenhum campo extra.
+        """
         async def run():
             engine = _make_engine()
-
-            # Spy on the relationship manager
             engine.relationship_manager = MagicMock()
             engine.relationship_manager.update_relationship = MagicMock(
                 return_value=UserRelationship(user_id="user")
-            )            # _perceive returns a payload with a sensitive extra key
-            SENSITIVE_KEY = "SENSITIVE_EXTRA_KEY_92841"
-            # Use only VALID emotions in the payload (unknown emotions cause full fallback)
+            )
+
+            # Only valid top-level keys — no unknown keys that would trigger fallback
             engine._perceive = MagicMock(return_value={
                 "valence": 0.5,
                 "arousal_shift": 0.2,
@@ -250,25 +254,85 @@ class TestRelationshipAdaptationSpy:
                     "joy": 0.8,
                     "tenderness": 0.6,
                 },
-                SENSITIVE_KEY: "should_not_leak",
-                "raw_payload": "not_allowed",
             })
-    
+
             await engine.process_turn("user", "Hello")
-    
-            # Verify the second argument to update_relationship
+
             args, kwargs = engine.relationship_manager.update_relationship.call_args
             assert len(args) >= 2
             adapted = args[1]
-    
-            # Must contain only valence and triggered_emotions
-            assert "valence" in adapted
-            assert "triggered_emotions" in adapted
-            # Sensitive key must not appear
-            assert SENSITIVE_KEY not in adapted
-            # Joy and tenderness must be present (valid emotions)
+
+            # Exact set of keys expected
+            assert set(adapted.keys()) == {"valence", "triggered_emotions"}
+            # Valid emotions preserved
+            assert adapted["valence"] == 0.5
             assert adapted["triggered_emotions"]["joy"] == 0.8
             assert adapted["triggered_emotions"]["tenderness"] == 0.6
+            # No extra keys leaked
+            assert "raw_payload" not in adapted
+            assert "SENSITIVE_" not in str(adapted)
+
+        asyncio.run(run())
+
+    def test_unknown_top_level_key_triggers_neutral_fallback(self):
+        """
+        Cenário B — chave top-level desconhecida.
+
+        * o parser utiliza fallback neutro;
+        * o relacionamento recebe adaptação neutra;
+        * o marcador não chega ao relacionamento;
+        * o marcador não aparece nos logs;
+        * o turno não falha (segue a política de fallback).
+        """
+        SENSITIVE_KEY = "SENSITIVE_EXTRA_KEY_92841"
+
+        async def run():
+            engine = _make_engine()
+            engine.relationship_manager = MagicMock()
+            engine.relationship_manager.update_relationship = MagicMock(
+                return_value=UserRelationship(user_id="user")
+            )
+
+            # Payload with a valid structure PLUS an unknown top-level key
+            engine._perceive = MagicMock(return_value={
+                "valence": 0.5,
+                "arousal_shift": 0.2,
+                "dominance_shift": 0.1,
+                "triggered_emotions": {"joy": 0.8},
+                SENSITIVE_KEY: "should_not_leak",
+            })
+
+            # Capture logs
+            logger = logging.getLogger("backend.engine")
+            logger.setLevel(logging.INFO)
+            stream = io.StringIO()
+            handler = logging.StreamHandler(stream)
+            logger.addHandler(handler)
+            try:
+                resp, emotions = await engine.process_turn("user", "Hello")
+            finally:
+                logger.removeHandler(handler)
+
+            log_text = stream.getvalue()
+
+            # Relationship received neutral adaptation (fallback)
+            args, kwargs = engine.relationship_manager.update_relationship.call_args
+            adapted = args[1]
+            assert adapted["valence"] == 0.0  # neutral fallback
+            assert adapted["triggered_emotions"] == {}
+            # Sensitive key never reaches relationship
+            assert SENSITIVE_KEY not in adapted
+            assert SENSITIVE_KEY not in str(adapted)
+
+            # Log contains sanitised fallback event, not the marker
+            assert "event=emotional_appraisal_fallback" in log_text
+            assert "code=unknown_top_level_key" in log_text
+            assert SENSITIVE_KEY not in log_text
+
+            # Turn still succeeds (fallback policy)
+            assert resp is not None
+
+        asyncio.run(run())
 
     def test_unknown_emotions_filtered_from_relationship(self):
         """Verify unknown emotions are stripped by the parser before reaching relationship."""
@@ -530,7 +594,7 @@ class TestArchivalScheduling:
     """Archival extraction scheduling: order on success, zero on sync_state failure."""
 
     def test_success_orders_save_sync_then_schedule(self):
-        """On success: save_turn → sync_state → add_task → return."""
+        """On success: save_turn → sync_state → schedule → return."""
         async def run():
             engine = _make_engine()
             call_order = []
@@ -545,34 +609,55 @@ class TestArchivalScheduling:
             def mock_sync(user_id, state, rel):
                 call_order.append("sync")
 
-            def mock_add_task(coro, *args, **kwargs):
-                call_order.append("add_task")
+            def mock_schedule(coro, *args, **kwargs):
+                call_order.append("schedule")
 
             engine.memory_manager.save_turn = MagicMock(side_effect=mock_save)
             engine.memory_manager.sync_state = MagicMock(side_effect=mock_sync)
-            bg_tasks.add_task = MagicMock(side_effect=mock_add_task)
+            bg_tasks.add_task = MagicMock(side_effect=mock_schedule)
 
             resp, emotions = await engine.process_turn("user", "Hello", background_tasks=bg_tasks)
 
-            assert call_order == ["save", "sync", "add_task"]
+            assert call_order == ["save", "sync", "schedule"]
             bg_tasks.add_task.assert_called_once()
             assert resp is not None
 
         asyncio.run(run())
 
     def test_sync_state_failure_blocks_add_task(self):
-        """When sync_state fails, add_task is never called and exception propagates."""
+        """
+        When sync_state fails:
+        * save pode ter ocorrido;
+        * sync é registrado (a falha ocorre depois);
+        * schedule não pode aparecer;
+        * add_task permanece sem chamadas;
+        * nenhuma resposta de sucesso é retornada.
+        """
         async def run():
             engine = _make_engine()
+            call_order = []
+            bg_tasks = MagicMock()
+
+            def mock_save(user_id, user_msg, bot_msg):
+                call_order.append("save")
+                from backend.archival_memory import PersistedTurnRef
+                return PersistedTurnRef(user_id=user_id, source_chat_log_id=1,
+                                        assistant_chat_log_id=2)
+
+            def mock_schedule(coro, *args, **kwargs):
+                call_order.append("schedule")
+
+            engine.memory_manager.save_turn = MagicMock(side_effect=mock_save)
             engine.memory_manager.sync_state = MagicMock(
                 side_effect=StatePersistenceError("DB fail")
             )
-            bg_tasks = MagicMock()
+            bg_tasks.add_task = MagicMock(side_effect=mock_schedule)
 
             with pytest.raises(StatePersistenceError):
                 await engine.process_turn("user", "Hello", background_tasks=bg_tasks)
 
-            # add_task must NOT be called
+            # schedule must NOT be in call_order; add_task must not be called
+            assert "schedule" not in call_order
             bg_tasks.add_task.assert_not_called()
 
         asyncio.run(run())
@@ -598,6 +683,7 @@ class TestSanitisedLogging:
     SENSITIVE_PAYLOAD = "SENSITIVE_USER_PAYLOAD_92841"
     SENSITIVE_KEY = "SENSITIVE_EXTRA_KEY_92841"
     SENSITIVE_PROMPT = "SENSITIVE_PROMPT_92841"
+    SENSITIVE_EXCEPTION = "SENSITIVE_EXCEPTION_92841"
 
     def test_fallback_logs_only_sanitised_code(self):
         async def run():
@@ -648,15 +734,59 @@ class TestSanitisedLogging:
 
         asyncio.run(run())
 
+    def test_exception_marker_not_leaked_via_caplog(self, caplog):
+        """
+        Uma exceção contendo ``SENSITIVE_EXCEPTION_92841`` é injetada na
+        fronteira do parser. O ``except Exception`` interno de
+        ``parse_llm_appraisal`` captura a falha sem vazar o texto
+        da exceção para os logs.
+        """
+        async def run():
+            engine = _make_engine()
+            engine.memory_manager.sync_state = MagicMock()
+            engine.memory_manager.save_turn = MagicMock()
+
+            # Patch _require_finite_float_in_range to raise a fake exception
+            # with a unique sensitive marker. This triggers the
+            # ``except Exception`` in parse_llm_appraisal, which catches
+            # and sanitises the failure (never re-raises).
+            # We patch at the backend.emotional_domain.appraisal_parser level
+            # because _require_finite_float_in_range is imported there.
+            with patch(
+                "backend.emotional_domain.appraisal_parser._require_finite_float_in_range",
+                side_effect=Exception(self.SENSITIVE_EXCEPTION),
+            ):
+                resp, emotions = await engine.process_turn("user", "Hello")
+
+            # The turn still succeeds via neutral fallback
+            assert resp is not None
+
+        with caplog.at_level(logging.INFO):
+            asyncio.run(run())
+
+        # Check caplog for sanitised output (after asyncio.run completes)
+        caplog_text = caplog.text
+        # Sanitised event and code appear
+        assert "event=emotional_appraisal_fallback" in caplog_text
+        assert "unexpected_parser_failure" in caplog_text
+        # Exception marker must NOT appear
+        assert self.SENSITIVE_EXCEPTION not in caplog_text
+        # No sensitive markers of any kind leak
+        assert "SENSITIVE_" not in caplog_text
+
     def test_neutral_fallback_is_used_when_perceive_fails(self):
         async def run():
             engine = _make_engine()
-            # _perceive returns something that parse_llm_appraisal rejects
+            # _perceive returns None (not a dict) → parse_llm_appraisal returns
+            # neutral fallback via invalid_structure code
             engine._perceive = MagicMock(return_value=None)
 
             resp, emotions = await engine.process_turn("user", "Hello")
             # Should still succeed with neutral fallback
             assert resp is not None
+            # Emotional state reflects neutral fallback (zero shifts)
+            assert emotions["pleasure"] == 0.0
+            assert emotions["last_update"] == FIXED_CLOCK
 
         asyncio.run(run())
 

@@ -241,9 +241,11 @@ async def test_process_turn_schedules_background_task(backend):
     # Run process_turn
     resp, emotions = await engine.process_turn("user123", "hello", background_tasks=bg_tasks)
     
-    # Assert return format
+    from backend.emotion_presentation import EmotionStateResponse
+    # Assert return format — process_turn returns EmotionStateResponse, not dict
     assert resp == "assistant reply"
-    assert isinstance(emotions, dict)
+    assert isinstance(emotions, EmotionStateResponse)
+    assert emotions.schema_version == 1
     
     # Assert execution order: sync_state must complete before scheduling background task
     assert call_order == ["save_turn", "sync_state"]
@@ -269,8 +271,19 @@ def test_chat_response_format(client_app, mock_supabase):
         "relationship_state": UserRelationship(user_id="user123").to_dict()
     })
     
-    # Mock process_turn to return custom values
-    engine.process_turn = AsyncMock(return_value=("My response text", {"joy": 0.5}))
+    from backend.emotion_presentation import EmotionStateResponse, PublicPAD, PublicDominantEmotion
+    
+    # Mock process_turn to return valid EmotionStateResponse
+    mock_emotion = EmotionStateResponse(
+        schema_version=1,
+        mood_label="NEUTRA",
+        pad=PublicPAD(pleasure=0.0, arousal=0.0, dominance=0.0),
+        dominant_emotions=[
+            PublicDominantEmotion(name="joy", intensity=0.5),
+        ],
+        timestamp=1700000000.0,
+    )
+    engine.process_turn = AsyncMock(return_value=("My response text", mock_emotion))
     
     response = client_app.post(
         "/chat",
@@ -284,7 +297,11 @@ def test_chat_response_format(client_app, mock_supabase):
     assert "emotion_state" in data
     assert len(data) == 2  # exactly response and emotion_state
     assert data["response"] == "My response text"
-    assert data["emotion_state"] == {"joy": 0.5}
+    # EmotionStateResponse is serialised as a typed dict, not a plain dict
+    assert data["emotion_state"]["schema_version"] == 1
+    assert data["emotion_state"]["mood_label"] == "NEUTRA"
+    assert data["emotion_state"]["pad"]["pleasure"] == 0.0
+    assert len(data["emotion_state"]["dominant_emotions"]) == 1
 
 
 @pytest.mark.anyio

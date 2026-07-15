@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { sendMessage } from '../services/chatService';
 import api from '../../../shared/services/apiClient';
 import { SYSTEM_MESSAGES } from '../constants';
+import { validateEmotionState } from '../../../shared/utils/formatters';
 
 export const useChat = () => {
     const [messages, setMessages] = useState([]);
@@ -47,9 +48,9 @@ export const useChat = () => {
             const botMessage = { role: 'assistant', content: data.response };
             setMessages(prev => [...prev, botMessage]);
 
-            if (data.emotion_state) {
-                setEmotionState(data.emotion_state);
-            }
+            // Always validate emotion_state: clear panel on invalid or missing contract
+            const validated = validateEmotionState(data.emotion_state);
+            setEmotionState(validated);
         } catch (error) {
             // Error handling
             const errorMessage = {

@@ -221,7 +221,6 @@ class TestInvalidConfig:
         {"tension_baseline": -0.1},
         {"tension_baseline": 2.0},
         {"max_pleasure_shift": -0.1},
-        {"max_pleasure_shift": 0.0},
         {"max_pleasure_shift": 1.5},
         {"max_arousal_shift": True},
         {"max_dominance_shift": None},
@@ -229,12 +228,16 @@ class TestInvalidConfig:
         {"positive_pleasure_threshold": 2.0},
         {"tension_increase": -0.1},
         {"tension_relief": -0.1},
+        {"tension_increase": 1.5},
+        {"tension_relief": 1.5},
         {"activation_threshold": 1.5},
         {"recovery_threshold": -0.1},
         {"recovery_threshold": 0.7, "activation_threshold": 0.5},
         {"dissociation_arousal_factor": -0.1},
         {"dissociation_arousal_factor": 1.5},
         {"dissociation_arousal_factor": True},
+        {"negative_pleasure_threshold": 0.0, "positive_pleasure_threshold": 0.0},  # equal
+        {"negative_pleasure_threshold": 0.3, "positive_pleasure_threshold": -0.3},  # inverted
     ])
     def test_invalid_config_rejected(self, kw):
         with pytest.raises(EmotionalDomainError):
@@ -245,6 +248,9 @@ class TestInvalidConfig:
         {"tension_half_life": 3600.0},
         {"tension_baseline": 0.1},
         {"max_pleasure_shift": 0.5},
+        {"max_pleasure_shift": 0.0},  # zero disables the axis
+        {"max_arousal_shift": 0.0},
+        {"max_dominance_shift": 0.0},
         {"dissociation_arousal_factor": 0.3},
     ])
     def test_valid_configs_accepted(self, kw):
@@ -262,6 +268,30 @@ class TestInvalidConfig:
     def test_unknown_field_rejected(self):
         with pytest.raises(EmotionalDomainError):
             TransitionConfig.create(unknown_field=42.0)
+
+    # ── New: cap zero blocks the axis ────────────────────────────────────────
+    def test_cap_zero_blocks_pleasure_shift(self):
+        """A cap of 0.0 prevents appraisal shifts from affecting pleasure."""
+        state = _state(pleasure=0.0)
+        ap = _appraisal(valence_shift=0.5)  # would normally be capped to 0.25
+        cfg = TransitionConfig.create(max_pleasure_shift=0.0)
+        result = transition(state, ap, _T0, cfg)
+        # pleasure should remain at 0.0 (no shift applied)
+        assert result.state.pleasure == pytest.approx(0.0, abs=1e-10)
+
+    def test_cap_zero_blocks_arousal_shift(self):
+        state = _state(arousal=0.0)
+        ap = _appraisal(arousal_shift=0.5)
+        cfg = TransitionConfig.create(max_arousal_shift=0.0)
+        result = transition(state, ap, _T0, cfg)
+        assert result.state.arousal == pytest.approx(0.0, abs=1e-10)
+
+    def test_cap_zero_blocks_dominance_shift(self):
+        state = _state(dominance=0.0)
+        ap = _appraisal(dominance_shift=0.5)
+        cfg = TransitionConfig.create(max_dominance_shift=0.0)
+        result = transition(state, ap, _T0, cfg)
+        assert result.state.dominance == pytest.approx(0.0, abs=1e-10)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -742,6 +772,100 @@ class TestManicPolicy:
 # Requirement 36: RegulationResult structure
 # ═══════════════════════════════════════════════════════════════════════════════
 
+class TestRegulationResultValidation:
+    """Validation of RegulationResult construction."""
+
+    def test_invalid_previous_mode_rejected(self):
+        with pytest.raises(EmotionalDomainError):
+            RegulationResult(
+                previous_mode="INVALID",
+                current_mode="HEALTHY",
+                changed=True,
+                reason=RegulationReason.RECOVERED,
+            )
+
+    def test_invalid_current_mode_rejected(self):
+        with pytest.raises(EmotionalDomainError):
+            RegulationResult(
+                previous_mode="HEALTHY",
+                current_mode="INVALID",
+                changed=True,
+                reason=RegulationReason.HIGH_TENSION_POSITIVE_DOMINANCE,
+            )
+
+    def test_changed_not_bool_rejected(self):
+        for bad in (0, 1, "True", None, [True], {"c": True}):
+            with pytest.raises(EmotionalDomainError):
+                RegulationResult(
+                    previous_mode="HEALTHY",
+                    current_mode="DEFENSIVE",
+                    changed=bad,  # type: ignore[arg-type]
+                    reason=RegulationReason.HIGH_TENSION_POSITIVE_DOMINANCE,
+                )
+
+    def test_changed_inconsistent_with_modes_rejected(self):
+        # changed=True but modes are equal
+        with pytest.raises(EmotionalDomainError):
+            RegulationResult(
+                previous_mode="HEALTHY",
+                current_mode="HEALTHY",
+                changed=True,
+                reason=RegulationReason.HIGH_TENSION_POSITIVE_DOMINANCE,
+            )
+        # changed=False but modes differ
+        with pytest.raises(EmotionalDomainError):
+            RegulationResult(
+                previous_mode="HEALTHY",
+                current_mode="DEFENSIVE",
+                changed=False,
+                reason=RegulationReason.NONE,
+            )
+
+    def test_reason_as_string_rejected(self):
+        with pytest.raises(EmotionalDomainError):
+            RegulationResult(
+                previous_mode="HEALTHY",
+                current_mode="HEALTHY",
+                changed=False,
+                reason="none",  # type: ignore[arg-type]
+            )
+
+    def test_reason_none_with_change_rejected(self):
+        with pytest.raises(EmotionalDomainError):
+            RegulationResult(
+                previous_mode="HEALTHY",
+                current_mode="DEFENSIVE",
+                changed=True,
+                reason=RegulationReason.NONE,
+            )
+
+    def test_reason_incompatible_with_current_mode_rejected(self):
+        # RECOVERED requires HEALTHY
+        with pytest.raises(EmotionalDomainError):
+            RegulationResult(
+                previous_mode="HEALTHY",
+                current_mode="DEFENSIVE",
+                changed=True,
+                reason=RegulationReason.RECOVERED,
+            )
+        # HIGH_TENSION_POSITIVE_DOMINANCE requires DEFENSIVE
+        with pytest.raises(EmotionalDomainError):
+            RegulationResult(
+                previous_mode="HEALTHY",
+                current_mode="DISSOCIATED",
+                changed=True,
+                reason=RegulationReason.HIGH_TENSION_POSITIVE_DOMINANCE,
+            )
+        # HIGH_TENSION_NONPOSITIVE_DOMINANCE requires DISSOCIATED
+        with pytest.raises(EmotionalDomainError):
+            RegulationResult(
+                previous_mode="HEALTHY",
+                current_mode="DEFENSIVE",
+                changed=True,
+                reason=RegulationReason.HIGH_TENSION_NONPOSITIVE_DOMINANCE,
+            )
+
+
 class TestRegulationResult:
     """RegulationResult reports correct previous_mode, current_mode, changed, reason."""
 
@@ -911,6 +1035,48 @@ class TestIsolatedImport:
 # Additional structural tests
 # ═══════════════════════════════════════════════════════════════════════════════
 
+class TestTransitionResultValidation:
+    """Validation of TransitionResult construction."""
+
+    def test_state_none_rejected(self):
+        with pytest.raises(EmotionalDomainError):
+            TransitionResult(
+                state=None,  # type: ignore[arg-type]
+                regulation=RegulationResult(
+                    previous_mode="HEALTHY",
+                    current_mode="HEALTHY",
+                    changed=False,
+                    reason=RegulationReason.NONE,
+                ),
+            )
+
+    def test_state_wrong_type_rejected(self):
+        with pytest.raises(EmotionalDomainError):
+            TransitionResult(
+                state={"pleasure": 0.5},  # type: ignore[arg-type]
+                regulation=RegulationResult(
+                    previous_mode="HEALTHY",
+                    current_mode="HEALTHY",
+                    changed=False,
+                    reason=RegulationReason.NONE,
+                ),
+            )
+
+    def test_regulation_none_rejected(self):
+        with pytest.raises(EmotionalDomainError):
+            TransitionResult(
+                state=_neutral_state(),
+                regulation=None,  # type: ignore[arg-type]
+            )
+
+    def test_regulation_wrong_type_rejected(self):
+        with pytest.raises(EmotionalDomainError):
+            TransitionResult(
+                state=_neutral_state(),
+                regulation={"previous_mode": "HEALTHY"},  # type: ignore[arg-type]
+            )
+
+
 class TestTransitionResultStructure:
     """TransitionResult and RegulationResult serialisation."""
 
@@ -1004,6 +1170,72 @@ class TestValidateCurrentTime:
     def test_invalid_times(self, bad_time):
         with pytest.raises(EmotionalDomainError):
             _validate_current_time(bad_time)
+
+
+class TestTransitionArgumentValidation:
+    """Validation of transition() argument types."""
+
+    def test_state_none_rejected(self):
+        ap = _appraisal()
+        cfg = _default_config()
+        with pytest.raises(EmotionalDomainError):
+            transition(None, ap, _T0, cfg)  # type: ignore[arg-type]
+
+    def test_state_dict_rejected(self):
+        ap = _appraisal()
+        cfg = _default_config()
+        with pytest.raises(EmotionalDomainError):
+            transition({"pleasure": 0.5}, ap, _T0, cfg)  # type: ignore[arg-type]
+
+    def test_state_string_rejected(self):
+        ap = _appraisal()
+        cfg = _default_config()
+        with pytest.raises(EmotionalDomainError):
+            transition("not_a_state", ap, _T0, cfg)  # type: ignore[arg-type]
+
+    def test_appraisal_none_rejected(self):
+        state = _neutral_state()
+        cfg = _default_config()
+        with pytest.raises(EmotionalDomainError):
+            transition(state, None, _T0, cfg)  # type: ignore[arg-type]
+
+    def test_appraisal_dict_rejected(self):
+        state = _neutral_state()
+        cfg = _default_config()
+        with pytest.raises(EmotionalDomainError):
+            transition(state, {"valence_shift": 0.1}, _T0, cfg)  # type: ignore[arg-type]
+
+    def test_appraisal_string_rejected(self):
+        state = _neutral_state()
+        cfg = _default_config()
+        with pytest.raises(EmotionalDomainError):
+            transition(state, "not_an_appraisal", _T0, cfg)  # type: ignore[arg-type]
+
+    def test_config_none_rejected(self):
+        state = _neutral_state()
+        ap = _appraisal()
+        with pytest.raises(EmotionalDomainError):
+            transition(state, ap, _T0, None)  # type: ignore[arg-type]
+
+    def test_config_dict_rejected(self):
+        state = _neutral_state()
+        ap = _appraisal()
+        with pytest.raises(EmotionalDomainError):
+            transition(state, ap, _T0, {"pad_half_life": 3600.0})  # type: ignore[arg-type]
+
+    def test_config_string_rejected(self):
+        state = _neutral_state()
+        ap = _appraisal()
+        with pytest.raises(EmotionalDomainError):
+            transition(state, ap, _T0, "bad_config")  # type: ignore[arg-type]
+
+    def test_state_appraisal_swapped_rejected(self):
+        """Swapping state and appraisal should be rejected."""
+        state = _neutral_state()
+        ap = _appraisal()
+        cfg = _default_config()
+        with pytest.raises(EmotionalDomainError):
+            transition(ap, state, _T0, cfg)  # type: ignore[arg-type]
 
 
 class TestDetermineCopingMode:

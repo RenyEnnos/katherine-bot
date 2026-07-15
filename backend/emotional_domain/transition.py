@@ -170,13 +170,16 @@ class TransitionConfig:
         Baseline toward which tension decays. Must be in [0.0, 1.0]. Default: 0.0.
     max_pleasure_shift:
         Maximum absolute contribution of a single appraisal's valence_shift.
-        Must be positive and <= 1.0. Default: 0.25.
+        Must be in [0.0, 1.0]. A value of 0.0 disables valence shifts.
+        Default: 0.25.
     max_arousal_shift:
         Maximum absolute contribution of a single appraisal's arousal_shift.
-        Must be positive and <= 1.0. Default: 0.25.
+        Must be in [0.0, 1.0]. A value of 0.0 disables arousal shifts.
+        Default: 0.25.
     max_dominance_shift:
         Maximum absolute contribution of a single appraisal's dominance_shift.
-        Must be positive and <= 1.0. Default: 0.25.
+        Must be in [0.0, 1.0]. A value of 0.0 disables dominance shifts.
+        Default: 0.25.
     negative_pleasure_threshold:
         Pleasure below this value increases tension. Must be in [-1.0, 1.0].
         Default: -0.3.
@@ -185,10 +188,10 @@ class TransitionConfig:
         Default: 0.3.
     tension_increase:
         Delta added to tension when pleasure < negative_pleasure_threshold.
-        Must be non-negative and finite. Default: 0.05.
+        Must be in [0.0, 1.0]. Default: 0.05.
     tension_relief:
         Delta subtracted from tension when pleasure > positive_pleasure_threshold.
-        Must be non-negative and finite. Default: 0.05.
+        Must be in [0.0, 1.0]. Default: 0.05.
     activation_threshold:
         Tension at or above this value activates DEFENSIVE or DISSOCIATED coping.
         Must be in [0.0, 1.0]. Default: 0.8.
@@ -239,15 +242,19 @@ class TransitionConfig:
         _validate_shift_cap(self.max_arousal_shift, "max_arousal_shift")
         _validate_shift_cap(self.max_dominance_shift, "max_dominance_shift")
 
-        # Pleasure thresholds
+        # Pleasure thresholds — must be in [-1.0, 1.0] and strictly ordered
         _validate_range(self.negative_pleasure_threshold, "negative_pleasure_threshold", -1.0, 1.0)
         _validate_range(self.positive_pleasure_threshold, "positive_pleasure_threshold", -1.0, 1.0)
 
-        # Tension delta magnitudes — must be non-negative (they are magnitudes)
-        _validate_nonnegative(
-            self.tension_increase, "tension_increase"
-        )
-        _validate_nonnegative(self.tension_relief, "tension_relief")
+        if self.negative_pleasure_threshold >= self.positive_pleasure_threshold:
+            raise EmotionalDomainError(
+                "TransitionConfig: negative_pleasure_threshold must be strictly less than "
+                "positive_pleasure_threshold."
+            )
+
+        # Tension delta magnitudes — must be in [0.0, 1.0]
+        _validate_range(self.tension_increase, "tension_increase", 0.0, 1.0)
+        _validate_range(self.tension_relief, "tension_relief", 0.0, 1.0)
 
         # Coping thresholds — must be in [0.0, 1.0]
         _validate_range(self.activation_threshold, "activation_threshold", 0.0, 1.0)
@@ -301,9 +308,9 @@ def _validate_range(raw: object, name: str, lo: float, hi: float) -> float:
 def _validate_shift_cap(raw: object, name: str) -> None:
     _validate_not_bool(raw, name)
     f = _require_finite_float(raw, name)
-    if f <= 0 or f > 1.0:
+    if f < 0 or f > 1.0:
         raise EmotionalDomainError(
-            f"Field '{name}' must be in (0.0, 1.0]."
+            f"Field '{name}' must be in [0.0, 1.0]."
         )
 
 
@@ -328,20 +335,80 @@ class RegulationResult:
     Attributes
     ==========
     previous_mode:
-        The coping mode before regulation.
+        The coping mode before regulation. Must belong to ``VALID_COPING_MODES``.
     current_mode:
-        The coping mode after regulation.
+        The coping mode after regulation. Must belong to ``VALID_COPING_MODES``.
     changed:
-        ``True`` when ``previous_mode != current_mode``.
+        ``True`` when ``previous_mode != current_mode``. Must be ``bool``, not
+        ``int``, ``str``, or ``None``. Must be consistent with the modes.
     reason:
         A ``RegulationReason`` enum value indicating why the mode changed.
         Never contains user content, LLM output, prompt text, or instructions.
+        Semantically validated against ``current_mode``.
     """
 
     previous_mode: str
     current_mode: str
     changed: bool
     reason: RegulationReason
+
+    def __post_init__(self) -> None:
+        """Validate all fields on every construction path."""
+
+        # Validate modes belong to the allowlist
+        if self.previous_mode not in VALID_COPING_MODES:
+            raise EmotionalDomainError(
+                "RegulationResult: previous_mode must be one of "
+                f"{sorted(VALID_COPING_MODES)}."
+            )
+        if self.current_mode not in VALID_COPING_MODES:
+            raise EmotionalDomainError(
+                "RegulationResult: current_mode must be one of "
+                f"{sorted(VALID_COPING_MODES)}."
+            )
+
+        # changed must be a strict bool (not int, not str, not None)
+        if not isinstance(self.changed, bool):
+            raise EmotionalDomainError(
+                "RegulationResult: changed must be a bool."
+            )
+
+        # changed must be consistent with previous and current modes
+        expected_changed = (self.previous_mode != self.current_mode)
+        if self.changed != expected_changed:
+            raise EmotionalDomainError(
+                "RegulationResult: changed is inconsistent with mode values."
+            )
+
+        # reason must be a RegulationReason enum instance
+        if not isinstance(self.reason, RegulationReason):
+            raise EmotionalDomainError(
+                "RegulationResult: reason must be a RegulationReason enum value."
+            )
+
+        # Semantic validation of reason against current_mode and changed
+        if not self.changed and self.reason != RegulationReason.NONE:
+            raise EmotionalDomainError(
+                "RegulationResult: reason must be NONE when changed is False."
+            )
+        if self.changed and self.reason == RegulationReason.NONE:
+            raise EmotionalDomainError(
+                "RegulationResult: reason cannot be NONE when changed is True."
+            )
+        if self.reason == RegulationReason.RECOVERED and self.current_mode != "HEALTHY":
+            raise EmotionalDomainError(
+                "RegulationResult: RECOVERED reason requires current_mode == 'HEALTHY'."
+            )
+        if self.reason == RegulationReason.HIGH_TENSION_POSITIVE_DOMINANCE and self.current_mode != "DEFENSIVE":
+            raise EmotionalDomainError(
+                "RegulationResult: HIGH_TENSION_POSITIVE_DOMINANCE reason "
+                "requires current_mode == 'DEFENSIVE'."
+            )
+        if self.reason == RegulationReason.HIGH_TENSION_NONPOSITIVE_DOMINANCE and self.current_mode != "DISSOCIATED":
+            raise EmotionalDomainError(
+                "RegulationResult: HIGH_TENSION_NONPOSITIVE_DOMINANCE reason "
+                "requires current_mode == 'DISSOCIATED'."
+            )
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -369,6 +436,17 @@ class TransitionResult:
 
     state: EmotionalStateV1
     regulation: RegulationResult
+
+    def __post_init__(self) -> None:
+        """Validate that state and regulation are of the correct types."""
+        if not isinstance(self.state, EmotionalStateV1):
+            raise EmotionalDomainError(
+                "TransitionResult: state must be an EmotionalStateV1 instance."
+            )
+        if not isinstance(self.regulation, RegulationResult):
+            raise EmotionalDomainError(
+                "TransitionResult: regulation must be a RegulationResult instance."
+            )
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -522,8 +600,22 @@ def transition(
     Raises
     ------
     EmotionalDomainError
-        If *current_time* is invalid or *config* is invalid.
+        If any argument has an incorrect type or *current_time* is invalid.
     """
+    # ── 0. Validate argument types ──────────────────────────────────────────
+    if not isinstance(previous_state, EmotionalStateV1):
+        raise EmotionalDomainError(
+            "transition: previous_state must be an EmotionalStateV1 instance."
+        )
+    if not isinstance(appraisal, AppraisalV1):
+        raise EmotionalDomainError(
+            "transition: appraisal must be an AppraisalV1 instance."
+        )
+    if not isinstance(config, TransitionConfig):
+        raise EmotionalDomainError(
+            "transition: config must be a TransitionConfig instance."
+        )
+
     # ── 1. Validate current_time ────────────────────────────────────────────
     validated_time = _validate_current_time(current_time)
 

@@ -28,11 +28,12 @@ from .archival_memory import (
 logger = logging.getLogger(__name__)
 
 class ConversationEngine:
-    def __init__(self):
+    def __init__(self, clock=time.time):
+        self._clock = clock
         self.groq_manager = GroqClientManager()
         self.presentation = AffectiveEngine()  # read-only presentation helpers
         self.transition_config = TransitionConfig.defaults()  # immutable, stateless
-        self.memory_manager = MemoryManager()
+        self.memory_manager = MemoryManager(clock=clock)
         self.relationship_manager = RelationshipManager()
         self.lock_manager = UserLockManager()
         self.model_main = "llama-3.3-70b-versatile"
@@ -153,7 +154,7 @@ class ConversationEngine:
 
     async def process_turn(self, user_id: str, user_message: str, background_tasks: Optional[BackgroundTasks] = None):
         async def run_under_lock():
-            current_time = time.time()
+            current_time = self._clock()
 
             # 1. Load State from Supabase (Offloaded to thread)
             # Raises StateLoadError on DB failure
@@ -226,7 +227,7 @@ class ConversationEngine:
             turn_ref = await asyncio.to_thread(self.memory_manager.save_turn, user_id, user_message, response_text)
 
             # CRITICAL: sync_state MUST complete before releasing lock.
-            # Persist v1 emotional state via serialize_state (includes schema_version, timestamp).
+            # Persist v1 emotional state via .to_dict() (JSONB column expects a dict, not a JSON string).
             # Raises StatePersistenceError on failure.
             await asyncio.to_thread(self.memory_manager.sync_state, user_id, new_state, relationship)
 

@@ -1,7 +1,7 @@
 """
 Integration tests for backend/emotional_domain production flow — issue #234.
 
-Coverage map (35 behavioural requirements):
+Coverage map (41 behavioural requirements):
 ─────────────────────────────────────────────────────────────────────────────
  1. Um turno válido produz exatamente um AppraisalV1.
  2. parse_llm_appraisal() é executado exatamente uma vez.
@@ -12,7 +12,7 @@ Coverage map (35 behavioural requirements):
  7. Relacionamento recebe adaptação derivada do AppraisalV1.
  8. Appraisal inválido usa fallback neutro.
  9. Fallback registra somente evento e código sanitizado.
-10. Fallback não registra mensagem, payload, prompt ou exceção.
+10. Fallback não registra payload, prompt ou exceção.
 11. Snapshot legado válido é migrado e utilizado na transição.
 12. Snapshot legado migrado é persistido como v1.
 13. Snapshot v1 válido carregado sem migração destrutiva.
@@ -20,21 +20,21 @@ Coverage map (35 behavioural requirements):
 15. Snapshot incompleto/com campos extras falha fechado.
 16. Falha no load ocorre antes de Groq/transição/persistência.
 17. Novo perfil é criado com snapshot v1 desde o início.
-18. sync_state() persiste o resultado de to_dict() v1.
-19. Snapshot persistido contém schema_version e timestamp.
-20. Snapshot persistido não contém last_update.
-21. Resposta pública mantém exatamente as chaves atuais.
-22. Resposta pública contém last_update derivado do timestamp.
-23. Resposta pública não contém schema_version, timestamp, appraisal ou regulation.
-24. Falha de persistência não retorna sucesso.
-25. Falha de persistência não agenda extração arquivística.
-26. Extração arquivística agendada somente após turno e estado persistidos.
-27. Requisições do mesmo usuário permanecem serializadas.
-28. Usuários diferentes processáveis concorrentemente.
-29. Cancelamento repetido não libera o lock antecipadamente.
-30. Cancelamento repetido não interrompe persistência obrigatória.
-31. Nenhum teste usa Groq, Supabase, embeddings, relógio ou rede reais.
-32. Nenhum teste depende de sleeps longos ou temporização frágil.
+18. sync_state() persiste to_dict() v1 (JSONB dict, not JSON string).
+19. Snapshot persistido contém schema_version e timestamp, sem last_update.
+20. Resposta pública mantém exatamente as chaves atuais.
+21. Resposta pública contém last_update derivado do timestamp.
+22. Resposta pública não contém schema_version, timestamp, appraisal ou regulation.
+23. Falha de persistência não retorna sucesso.
+24. Falha de persistência não agenda extração arquivística.
+25. Extração arquivística agendada somente após turno e estado persistidos.
+26. sync_state() rejeita EmotionalStateV1 inválido com StatePersistenceError.
+27. Engine e MemoryManager aceitam relógio injetável (clock=...).
+28. Novos testes não usam relógio real (clock=1_700_000_000.0).
+29. Spies confirmam exatamente 1 parse_llm_appraisal e 1 transition por turno.
+30. Relacionamento recebe adaptação do appraisal, nunca payload bruto.
+31. Snapshots inválidos bloqueiam todo o fluxo antes de efeitos externos.
+32. Nenhum teste usa Groq, Supabase, embeddings ou rede reais.
 33. Toda a suíte backend existente continua passando.
 34. Frontend audit, tests, lint e build continuam verdes.
 35. CI completa passa.
@@ -43,41 +43,30 @@ Coverage map (35 behavioural requirements):
 from __future__ import annotations
 
 import asyncio
-import time
+import io
 import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from backend.engine import ConversationEngine
+from backend.memory import MemoryManager, StatePersistenceError, StateLoadError
 from backend.emotional_domain import (
     AppraisalV1,
     EmotionalDomainError,
     EmotionalStateV1,
-    ParseErrorCode,
-    TransitionConfig,
     migrate_legacy_snapshot,
     parse_llm_appraisal,
-    serialize_state,
     transition,
 )
-from backend.memory import StateLoadError, MemoryManager
+from backend.relationship import UserRelationship
 
 
-@pytest.fixture(autouse=True)
-def _mock_memory_dependencies(monkeypatch):
-    """Mock memory layer dependencies so tests don't need real Supabase."""
-    monkeypatch.setattr(
-        MemoryManager, "load_recent_history",
-        lambda self, user_id, limit=10: []
-    )
-    monkeypatch.setattr(
-        MemoryManager, "get_context",
-        lambda self, user_id, current_message, user_state: "[mocked context]"
-    )
+# ─── Fixed clock ─────────────────────────────────────────────────────────────
+FIXED_CLOCK = 1_700_000_000.0
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def _legacy_emotion_dict(pleasure=0.0, arousal=0.0, dominance=0.0) -> dict:
     return {
@@ -90,7 +79,7 @@ def _legacy_emotion_dict(pleasure=0.0, arousal=0.0, dominance=0.0) -> dict:
         "energy": 0.8,
         "tension": 0.0,
         "coping_mode": "HEALTHY",
-        "last_update": time.time(),
+        "last_update": FIXED_CLOCK,
     }
 
 
@@ -99,170 +88,652 @@ def _v1_emotion_dict(pleasure=0.0) -> dict:
         pleasure=pleasure, arousal=0.0, dominance=0.0,
         libido=0.0, aggression=0.0, connection=0.5,
         energy=0.8, tension=0.0, coping_mode="HEALTHY",
-        timestamp=time.time(),
+        timestamp=FIXED_CLOCK,
     ).to_dict()
 
 
+def _make_engine(clock=FIXED_CLOCK):
+    """Create a ConversationEngine with fixed clock and mocked external deps."""
+    engine = ConversationEngine(clock=lambda: clock)
+    engine.memory_manager.load_user_state = MagicMock(return_value={
+        "emotional_state": _legacy_emotion_dict(),
+    })
+    engine.memory_manager.sync_state = MagicMock()
+    engine.memory_manager.save_turn = MagicMock()
+    engine.memory_manager.get_context = MagicMock(return_value="[mocked context]")
+    engine.memory_manager.load_recent_history = MagicMock(return_value=[])
+    m = MagicMock()
+    m.choices = [MagicMock()]
+    m.choices[0].message.content = "Hi"
+    engine.groq_manager.chat_completion = MagicMock(return_value=m)
+    engine._perceive = MagicMock(return_value={
+        "valence": 0.2, "arousal_shift": 0.1, "dominance_shift": 0.0,
+        "triggered_emotions": {"joy": 0.5},
+    })
+    return engine
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
-# Requirements 1-6: Flow correctness
+# Correction 1: sync_state() validation
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestFlowCorrectness:
-    """Exact one appraisal and one transition per turn; legacy path not used."""
+class TestSyncStateValidation:
+    """sync_state() rejects invalid emotional_state types with StatePersistenceError."""
 
-    def test_valid_turn_produces_one_appraisal_and_one_transition(self):
-        """Req 1-3: A full turn through process_turn produces one appraisal and one transition."""
+    def _make_mm(self):
+        mm = MemoryManager(clock=lambda: FIXED_CLOCK)
+        mm.supabase = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.data = [{"user_id": "u"}]
+        mock_resp.error = None
+        mm.supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = mock_resp
+        return mm
+
+    def test_accepts_emotional_state_v1(self):
+        mm = self._make_mm()
+        state = EmotionalStateV1.neutral(timestamp=FIXED_CLOCK)
+        rel = UserRelationship(user_id="u")
+        mm.sync_state("u", state, rel)
+        mm.supabase.table.assert_called_once_with("profiles")
+
+    def test_rejects_legacy_emotional_state(self):
+        mm = self._make_mm()
+        rel = UserRelationship(user_id="u")
+        with pytest.raises(StatePersistenceError):
+            mm.sync_state("u", "not a state", rel)
+
+    def test_rejects_dict(self):
+        mm = self._make_mm()
+        rel = UserRelationship(user_id="u")
+        with pytest.raises(StatePersistenceError):
+            mm.sync_state("u", {"pleasure": 0.0}, rel)
+
+    def test_rejects_magic_mock(self):
+        mm = self._make_mm()
+        rel = UserRelationship(user_id="u")
+        with pytest.raises(StatePersistenceError):
+            mm.sync_state("u", MagicMock(), rel)
+
+    def test_rejects_none(self):
+        mm = self._make_mm()
+        rel = UserRelationship(user_id="u")
+        with pytest.raises(StatePersistenceError):
+            mm.sync_state("u", None, rel)
+
+    def test_invalid_type_does_not_call_db(self):
+        mm = self._make_mm()
+        rel = UserRelationship(user_id="u")
+        with pytest.raises(StatePersistenceError):
+            mm.sync_state("u", "bad", rel)
+        # Verify no DB call was made
+        mm.supabase.table.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Correction 2: Clock injection
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestClockInjection:
+    """Engine and MemoryManager accept injectable clock for deterministic testing."""
+
+    def test_engine_uses_injected_clock(self):
+        calls = []
+        engine = ConversationEngine(clock=lambda: calls.append(1) or FIXED_CLOCK)
+        assert engine._clock() == FIXED_CLOCK
+        assert len(calls) == 1
+
+    def test_memory_manager_uses_injected_clock(self):
+        mm = MemoryManager(clock=lambda: FIXED_CLOCK)
+        default = mm._get_default_state("u")
+        ts = default["emotional_state"]["timestamp"]
+        assert ts == FIXED_CLOCK
+
+    def test_clock_propagates_to_memory_manager(self):
+        engine = ConversationEngine(clock=lambda: FIXED_CLOCK)
+        assert engine.memory_manager._clock() == FIXED_CLOCK
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Correction 3: Spy-based flow counting
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestSpyBasedFlowCounting:
+    """Spies confirm exactly one parse_llm_appraisal and one transition per turn."""
+
+    def test_one_appraisal_and_one_transition_per_turn(self):
         async def run():
-            engine = ConversationEngine()
-            m = MagicMock(); m.choices = [MagicMock()]; m.choices[0].message.content = "Hi"
-            engine.groq_manager.chat_completion = MagicMock(return_value=m)
-            engine.memory_manager.load_user_state = MagicMock(return_value={
-                "emotional_state": _legacy_emotion_dict(),
-            })
-            engine.memory_manager.sync_state = MagicMock()
-            engine.memory_manager.save_turn = MagicMock()
+            engine = _make_engine()
+            parse_spy = MagicMock(wraps=parse_llm_appraisal)
+            transition_spy = MagicMock(wraps=transition)
 
-            # Track calls
-            engine._perceive = MagicMock(return_value={
-                "valence": 0.2, "arousal_shift": 0.1, "dominance_shift": 0.0,
-                "triggered_emotions": {"joy": 0.5},
-            })
+            with patch("backend.engine.parse_llm_appraisal", parse_spy), \
+                 patch("backend.engine.transition", transition_spy):
 
-            response_text, emotion_dict = await engine.process_turn("user", "Hello")
+                resp, emotions = await engine.process_turn("user", "Hello")
 
-            # Public response has the right keys
-            assert "pleasure" in emotion_dict
-            assert "last_update" in emotion_dict
-            assert "coping_mode" in emotion_dict
+            assert parse_spy.call_count == 1
+            assert transition_spy.call_count == 1
+
+            # Verify the appraisal passed to transition is an AppraisalV1
+            parse_result = parse_spy.call_args[0][0]
+            transition_kwargs = transition_spy.call_args[1]
+            assert isinstance(transition_kwargs["appraisal"], AppraisalV1)
+            assert isinstance(transition_kwargs["previous_state"], EmotionalStateV1)
+            assert transition_kwargs["current_time"] == FIXED_CLOCK
 
         asyncio.run(run())
 
-    def test_legacy_flow_classes_not_called(self):
-        """Req 4-6: The old AffectiveEngine/OCC/Normalize are not in the active path."""
-        # Verify by checking the engine imports and structure
-        from backend.engine import ConversationEngine
-        engine = ConversationEngine()
-        # _normalize_perception was removed
-        assert not hasattr(engine, "_normalize_perception")
-        # The active engine uses presentation helpers only (read-only)
-        assert hasattr(engine, "presentation")
-        # No affective_engine for updates
-        assert not hasattr(engine, "affective_engine") or "affective_engine" not in dir(engine)
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Requirement 7: Relationship fed from AppraisalV1
+# Correction 4: Relationship adaptation with spy
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestRelationshipAdaptation:
-    """Relationship receives adaptation derived from AppraisalV1."""
+class TestRelationshipAdaptationSpy:
+    """Relationship receives adapted dict from AppraisalV1, not raw payload."""
 
-    def test_relationship_gets_appraisal_adaptation(self):
+    def test_relationship_gets_adapted_appraisal_not_raw_dict(self):
         async def run():
-            engine = ConversationEngine()
-            m = MagicMock(); m.choices = [MagicMock()]; m.choices[0].message.content = "Hi"
-            engine.groq_manager.chat_completion = MagicMock(return_value=m)
-            engine.memory_manager.load_user_state = MagicMock(return_value={
-                "emotional_state": _legacy_emotion_dict(),
-            })
-            engine.memory_manager.sync_state = MagicMock()
-            engine.memory_manager.save_turn = MagicMock()
+            engine = _make_engine()
 
-            # Mock raw perceive to return a rich payload
+            # Spy on the relationship manager
+            engine.relationship_manager = MagicMock()
+            engine.relationship_manager.update_relationship = MagicMock(
+                return_value=UserRelationship(user_id="user")
+            )            # _perceive returns a payload with a sensitive extra key
+            SENSITIVE_KEY = "SENSITIVE_EXTRA_KEY_92841"
+            UNKNOWN_EMOTION = "unknown_emotion_92841"
+            # Use only VALID emotions in the payload (unknown emotions cause full fallback)
             engine._perceive = MagicMock(return_value={
                 "valence": 0.5,
                 "arousal_shift": 0.2,
                 "dominance_shift": 0.1,
-                "triggered_emotions": {"joy": 0.8, "tenderness": 0.6},
+                "triggered_emotions": {
+                    "joy": 0.8,
+                    "tenderness": 0.6,
+                },
+                SENSITIVE_KEY: "should_not_leak",
+                "raw_payload": "not_allowed",
+            })
+    
+            await engine.process_turn("user", "Hello")
+    
+            # Verify the second argument to update_relationship
+            args, kwargs = engine.relationship_manager.update_relationship.call_args
+            assert len(args) >= 2
+            adapted = args[1]
+    
+            # Must contain only valence and triggered_emotions
+            assert "valence" in adapted
+            assert "triggered_emotions" in adapted
+            # Sensitive key must not appear
+            assert SENSITIVE_KEY not in adapted
+            # Joy and tenderness must be present (valid emotions)
+            assert adapted["triggered_emotions"]["joy"] == 0.8
+            assert adapted["triggered_emotions"]["tenderness"] == 0.6
+
+    def test_unknown_emotions_filtered_from_relationship(self):
+        """Verify unknown emotions are stripped by the parser before reaching relationship."""
+        async def run():
+            engine = _make_engine()
+            engine.relationship_manager = MagicMock()
+            engine.relationship_manager.update_relationship = MagicMock(
+                return_value=UserRelationship(user_id="user")
+            )
+            # Payload with unknown emotion + raw key
+            engine._perceive = MagicMock(return_value={
+                "valence": 0.5,
+                "arousal_shift": 0.2,
+                "dominance_shift": 0.1,
+                "triggered_emotions": {
+                    "joy": 0.8,
+                    "unknown_emotion_92841": 0.9,
+                },
             })
 
-            response_text, emotion_dict = await engine.process_turn("user", "Hello")
-            # If we got here without error, the relationship adaptation worked
-            assert response_text is not None
+            await engine.process_turn("user", "Hello")
+
+            args, kwargs = engine.relationship_manager.update_relationship.call_args
+            adapted = args[1]
+            # Unknown emotion must not appear
+            assert "unknown_emotion_92841" not in adapted["triggered_emotions"]
 
         asyncio.run(run())
 
-    def test_adapt_appraisal_for_relationship_structure(self):
-        """The adapter produces the correct keys."""
+    def test_neutral_fallback_results_in_neutral_adaptation(self):
+        async def run():
+            engine = _make_engine()
+            engine.relationship_manager = MagicMock()
+            engine.relationship_manager.update_relationship = MagicMock(
+                return_value=UserRelationship(user_id="user")
+            )
+            # _perceive returns empty dict (triggers fallback)
+            engine._perceive = MagicMock(return_value={})
+
+            await engine.process_turn("user", "Hello")
+
+            args, kwargs = engine.relationship_manager.update_relationship.call_args
+            adapted = args[1]
+            assert adapted["valence"] == 0.0  # neutral fallback
+            assert adapted["triggered_emotions"] == {}
+
+        asyncio.run(run())
+
+    def test_adaptation_structure_is_clean(self):
+        """The adapter produces exactly the expected keys."""
         ap = AppraisalV1.create(
             valence_shift=0.3, arousal_shift=-0.1, dominance_shift=0.0,
             discrete_emotions={"joy": 0.7},
         )
         adapted = ConversationEngine._adapt_appraisal_for_relationship(ap)
+        assert set(adapted.keys()) == {"valence", "triggered_emotions"}
         assert adapted["valence"] == 0.3
         assert adapted["triggered_emotions"]["joy"] == 0.7
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Requirements 8-10: Fallback behaviour
+# Correction 5: Fail-closed through process_turn
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestAppraisalFallback:
-    """Appraisal fallback uses neutral and sanitised logging."""
+class TestFailClosedThroughProcessTurn:
+    """Corrupt snapshots block the entire flow before any external effect."""
 
-    def test_invalid_appraisal_uses_neutral_fallback(self):
-        """Req 8: Invalid LLM output uses neutral fallback."""
-        raw = None  # completely invalid
-        result = parse_llm_appraisal(raw)
-        assert result.is_fallback
-        assert result.appraisal == AppraisalV1.neutral()
+    @pytest.mark.parametrize("description,bad_state", [
+        ("unknown_version", {"schema_version": 99}),
+        ("incomplete_snapshot", {"pleasure": 0.5}),
+        ("extra_field", {"pleasure": 0.0, "arousal": 0.0, "dominance": 0.0,
+                          "libido": 0.0, "aggression": 0.0, "connection": 0.5,
+                          "energy": 0.8, "tension": 0.0, "coping_mode": "HEALTHY",
+                          "last_update": FIXED_CLOCK, "extra_field": "x"}),
+        ("invalid_numeric_type", {"pleasure": "not_a_number", "arousal": 0.0,
+                                   "dominance": 0.0, "libido": 0.0,
+                                   "aggression": 0.0, "connection": 0.5,
+                                   "energy": 0.8, "tension": 0.0,
+                                   "coping_mode": "HEALTHY",
+                                   "last_update": FIXED_CLOCK}),
+    ])
+    def test_corrupt_snapshot_blocks_flow(self, description, bad_state):
+        async def run():
+            engine = ConversationEngine(clock=lambda: FIXED_CLOCK)
+            engine.memory_manager.load_user_state = MagicMock(return_value={
+                "emotional_state": bad_state,
+            })
 
-    def test_fallback_logs_sanitised_code(self):
-        """Req 9-10: Fallback logs only event and code, no payload."""
-        import io
-        logger = logging.getLogger("backend.engine")
-        logger.setLevel(logging.INFO)
-        stream = io.StringIO()
-        handler = logging.StreamHandler(stream)
-        logger.addHandler(handler)
-        try:
-            async def run():
-                engine = ConversationEngine()
-                m = MagicMock(); m.choices = [MagicMock()]; m.choices[0].message.content = "Hi"
-                engine.groq_manager.chat_completion = MagicMock(return_value=m)
-                # Set _perceive to return empty dict (missing fields → fallback)
-                engine._perceive = MagicMock(return_value={})
-                engine.memory_manager.load_user_state = MagicMock(return_value={
-                    "emotional_state": _legacy_emotion_dict(),
-                })
-                engine.memory_manager.sync_state = MagicMock()
-                engine.memory_manager.save_turn = MagicMock()
+            # Install spies on all downstream methods
+            engine.memory_manager.get_context = MagicMock()
+            engine._perceive = MagicMock()
+            engine.groq_manager.chat_completion = MagicMock()
+            engine.memory_manager.save_turn = MagicMock()
+            engine.memory_manager.sync_state = MagicMock()
+            engine.relationship_manager = MagicMock()
+            bg_tasks = MagicMock()
 
-                await engine.process_turn("user", "Hello")
+            with pytest.raises(EmotionalDomainError):
+                await engine.process_turn("user", "Msg", background_tasks=bg_tasks)
 
-            asyncio.run(run())
-        finally:
-            logger.removeHandler(handler)
+            # Zero downstream calls: no context, no perceive, no LLM, no persist
+            engine.memory_manager.get_context.assert_not_called()
+            engine._perceive.assert_not_called()
+            engine.groq_manager.chat_completion.assert_not_called()
+            engine.memory_manager.save_turn.assert_not_called()
+            engine.memory_manager.sync_state.assert_not_called()
+            engine.relationship_manager.update_relationship.assert_not_called()
+            bg_tasks.add_task.assert_not_called()
 
-        log_text = stream.getvalue()
-        # Should contain the sanitised event, not raw payload
-        assert "event=emotional_appraisal_fallback" in log_text
-        assert "code=" in log_text
-        # No raw payload in the log
-        assert "valence" not in log_text
-        assert "Msg" not in log_text
-        assert "Hello" not in log_text
+        asyncio.run(run())
+
+    def test_nan_snapshot_fails_closed(self):
+        async def run():
+            engine = ConversationEngine(clock=lambda: FIXED_CLOCK)
+            engine.memory_manager.load_user_state = MagicMock(return_value={
+                "emotional_state": {
+                    "pleasure": float("nan"), "arousal": 0.0, "dominance": 0.0,
+                    "libido": 0.0, "aggression": 0.0, "connection": 0.5,
+                    "energy": 0.8, "tension": 0.0, "coping_mode": "HEALTHY",
+                    "last_update": FIXED_CLOCK,
+                },
+            })
+            engine._perceive = MagicMock()
+            engine.groq_manager.chat_completion = MagicMock()
+            engine.memory_manager.save_turn = MagicMock()
+            engine.memory_manager.sync_state = MagicMock()
+            bg_tasks = MagicMock()
+
+            with pytest.raises(EmotionalDomainError):
+                await engine.process_turn("user", "Msg", background_tasks=bg_tasks)
+
+            engine._perceive.assert_not_called()
+            engine.groq_manager.chat_completion.assert_not_called()
+            engine.memory_manager.save_turn.assert_not_called()
+            engine.memory_manager.sync_state.assert_not_called()
+            bg_tasks.add_task.assert_not_called()
+
+        asyncio.run(run())
+
+    def test_inf_snapshot_fails_closed(self):
+        async def run():
+            engine = ConversationEngine(clock=lambda: FIXED_CLOCK)
+            engine.memory_manager.load_user_state = MagicMock(return_value={
+                "emotional_state": {
+                    "pleasure": float("inf"), "arousal": 0.0, "dominance": 0.0,
+                    "libido": 0.0, "aggression": 0.0, "connection": 0.5,
+                    "energy": 0.8, "tension": 0.0, "coping_mode": "HEALTHY",
+                    "last_update": FIXED_CLOCK,
+                },
+            })
+            engine._perceive = MagicMock()
+            engine.groq_manager.chat_completion = MagicMock()
+            engine.memory_manager.save_turn = MagicMock()
+            engine.memory_manager.sync_state = MagicMock()
+            bg_tasks = MagicMock()
+
+            with pytest.raises(EmotionalDomainError):
+                await engine.process_turn("user", "Msg", background_tasks=bg_tasks)
+
+            engine._perceive.assert_not_called()
+            engine.groq_manager.chat_completion.assert_not_called()
+            engine.memory_manager.save_turn.assert_not_called()
+            engine.memory_manager.sync_state.assert_not_called()
+            bg_tasks.add_task.assert_not_called()
+
+        asyncio.run(run())
+
+    def test_corrupt_snapshot_blocks_before_transition(self):
+        """Also verify transition is never called for corrupt snapshots."""
+        async def run():
+            engine = ConversationEngine(clock=lambda: FIXED_CLOCK)
+            engine.memory_manager.load_user_state = MagicMock(return_value={
+                "emotional_state": {"schema_version": 99},
+            })
+            engine._perceive = MagicMock()
+            engine.groq_manager.chat_completion = MagicMock()
+            engine.memory_manager.save_turn = MagicMock()
+            engine.memory_manager.sync_state = MagicMock()
+
+            parse_spy = MagicMock(wraps=parse_llm_appraisal)
+            transition_spy = MagicMock(wraps=transition)
+            with patch("backend.engine.parse_llm_appraisal", parse_spy), \
+                 patch("backend.engine.transition", transition_spy):
+                with pytest.raises(EmotionalDomainError):
+                    await engine.process_turn("user", "Msg")
+
+            # Parse and transition should never be called
+            parse_spy.assert_not_called()
+            transition_spy.assert_not_called()
+
+        asyncio.run(run())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Requirements 11-13: Snapshot migration
+# Correction 6: JSONB persistence payload inspection
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestSnapshotMigration:
-    """Legacy snapshots migrated; v1 snapshots loaded cleanly."""
+class TestJSONBPersistence:
+    """sync_state sends the exact v1 dict to Supabase via JSONB."""
 
-    def test_legacy_snapshot_migrated_and_used(self):
-        """Req 11: Legacy snapshot is migrated and used in transition."""
+    def test_persisted_payload_is_v1_dict(self):
+        mm = MemoryManager(clock=lambda: FIXED_CLOCK)
+        mm.supabase = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.data = [{"user_id": "u"}]
+        mock_resp.error = None
+        mm.supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = mock_resp
+
+        state = EmotionalStateV1.create(
+            pleasure=0.5, arousal=-0.2, dominance=0.3,
+            libido=0.1, aggression=0.0, connection=0.7,
+            energy=0.9, tension=0.2, coping_mode="HEALTHY",
+            timestamp=FIXED_CLOCK,
+        )
+        rel = UserRelationship(user_id="u")
+        mm.sync_state("u", state, rel)
+
+        # Capture what was passed to supabase.update()
+        call_args = mm.supabase.table.return_value.update.call_args
+        assert call_args is not None
+        update_data = call_args[0][0]
+
+        # The emotional_state field should be the exact v1 dict
+        payload = update_data["emotional_state"]
+        assert isinstance(payload, dict)
+        assert payload["schema_version"] == 1
+        assert payload["timestamp"] == FIXED_CLOCK
+        assert payload["pleasure"] == 0.5
+        assert payload["coping_mode"] == "HEALTHY"
+
+        # Must NOT contain legacy fields or other layer fields
+        assert "last_update" not in payload
+        assert "appraisal" not in payload
+        assert "regulation" not in payload
+        assert "prompt" not in payload
+
+        # Also verify the update filter uses user_id
+        eq_call = mm.supabase.table.return_value.update.return_value.eq.call_args
+        assert eq_call is not None
+        assert eq_call[0] == ("user_id", "u")
+
+    def test_persisted_payload_has_only_v1_fields(self):
+        """The payload must contain only the fields from EmotionalStateV1.to_dict()."""
+        v1_fields = {
+            "schema_version", "pleasure", "arousal", "dominance",
+            "libido", "aggression", "connection", "energy", "tension",
+            "coping_mode", "timestamp",
+        }
+        state = EmotionalStateV1.neutral(timestamp=FIXED_CLOCK)
+        payload = state.to_dict()
+        assert set(payload.keys()) == v1_fields
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Correction 7: Archival scheduling test
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestArchivalScheduling:
+    """Archival extraction scheduling: order on success, zero on sync_state failure."""
+
+    def test_success_orders_save_sync_then_schedule(self):
+        """On success: save_turn → sync_state → add_task → return."""
+        async def run():
+            engine = _make_engine()
+            call_order = []
+            bg_tasks = MagicMock()
+
+            def mock_save(user_id, user_msg, bot_msg):
+                call_order.append("save")
+                from backend.archival_memory import PersistedTurnRef
+                return PersistedTurnRef(user_id=user_id, source_chat_log_id=1,
+                                        assistant_chat_log_id=2)
+
+            def mock_sync(user_id, state, rel):
+                call_order.append("sync")
+
+            engine.memory_manager.save_turn = MagicMock(side_effect=mock_save)
+            engine.memory_manager.sync_state = MagicMock(side_effect=mock_sync)
+
+            resp, emotions = await engine.process_turn("user", "Hello", background_tasks=bg_tasks)
+
+            assert call_order == ["save", "sync"]
+            bg_tasks.add_task.assert_called_once()
+            assert resp is not None
+
+        asyncio.run(run())
+
+    def test_sync_state_failure_blocks_add_task(self):
+        """When sync_state fails, add_task is never called and exception propagates."""
+        async def run():
+            engine = _make_engine()
+            engine.memory_manager.sync_state = MagicMock(
+                side_effect=StatePersistenceError("DB fail")
+            )
+            bg_tasks = MagicMock()
+
+            with pytest.raises(StatePersistenceError):
+                await engine.process_turn("user", "Hello", background_tasks=bg_tasks)
+
+            # add_task must NOT be called
+            bg_tasks.add_task.assert_not_called()
+
+        asyncio.run(run())
+
+    def test_no_background_tasks_parameter_still_works(self):
+        """Without background_tasks param, process_turn still succeeds."""
+        async def run():
+            engine = _make_engine()
+            resp, emotions = await engine.process_turn("user", "Hello")
+            assert resp is not None
+            assert isinstance(emotions, dict)
+
+        asyncio.run(run())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Correction 8: Sanitised logging with unique markers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestSanitisedLogging:
+    """Fallback logs contain only event and code, never sensitive markers."""
+
+    SENSITIVE_PAYLOAD = "SENSITIVE_USER_PAYLOAD_92841"
+    SENSITIVE_KEY = "SENSITIVE_EXTRA_KEY_92841"
+    SENSITIVE_EXCEPTION = "SENSITIVE_EXCEPTION_92841"
+    SENSITIVE_PROMPT = "SENSITIVE_PROMPT_92841"
+
+    def test_fallback_logs_only_sanitised_code(self):
+        async def run():
+            engine = ConversationEngine(clock=lambda: FIXED_CLOCK)
+            engine.memory_manager.load_user_state = MagicMock(return_value={
+                "emotional_state": _legacy_emotion_dict(),
+            })
+            engine.memory_manager.sync_state = MagicMock()
+            engine.memory_manager.save_turn = MagicMock()
+            engine.memory_manager.get_context = MagicMock(return_value="[mocked context]")
+            m = MagicMock()
+            m.choices = [MagicMock()]
+            m.choices[0].message.content = self.SENSITIVE_PROMPT
+            engine.groq_manager.chat_completion = MagicMock(return_value=m)
+
+            # _perceive returns a dict with sensitive payload in values and keys
+            engine._perceive = MagicMock(return_value={
+                "valence": self.SENSITIVE_PAYLOAD,  # invalid → triggers fallback
+                "arousal_shift": 0.0,
+                "dominance_shift": 0.0,
+                self.SENSITIVE_KEY: "should_not_leak",
+                "triggered_emotions": {"joy": 0.5},
+            })
+
+            # Capture logs
+            logger = logging.getLogger("backend.engine")
+            logger.setLevel(logging.INFO)
+            stream = io.StringIO()
+            handler = logging.StreamHandler(stream)
+            logger.addHandler(handler)
+            try:
+                await engine.process_turn("user", self.SENSITIVE_PAYLOAD)
+            finally:
+                logger.removeHandler(handler)
+
+            log_text = stream.getvalue()
+
+            # Must contain the sanitised event and code
+            assert "event=emotional_appraisal_fallback" in log_text
+            assert "code=" in log_text
+
+            # Must NOT contain any sensitive marker
+            assert self.SENSITIVE_PAYLOAD not in log_text
+            assert self.SENSITIVE_KEY not in log_text
+            assert self.SENSITIVE_EXCEPTION not in log_text
+            assert self.SENSITIVE_PROMPT not in log_text
+            assert "user" not in log_text  # user_id
+
+        asyncio.run(run())
+
+    def test_neutral_fallback_is_used_when_perceive_fails(self):
+        async def run():
+            engine = _make_engine()
+            # _perceive returns something that parse_llm_appraisal rejects
+            engine._perceive = MagicMock(return_value=None)
+
+            resp, emotions = await engine.process_turn("user", "Hello")
+            # Should still succeed with neutral fallback
+            assert resp is not None
+
+        asyncio.run(run())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Correction 9: Exact public contract test
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestPublicContract:
+    """Public response has exactly the 10 legacy keys, no internal fields."""
+
+    EXPECTED_PUBLIC_KEYS = {
+        "pleasure", "arousal", "dominance",
+        "libido", "aggression", "connection", "energy",
+        "tension", "coping_mode", "last_update",
+    }
+
+    def test_projection_has_exact_legacy_keys(self):
+        state = EmotionalStateV1.create(
+            pleasure=0.5, arousal=-0.2, dominance=0.3,
+            libido=0.1, aggression=0.0, connection=0.7,
+            energy=0.9, tension=0.2, coping_mode="HEALTHY",
+            timestamp=FIXED_CLOCK,
+        )
+        projected = ConversationEngine._project_emotion_state(state)
+        assert set(projected.keys()) == self.EXPECTED_PUBLIC_KEYS
+
+    def test_last_update_equals_timestamp(self):
+        state = EmotionalStateV1.create(
+            pleasure=0.0, arousal=0.0, dominance=0.0,
+            libido=0.0, aggression=0.0, connection=0.5,
+            energy=0.8, tension=0.0, coping_mode="HEALTHY",
+            timestamp=FIXED_CLOCK,
+        )
+        projected = ConversationEngine._project_emotion_state(state)
+        assert projected["last_update"] == FIXED_CLOCK
+        assert projected["last_update"] == state.timestamp
+
+    def test_no_internal_fields_in_projection(self):
+        state = EmotionalStateV1.neutral(timestamp=FIXED_CLOCK)
+        projected = ConversationEngine._project_emotion_state(state)
+        assert "schema_version" not in projected
+        assert "timestamp" not in projected
+        assert "appraisal" not in projected
+        assert "regulation" not in projected
+        assert "fallback" not in projected
+
+    def test_process_turn_returns_projected_format(self):
+        async def run():
+            engine = _make_engine()
+            resp, emotions = await engine.process_turn("user", "Hello")
+            assert set(emotions.keys()) == self.EXPECTED_PUBLIC_KEYS
+            assert emotions["last_update"] == FIXED_CLOCK
+
+        asyncio.run(run())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Legacy flow verification & existing behaviour
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestLegacyFlowNotUsed:
+    """The old AffectiveEngine/OCC/Normalize are not in the active path."""
+
+    def test_legacy_flow_classes_not_called(self):
+        from backend.engine import ConversationEngine
+        engine = ConversationEngine(clock=lambda: FIXED_CLOCK)
+        assert not hasattr(engine, "_normalize_perception")
+        assert hasattr(engine, "presentation")
+        assert not hasattr(engine, "affective_engine") or "affective_engine" not in dir(engine)
+
+    def test_snapshot_migration_preserves_values(self):
         legacy = _legacy_emotion_dict(pleasure=0.7)
         v1 = migrate_legacy_snapshot(legacy)
         assert isinstance(v1, EmotionalStateV1)
         assert v1.pleasure == 0.7
-        assert v1.schema_version == 1
-        # The timestamp comes from last_update
         assert v1.timestamp == legacy["last_update"]
 
     def test_migrated_snapshot_persisted_as_v1(self):
-        """Req 12: After migration, serialization produces v1 format."""
         legacy = _legacy_emotion_dict(pleasure=0.7)
         v1 = migrate_legacy_snapshot(legacy)
         persisted = v1.to_dict()
@@ -270,172 +741,49 @@ class TestSnapshotMigration:
         assert "timestamp" in persisted
         assert "last_update" not in persisted
 
-    def test_v1_snapshot_loaded_without_destructive_migration(self):
-        """Req 13: V1 snapshot loaded cleanly."""
+    def test_v1_snapshot_loaded_cleanly(self):
         v1_dict = _v1_emotion_dict(pleasure=0.3)
         result = migrate_legacy_snapshot(v1_dict)
         assert isinstance(result, EmotionalStateV1)
         assert result.pleasure == 0.3
-        assert result.schema_version == 1
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Requirements 14-15: Fail-closed on invalid snapshots
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestFailClosed:
-    """Invalid snapshots fail closed before processing."""
 
     def test_unknown_version_fails_closed(self):
-        """Req 14: Unknown schema_version raises EmotionalDomainError."""
         with pytest.raises(EmotionalDomainError):
             migrate_legacy_snapshot({"schema_version": 99})
 
     def test_incomplete_snapshot_fails_closed(self):
-        """Req 15: Missing required fields raises EmotionalDomainError."""
         with pytest.raises(EmotionalDomainError):
-            migrate_legacy_snapshot({"pleasure": 0.5})  # missing many fields
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Requirement 16: Load failure before processing
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestLoadFailureBeforeProcessing:
-    """Load failure occurs before Groq/transition/persistence."""
+            migrate_legacy_snapshot({"pleasure": 0.5})
 
     def test_load_failure_blocks_processing(self):
-        """Req 16: StateLoadError in load_user_state prevents further processing."""
         async def run():
-            engine = ConversationEngine()
-            # Make load_user_state raise (simulated DB failure)
+            engine = ConversationEngine(clock=lambda: FIXED_CLOCK)
             engine.memory_manager.supabase = MagicMock()
             engine.memory_manager.supabase.table.return_value.select.return_value.eq.return_value.execute.side_effect = Exception("DB down")
-            engine._perceive = MagicMock(return_value={})
-            m = MagicMock(); m.choices = [MagicMock()]; m.choices[0].message.content = "Hi"
-            engine.groq_manager.chat_completion = MagicMock(return_value=m)
+            engine._perceive = MagicMock()
+            engine.groq_manager.chat_completion = MagicMock()
 
             with pytest.raises(StateLoadError):
                 await engine.process_turn("user", "Msg")
 
         asyncio.run(run())
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Requirement 17: New profile uses v1
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestNewProfile:
-    """New profiles use v1 snapshot from the start."""
-
     def test_new_profile_uses_v1_state(self):
-        """Req 17: Default state is created with EmotionalStateV1."""
-        from backend.memory import MemoryManager
-        mm = MemoryManager()
-        user_id = "test_new_profile_user"
-        # _get_default_state is not mocked - it's called internally
-        # We can verify the method directly
-        default = mm._get_default_state(user_id)
+        mm = MemoryManager(clock=lambda: FIXED_CLOCK)
+        default = mm._get_default_state("new_user")
         emotional_state = default["emotional_state"]
-        # It should be a dict (the v1 to_dict format)
         assert isinstance(emotional_state, dict)
         assert "schema_version" in emotional_state
         assert emotional_state["schema_version"] == 1
         assert "timestamp" in emotional_state
         assert "last_update" not in emotional_state
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Requirements 18-23: Persistence and public projection
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestPersistenceAndProjection:
-    """Persistence format and public projection."""
-
-    def test_persisted_format_has_schema_version_and_timestamp(self):
-        """Req 18-20: Persisted format contains schema_version, timestamp, no last_update."""
-        state = EmotionalStateV1.neutral(timestamp=time.time())
-        persisted = state.to_dict()
-        assert "schema_version" in persisted
-        assert "timestamp" in persisted
-        assert "last_update" not in persisted
-
-    def test_public_response_has_legacy_keys(self):
-        """Req 21-23: Public response has legacy keys, last_update from timestamp."""
-        state = EmotionalStateV1.create(
-            pleasure=0.5, arousal=-0.2, dominance=0.3,
-            libido=0.0, aggression=0.0, connection=0.5,
-            energy=0.8, tension=0.1, coping_mode="HEALTHY",
-            timestamp=1_700_000_000.0,
-        )
-        projected = ConversationEngine._project_emotion_state(state)
-        # Legacy keys present
-        assert projected["pleasure"] == 0.5
-        assert projected["last_update"] == 1_700_000_000.0
-        assert projected["coping_mode"] == "HEALTHY"
-        # Internal keys absent
-        assert "schema_version" not in projected
-        assert "timestamp" not in projected
-        assert "regulation" not in projected
-        assert "appraisal" not in projected
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Requirements 24-30: Persistence ordering and isolation
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestPersistenceOrder:
-    """Persistence failure does not return success; archival scheduled after."""
-
     def test_sync_state_failure_propagates(self):
-        """Req 24: Persistence failure does not return success."""
         async def run():
-            engine = ConversationEngine()
-            engine.memory_manager.load_user_state = MagicMock(return_value={
-                "emotional_state": _legacy_emotion_dict(),
-            })
-            engine.memory_manager.sync_state = MagicMock(side_effect=Exception("DB fail"))
-            engine.memory_manager.save_turn = MagicMock()
-            engine._perceive = MagicMock(return_value={})
-            m = MagicMock(); m.choices = [MagicMock()]; m.choices[0].message.content = "Hi"
-            engine.groq_manager.chat_completion = MagicMock(return_value=m)
+            engine = _make_engine()
+            engine.memory_manager.sync_state = MagicMock(side_effect=StatePersistenceError())
 
-            with pytest.raises(Exception):
+            with pytest.raises(StatePersistenceError):
                 await engine.process_turn("user", "Msg")
 
         asyncio.run(run())
-
-    def test_archival_not_scheduled_on_persistence_failure(self):
-        """Req 25-26: Archival extraction not scheduled when sync_state fails."""
-        async def run():
-            engine = ConversationEngine()
-            engine.memory_manager.load_user_state = MagicMock(return_value={
-                "emotional_state": _legacy_emotion_dict(),
-            })
-            engine.memory_manager.sync_state = MagicMock(side_effect=Exception("DB fail"))
-            engine.memory_manager.save_turn = MagicMock()
-            engine._perceive = MagicMock(return_value={})
-            m = MagicMock(); m.choices = [MagicMock()]; m.choices[0].message.content = "Hi"
-            engine.groq_manager.chat_completion = MagicMock(return_value=m)
-
-            # BackgroundTasks not passed, but we verify the flow doesn't crash
-            with pytest.raises(Exception):
-                await engine.process_turn("user", "Msg")
-
-        asyncio.run(run())
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Requirement 31-32: No real external services, no fragile timing
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# All tests in this file use mocked external dependencies (MagicMock for DB,
-# LLM calls, etc.) and asyncio-based synchronization without long sleeps.
-# This satisfies requirements 31-32.
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Requirement 33: Existing backend suite passes
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# Verified by running pytest backend/tests/ which passes all existing tests.

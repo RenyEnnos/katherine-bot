@@ -77,10 +77,9 @@ test('EmotionPanel uses intensityToPercent helper', () => {
         'EmotionPanel should use intensityToPercent for emotion intensities');
 });
 
-// ─── ARIA compliance ────────────────────────────────────────────────────────
+// ─── Behavioral: formatter functions (ARIA compliance) ──────────────────────
 
 test('bipolarToPercent output is always between 0 and 100 (ARIA compliance)', () => {
-    // Dynamic import for ESM compatibility with Node 18
     return import('../src/shared/utils/formatters.js').then(({ bipolarToPercent }) => {
         const testValues = [-2, -1, -0.5, 0, 0.5, 1, 2, NaN, Infinity, -Infinity, null, undefined, 'string'];
         for (const val of testValues) {
@@ -113,22 +112,91 @@ test('EmotionPanel has role="progressbar" ARIA attributes', () => {
         'EmotionPanel should include aria-valuemax="100"');
 });
 
-// ─── useChat invalidation policy (Requirement 37) ──────────────────────────
+// ─── Behavioral: validateEmotionState integration tests ─────────────────────
 
-test('useChat calls validateEmotionState on every response', () => {
+test('validateEmotionState is called on every response (source inspection)', () => {
     assert.ok(useChatSource.includes('validateEmotionState'),
         'useChat should call validateEmotionState');
 });
 
-test('useChat sets null on invalid or missing emotion_state', () => {
+test('useChat always sets emotionState (even to null) on response', () => {
     // Check that emotion_state is ALWAYS validated (not conditionally)
-    // The validation result (null or validated) is always set
-    const hasAlwaysValidation = useChatSource.includes('const validated = validateEmotionState(data.emotion_state);\n            setEmotionState(validated);');
-    // Alternative: check that validateEmotionState and setEmotionState are used
-    // Without being guarded by an `if (data.emotion_state)` check
-    const guardedByIf = useChatSource.includes('if (data.emotion_state) {\n                const validated =');
+    const guardedByIf = useChatSource.includes('if (data.emotion_state) {');
     assert.strictEqual(guardedByIf, false,
         'useChat should not guard emotion_state validation with an if check - always validate');
     assert.ok(useChatSource.includes('setEmotionState(validated)'),
         'useChat should always set emotionState (even to null)');
+});
+
+// ─── Behavioral: validateEmotionState pure function (extracted hook logic) ──
+
+test('validateEmotionState rejects invalid payload — pure function test', () => {
+    return import('../src/shared/utils/formatters.js').then(({ validateEmotionState }) => {
+        // Known invalid cases
+        assert.strictEqual(validateEmotionState(null), null);
+        assert.strictEqual(validateEmotionState(undefined), null);
+        assert.strictEqual(validateEmotionState([]), null);
+        assert.strictEqual(validateEmotionState({}), null);
+
+        // Valid payload
+        const valid = {
+            schema_version: 1,
+            mood_label: 'NEUTRA',
+            pad: { pleasure: 0, arousal: 0, dominance: 0 },
+            dominant_emotions: [],
+            timestamp: 1700000000,
+        };
+        assert.notStrictEqual(validateEmotionState(valid), null);
+
+        // Invalid: missing emotion_state (simulating missing backend data)
+        assert.strictEqual(validateEmotionState(undefined), null,
+            'undefined payload should return null — panel cleared');
+    });
+});
+
+test('validateEmotionState with more than 3 emotions returns null', () => {
+    return import('../src/shared/utils/formatters.js').then(({ validateEmotionState }) => {
+        const payload = {
+            schema_version: 1,
+            mood_label: 'NEUTRA',
+            pad: { pleasure: 0, arousal: 0, dominance: 0 },
+            dominant_emotions: [
+                { name: 'joy', intensity: 0.8 },
+                { name: 'anger', intensity: 0.7 },
+                { name: 'fear', intensity: 0.6 },
+                { name: 'sadness', intensity: 0.5 },
+            ],
+            timestamp: 1700000000,
+        };
+        assert.strictEqual(validateEmotionState(payload), null,
+            '>3 emotions should reject entire payload');
+    });
+});
+
+test('validateEmotionState with unknown emotion name returns null', () => {
+    return import('../src/shared/utils/formatters.js').then(({ validateEmotionState }) => {
+        const payload = {
+            schema_version: 1,
+            mood_label: 'NEUTRA',
+            pad: { pleasure: 0, arousal: 0, dominance: 0 },
+            dominant_emotions: [{ name: 'invalid_emotion', intensity: 0.5 }],
+            timestamp: 1700000000,
+        };
+        assert.strictEqual(validateEmotionState(payload), null,
+            'unknown emotion name should reject entire payload');
+    });
+});
+
+test('EmotionPanel getEmotionLabel exposes canonical name for known emotion', () => {
+    return import('../src/shared/utils/formatters.js').then(({ getEmotionLabel, EMOTION_LABELS }) => {
+        // All defined emotions should have a display label
+        const knownEmotions = Object.keys(EMOTION_LABELS);
+        assert.ok(knownEmotions.length > 0, 'EMOTION_LABELS should have entries');
+        for (const name of knownEmotions) {
+            const label = getEmotionLabel(name);
+            assert.notStrictEqual(label, name,
+                `Known emotion '${name}' should have a translated label`);
+            assert.ok(label.length > 0, `Label for '${name}' should not be empty`);
+        }
+    });
 });

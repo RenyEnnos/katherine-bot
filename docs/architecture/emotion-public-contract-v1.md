@@ -63,9 +63,9 @@ The mood label is derived from PAD coordinates using a deterministic rule set:
 | arousal ≤ 0.5, pleasure < -0.5, otherwise | `TEDIO` |
 | Default (none of the above) | `NEUTRA` |
 
-This classification is used exclusively by the public DTO. The internal prompt builder uses a separate
-classifier (``AffectiveEngine.get_emotional_label``, legacy path). Consolidating the two classifiers
-into a single shared implementation is tracked as a follow-up item.
+This classification is used by both the public DTO and the internal prompt builder
+(``AffectiveEngine.get_emotional_label`` delegates to the same ``classify_pad_mood`` function).
+There is exactly **one** classifier shared across all layers.
 
 ## Emotion Ordering
 
@@ -122,8 +122,8 @@ Four distinct layers exist in the emotion system:
 | Layer | What | Contains | Exposed to |
 |---|---|---|---|
 | **Persisted snapshot** | `EmotionalStateV1` | PAD + drives + coping_mode + tension + timestamp | Database (Supabase) |
-| **Appraisal** | `AppraisalV1` | shift values + discrete_emotions (11 emotions) | Transition engine |
-| **Internal presentation** | Prompt builder | `classify_pad_mood` + `get_acting_instruction` | LLM prompt |
+| **Appraisal** | `AppraisalV1` | shift values + discrete_emotions (13 emotions) | Transition engine |
+| **Internal presentation** | Prompt builder | `classify_pad_mood` (shared) + `get_acting_instruction` | LLM prompt |
 | **Public DTO** | `EmotionStateResponse` | mood_label + PAD + dominant_emotions (max 3) + timestamp | Browser |
 
 The **public DTO** is the only layer sent to the browser. All other layers are internal.

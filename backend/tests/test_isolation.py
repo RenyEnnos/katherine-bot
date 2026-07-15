@@ -67,8 +67,8 @@ def test_user_isolation():
         engine._perceive = MagicMock(return_value={})
         _, state_a = await engine.process_turn("A", "Msg A")
         _, state_b = await engine.process_turn("B", "Msg B")
-        assert state_a["pleasure"] > 0
-        assert state_b["pleasure"] < 0
+        assert state_a.pad.pleasure > 0
+        assert state_b.pad.pleasure < 0
     asyncio.run(run_test())
 
 def test_identity_binding():

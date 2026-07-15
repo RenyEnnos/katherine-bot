@@ -10,9 +10,9 @@ Design rules
 - Receives only validated ``EmotionalStateV1`` and ``AppraisalV1``.
 - Does NOT access persistence, relationship, memory, meta-cognition.
 - Does NOT execute transition, coping, or appraisal.
-- ``classify_pad_mood`` is the public mood classification used by the DTO.
-  The internal prompt builder uses a separate ``AffectiveEngine.get_emotional_label``
-  (legacy). These two classifiers should be consolidated in a follow-up issue.
+- ``classify_pad_mood`` is the shared mood classification used by the public DTO
+  AND by the internal prompt builder (``AffectiveEngine.get_emotional_label``
+  delegates to this function). There is only one classifier.
 """
 
 from __future__ import annotations
@@ -22,7 +22,12 @@ from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .emotional_domain.models import EmotionalStateV1, AppraisalV1, EmotionalDomainError
+from .emotional_domain.models import (
+    EmotionalStateV1,
+    AppraisalV1,
+    EmotionalDomainError,
+    DISCRETE_EMOTIONS,
+)
 
 
 # ─── Schema version ──────────────────────────────────────────────────────────
@@ -30,13 +35,14 @@ from .emotional_domain.models import EmotionalStateV1, AppraisalV1, EmotionalDom
 PUBLIC_EMOTION_SCHEMA_VERSION: int = 1
 
 
-# ─── Shared mood classification ──────────────────────────────────────────────
+# ─── Shared mood classification (single classifier) ──────────────────────────
 
 def classify_pad_mood(pleasure: float, arousal: float, dominance: float) -> str:
-    """Classify PAD coordinates into a human-readable mood label for the public DTO.
+    """Classify PAD coordinates into a human-readable mood label.
 
-    The internal prompt builder still uses ``AffectiveEngine.get_emotional_label``
-    (legacy path); these two classifiers should be consolidated in a follow-up issue.
+    This is the single shared classifier used by both:
+    - The public DTO (``EmotionStateResponse.mood_label``)
+    - The internal prompt builder (``AffectiveEngine.get_emotional_label``)
     """
     if arousal > 0.5:
         if pleasure > 0.5:
@@ -89,12 +95,26 @@ class PublicPAD(BaseModel):
 
 
 class PublicDominantEmotion(BaseModel):
-    """A single discrete emotion with its intensity."""
+    """A single discrete emotion with its intensity.
+
+    ``name`` must be a canonical emotion from ``DISCRETE_EMOTIONS`` allowlist.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(..., min_length=1)
     intensity: float = Field(..., ge=0.0, le=1.0)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _validate_emotion_name(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError(f"Emotion name must be a string, got {type(value).__name__}.")
+        if value not in DISCRETE_EMOTIONS:
+            raise ValueError(
+                f"Emotion name must be one of {sorted(DISCRETE_EMOTIONS)}, got {value!r}."
+            )
+        return value
 
     @field_validator("intensity", mode="before")
     @classmethod
@@ -115,21 +135,24 @@ class EmotionStateResponse(BaseModel):
     This is the **only** emotion payload the browser should see. It contains
     no internal state, no coping mode, no acting instruction, no drives, and
     no relationship data.
+
+    All fields are required at construction time. Validators enforce:
+    - ``schema_version`` must be 1 (int, not bool/float/str).
+    - ``dominant_emotions`` limited to 3 elements.
+    - Each emotion name must be in ``DISCRETE_EMOTIONS`` allowlist.
+    - ``timestamp`` must be a finite positive float.
+    - ``extra`` fields are forbidden on all nested models.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     schema_version: int = Field(
-        default=PUBLIC_EMOTION_SCHEMA_VERSION,
-        ge=1,
-        le=1,
-        description="Must be 1. Only version 1 is accepted.",
+        ..., ge=1, le=1, description="Must be 1. Only version 1 is accepted."
     )
     mood_label: str = Field(..., min_length=1)
     pad: PublicPAD
     dominant_emotions: List[PublicDominantEmotion] = Field(
-        default_factory=list,
-        description="At most 3 emotions, sorted by intensity desc then name asc.",
+        ..., description="At most 3 emotions, sorted by intensity desc then name asc."
     )
     timestamp: float = Field(
         ..., description="Unix epoch seconds from EmotionalStateV1.timestamp."
@@ -146,18 +169,27 @@ class EmotionStateResponse(BaseModel):
             raise ValueError(f"schema_version must be 1, got {value}.")
         return value
 
+    @field_validator("dominant_emotions", mode="after")
+    @classmethod
+    def _limit_to_three(cls, value: List[PublicDominantEmotion]) -> List[PublicDominantEmotion]:
+        if len(value) > 3:
+            raise ValueError("At most 3 dominant emotions are allowed per the public contract.")
+        return value
+
     @field_validator("timestamp", mode="before")
     @classmethod
     def _reject_non_finite_timestamp(cls, value: object) -> float:
         if isinstance(value, bool):
-            raise ValueError("Timestamp must be a finite float, got bool.")
+            raise ValueError("Timestamp must be a finite positive float, got bool.")
         if not isinstance(value, (int, float)):
             raise ValueError(
-                f"Timestamp must be a finite float, got {type(value).__name__}."
+                f"Timestamp must be a finite positive float, got {type(value).__name__}."
             )
         f = float(value)
         if not math.isfinite(f):
             raise ValueError("Timestamp must be finite.")
+        if f <= 0:
+            raise ValueError("Timestamp must be positive (Unix epoch seconds).")
         return f
 
 

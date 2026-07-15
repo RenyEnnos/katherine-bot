@@ -103,19 +103,21 @@ test('intensityToPercent: null returns 0', () => {
 
 // ─── validateEmotionState ───────────────────────────────────────────────────
 
+const VALID_PAYLOAD = {
+    schema_version: 1,
+    mood_label: 'ALEGRE',
+    pad: { pleasure: 0.5, arousal: 0.3, dominance: -0.2 },
+    dominant_emotions: [{ name: 'joy', intensity: 0.8 }],
+    timestamp: 1700000000,
+};
+
 test('validateEmotionState: valid payload returns validated', () => {
-    const payload = {
-        schema_version: 1,
-        mood_label: 'ALEGRE',
-        pad: { pleasure: 0.5, arousal: 0.3, dominance: -0.2 },
-        dominant_emotions: [{ name: 'joy', intensity: 0.8 }],
-        timestamp: 1700000000,
-    };
-    const result = validateEmotionState(payload);
+    const result = validateEmotionState(VALID_PAYLOAD);
     assert(result !== null);
     assert.strictEqual(result.mood_label, 'ALEGRE');
     assert.strictEqual(result.pad.pleasure, 0.5);
     assert.strictEqual(result.dominant_emotions.length, 1);
+    assert.strictEqual(result.schema_version, 1);
 });
 
 test('validateEmotionState: null payload returns null', () => {
@@ -272,6 +274,82 @@ test('validateEmotionState: dominant_emotion item not an object returns null', (
         timestamp: 1700000000,
     };
     assert.strictEqual(validateEmotionState(payload), null);
+});
+
+// ─── validateEmotionState: contract enforcement — limit, names, duplicates ────
+
+test('validateEmotionState: more than 3 emotions returns null', () => {
+    const payload = {
+        ...VALID_PAYLOAD,
+        dominant_emotions: [
+            { name: 'joy', intensity: 0.9 },
+            { name: 'anger', intensity: 0.8 },
+            { name: 'sadness', intensity: 0.7 },
+            { name: 'fear', intensity: 0.6 },
+        ],
+    };
+    assert.strictEqual(validateEmotionState(payload), null);
+});
+
+test('validateEmotionState: exactly 3 emotions passes', () => {
+    const payload = {
+        ...VALID_PAYLOAD,
+        dominant_emotions: [
+            { name: 'joy', intensity: 0.9 },
+            { name: 'anger', intensity: 0.8 },
+            { name: 'sadness', intensity: 0.7 },
+        ],
+    };
+    const result = validateEmotionState(payload);
+    assert(result !== null);
+    assert.strictEqual(result.dominant_emotions.length, 3);
+});
+
+test('validateEmotionState: unknown emotion name returns null', () => {
+    const payload = {
+        ...VALID_PAYLOAD,
+        dominant_emotions: [{ name: 'invalid_emotion', intensity: 0.5 }],
+    };
+    assert.strictEqual(validateEmotionState(payload), null);
+});
+
+test('validateEmotionState: duplicate emotion names returns null', () => {
+    const payload = {
+        ...VALID_PAYLOAD,
+        dominant_emotions: [
+            { name: 'joy', intensity: 0.9 },
+            { name: 'joy', intensity: 0.8 },
+        ],
+    };
+    assert.strictEqual(validateEmotionState(payload), null);
+});
+
+test('validateEmotionState: schema_version preserved in result', () => {
+    const result = validateEmotionState(VALID_PAYLOAD);
+    assert(result !== null);
+    assert.strictEqual(result.schema_version, 1);
+});
+
+// ─── validateEmotionState: canonical emotion names accepted ─────────────────
+
+test('validateEmotionState: all canonical names accepted', () => {
+    const payload = {
+        ...VALID_PAYLOAD,
+        dominant_emotions: [
+            { name: 'joy', intensity: 0.5 },
+            { name: 'trust', intensity: 0.4 },
+            { name: 'gratitude', intensity: 0.3 },
+        ],
+    };
+    assert(validateEmotionState(payload) !== null);
+});
+
+test('validateEmotionState: zero emotions with canonical empty list passes', () => {
+    const payload = {
+        ...VALID_PAYLOAD,
+        dominant_emotions: [],
+    };
+    assert(validateEmotionState(payload) !== null);
 });
 
 // ─── getEmotionLabel ────────────────────────────────────────────────────────

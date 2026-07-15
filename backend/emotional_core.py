@@ -7,6 +7,9 @@ from datetime import datetime
 
 import random
 
+# Shared classifier — single source of truth for PAD → mood label
+from .emotion_presentation import classify_pad_mood
+
 @dataclass(frozen=True)
 class EmotionalState:
     # 1. Base Mood (PAD Model - Bipolar Scale: -1.0 to +1.0)
@@ -204,26 +207,8 @@ class AffectiveEngine:
         return max(min_v, min(value, max_v))
 
     def get_emotional_label(self, state: EmotionalState) -> str:
-        p, a, d = state.pleasure, state.arousal, state.dominance
-
-        if a > 0.5:
-            if p > 0.5:
-                if d > 0.3: return "EXTASE/DOMINANTE"
-                if d < -0.3: return "ENCANTADA"
-                return "ALEGRE/EXCITADA"
-            elif p < -0.5:
-                if d > 0.3: return "FURIA/ODIO"
-                if d < -0.3: return "TERROR/PANICO"
-                return "ESTRESSE/AGONIA"
-        else:
-            if p > 0.5:
-                return "RELAXADA/SATISFEITA"
-            elif p < -0.5:
-                if d > 0.3: return "DESPREZO/FRIO"
-                if d < -0.3: return "DEPRESSAO/TRISTEZA"
-                return "TEDIO"
-
-        return "NEUTRA"
+        """Delegate to shared ``classify_pad_mood`` — single classifier."""
+        return classify_pad_mood(state.pleasure, state.arousal, state.dominance)
 
     def get_acting_instruction(self, state: EmotionalState) -> str:
         label = self.get_emotional_label(state)

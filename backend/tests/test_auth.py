@@ -60,7 +60,15 @@ def mock_supabase():
 @pytest.fixture
 def mock_engine_process():
     from backend.main import engine
-    with patch.object(engine, 'process_turn', return_value=("Mock response", {})) as mock_process:
+    from backend.emotion_presentation import EmotionStateResponse, PublicPAD
+    fake_emotion = EmotionStateResponse(
+        schema_version=1,
+        mood_label="NEUTRA",
+        pad=PublicPAD(pleasure=0.0, arousal=0.0, dominance=0.0),
+        dominant_emotions=[],
+        timestamp=1_700_000_000.0,
+    )
+    with patch.object(engine, 'process_turn', return_value=("Mock response", fake_emotion)) as mock_process:
         yield mock_process
 
 class MockUser:

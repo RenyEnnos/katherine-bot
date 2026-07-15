@@ -40,6 +40,10 @@ export const toPercent = (val) => intensityToPercent(val);
  * - schema_version must be 1.
  * - pad must be present and must have finite numeric pleasure/arousal/dominance.
  * - dominant_emotions must be an array (may be empty).
+ *   - At most 3 emotions (per the public contract).
+ *   - Each name must be a known canonical emotion (in EMOTION_LABELS).
+ *   - No duplicate names allowed.
+ * - schema_version is preserved in the returned object.
  * - No partial state is ever rendered.
  */
 export const validateEmotionState = (payload) => {
@@ -59,11 +63,19 @@ export const validateEmotionState = (payload) => {
     // Validate dominant_emotions (must be array, may be empty)
     if (!Array.isArray(payload.dominant_emotions)) return null;
 
-    // Validate each dominant_emotion item has valid name and finite intensity
+    // At most 3 emotions
+    if (payload.dominant_emotions.length > 3) return null;
+
+    const seenNames = new Set();
     for (let i = 0; i < payload.dominant_emotions.length; i++) {
         const item = payload.dominant_emotions[i];
         if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
         if (typeof item.name !== 'string' || item.name.length === 0) return null;
+        // Reject unknown canonical names
+        if (!(item.name in EMOTION_LABELS)) return null;
+        // Reject duplicates
+        if (seenNames.has(item.name)) return null;
+        seenNames.add(item.name);
         if (typeof item.intensity !== 'number' || !Number.isFinite(item.intensity)) return null;
     }
 
@@ -74,6 +86,7 @@ export const validateEmotionState = (payload) => {
     if (typeof payload.timestamp !== 'number' || !Number.isFinite(payload.timestamp)) return null;
 
     return {
+        schema_version: 1,
         pad: { pleasure, arousal, dominance },
         mood_label: payload.mood_label,
         dominant_emotions: payload.dominant_emotions,

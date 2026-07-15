@@ -545,12 +545,16 @@ class TestArchivalScheduling:
             def mock_sync(user_id, state, rel):
                 call_order.append("sync")
 
+            def mock_add_task(coro, *args, **kwargs):
+                call_order.append("add_task")
+
             engine.memory_manager.save_turn = MagicMock(side_effect=mock_save)
             engine.memory_manager.sync_state = MagicMock(side_effect=mock_sync)
+            bg_tasks.add_task = MagicMock(side_effect=mock_add_task)
 
             resp, emotions = await engine.process_turn("user", "Hello", background_tasks=bg_tasks)
 
-            assert call_order == ["save", "sync"]
+            assert call_order == ["save", "sync", "add_task"]
             bg_tasks.add_task.assert_called_once()
             assert resp is not None
 

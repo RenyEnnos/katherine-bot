@@ -3,10 +3,14 @@
 ## Scope
 
 This document describes the typed, versioned domain contracts introduced in issue #232
-and hardened in issue #232 v1.1.
+and hardened in issue #232 v1.1, plus the deterministic emotional transition introduced
+in issue #233.
+
 It covers construction invariants, deep immutability, serialisation, migration, parser,
-fallback policy, and alias translation.
-It does **not** describe transition logic, decay, or production integration (#233/#234).
+fallback policy, alias translation, and the transition layer (decay, appraisal shifts,
+tension update, and coping regulation).
+
+It does **not** describe production integration (#234).
 
 ---
 
@@ -16,13 +20,15 @@ It does **not** describe transition logic, decay, or production integration (#23
 ┌────────────────────────────────────────────────────────────────┐
 │  Presentation  (prompt builder, acting instruction)            │
 ├────────────────────────────────────────────────────────────────┤
-│  Transition    (AffectiveEngine — decay, PAD update, coping)   │
-│                          ▲ uses (not replaced in #232)         │
+│  Transition    (transition.transition — #233)                  │
+│     pure, deterministic, infrastructure-free                   │
+│     no I/O, no time.time(), no randomness                      │
+│     decay → appraisal shifts → tension → regulation            │
 ├────────────────────────────────────────────────────────────────┤
-│  Appraisal     (parse_llm_appraisal, OCCAppraisal)             │
+│  Appraisal     (parse_llm_appraisal, AppraisalV1)              │
 │                          ▲ produces AppraisalV1                │
 ├────────────────────────────────────────────────────────────────┤
-│  State         (EmotionalStateV1) — this document              │
+│  State         (EmotionalStateV1)                              │
 ├────────────────────────────────────────────────────────────────┤
 │  Migration     (migrate_legacy_snapshot)                       │
 └────────────────────────────────────────────────────────────────┘
@@ -42,6 +48,7 @@ backend/emotional_domain/
     migration.py          — migrate_legacy_snapshot
     serialization.py      — serialize_*/deserialize_* (JSON)
     appraisal_parser.py   — parse_llm_appraisal (with ParseResult and ParseErrorCode)
+    transition.py         — transition(), TransitionConfig, RegulationResult (added in #233)
 ```
 
 No file in this package imports FastAPI, Groq, Supabase, sentence_transformers,
@@ -360,9 +367,168 @@ else:
 
 ---
 
-## Out of scope (this document / issue #232)
+## Transition layer — `transition.py`
 
-- Transition logic, decay, or PAD update formulas (→ #233).
+### Public API
+
+```python
+from backend.emotional_domain import transition, TransitionConfig, RegulationResult, TransitionResult
+
+result = transition(
+    previous_state=EmotionalStateV1,
+    appraisal=AppraisalV1,
+    current_time=float,            # Unix epoch seconds, explicit
+    config=TransitionConfig,
+)
+# → TransitionResult with .state (EmotionalStateV1) and .regulation (RegulationResult)
+```
+
+### Design principles
+
+- **Pure**: no I/O, no randomness, no global state, no `time.time()`, no environment variables.
+- **Deterministic**: same inputs always produce identical outputs.
+- **Immutable**: never mutates `previous_state`, `appraisal`, or `config`.
+- **Infrastructure-free**: no FastAPI, Groq, Supabase, embeddings, or network.
+- **Single source of appraisal**: receives exactly one canonical `AppraisalV1`. Does **not**
+  execute `OCCAppraisal`, keyword heuristics, alias translation, or LLM payload parsing.
+
+### Order of operations
+
+```
+1. Validate current_time (reject bool, None, str, list, dict, NaN, Inf, <= 0)
+2. Compute elapsed seconds (clock regression → elapsed = 0.0)
+3. Apply exponential decay to PAD and tension toward baselines
+4. Apply capped appraisal shifts to PAD
+5. Clamp PAD to [-1.0, +1.0]
+6. Update tension based on pleasure level
+7. Clamp tension to [0.0, 1.0]
+8. Determine coping mode (with hysteresis + MANIC handling)
+9. Apply regulation effects
+10. Build new EmotionalStateV1 via validated factory
+11. Return TransitionResult
+```
+
+### Exponential decay formula
+
+```python
+factor = 0.5 ** (elapsed_seconds / half_life_seconds)
+value_after_decay = baseline + (value_before - baseline) * factor
+```
+
+#### Default parameters
+
+| Parameter | Value | Domain |
+|---|---|---|
+| PAD half-life | 3600.0 s (1 hour) | pleasure, arousal, dominance |
+| tension half-life | 7200.0 s (2 hours) | tension |
+| PAD baseline | 0.0 | pleasure, arousal, dominance |
+| tension baseline | 0.0 | tension |
+
+**Not decayed in v1:** `libido`, `aggression`, `connection`, `energy` — these remain unchanged.
+
+> ⚠️ All default parameters are **engineering choices**. They have **no claim of clinical
+> validity**.
+
+### Appraisal shift caps
+
+No single appraisal can move an axis more than the configured maximum (default **0.25**, configurable via `TransitionConfig`):
+
+```python
+effective_shift = clamp(appraisal_shift, -configured_max, configured_max)
+```
+
+Each axis (`pleasure`, `arousal`, `dominance`) has its own configurable cap in `[0.0, 1.0]`.
+A cap of `0.0` disables the axis entirely (no shift is applied).
+
+### Discrete emotions are not accumulated
+
+Two appraisals with the same scalar shifts but different `discrete_emotions` produce the
+**same emotional snapshot** (same PAD, drives, tension, coping mode). Discrete emotions
+are signals of the event, not accumulated in the persistent snapshot.
+
+### Current time and clock regression
+
+- `current_time` must be a finite positive float (Unix epoch seconds).
+- `bool`, `None`, `str`, `list`, `dict`, `NaN`, `Inf`, and values ≤ 0 are rejected.
+- If `current_time < previous_state.timestamp`, elapsed is set to 0.0 and the output
+  timestamp equals `previous_state.timestamp`.
+- The output timestamp **never decreases** below `previous_state.timestamp`.
+
+```python
+output_timestamp = max(previous_state.timestamp, current_time)
+```
+
+### Tension update (pleasure-reactive)
+
+| Condition | Tension delta |
+|---|---|
+| `pleasure < negative_pleasure_threshold` (default −0.3) | `+tension_increase` (+0.05) |
+| `pleasure > positive_pleasure_threshold` (default +0.3) | `−tension_relief` (−0.05) |
+| Otherwise | 0.0 |
+
+Tension is always clamped to `[0.0, 1.0]`.
+
+### Coping mode determination (hysteresis)
+
+#### Default thresholds
+
+| Threshold | Value |
+|---|---|
+| `activation_threshold` | 0.8 (inclusive) |
+| `recovery_threshold` | 0.3 (inclusive) |
+
+#### Rules
+
+| Condition | Coping mode |
+|---|---|
+| `tension ≥ 0.8` and `dominance > 0.0` | `DEFENSIVE` |
+| `tension ≥ 0.8` and `dominance ≤ 0.0` | `DISSOCIATED` |
+| `tension ≤ 0.3` | `HEALTHY` |
+| `0.3 < tension < 0.8` | Preserve previous mode (hysteresis) |
+
+#### MANIC handling
+
+- In the intermediate range (`0.3 < tension < 0.8`), MANIC **remains MANIC**.
+- On recovery (`tension ≤ 0.3`), MANIC transitions to **HEALTHY**.
+- On activation (`tension ≥ 0.8`), MANIC transitions to **DEFENSIVE** (if
+  `dominance > 0.0`) or **DISSOCIATED** (if `dominance ≤ 0.0`).
+
+#### Regulation effects
+
+| Mode | Effects |
+|---|---|
+| `HEALTHY` | No additional effects. |
+| `DEFENSIVE` | No additional effects in v1. **Does not increase aggression.** |
+| `DISSOCIATED` | Arousal is multiplied by `dissociation_arousal_factor` (default 0.5), then clamped to `[-1.0, 1.0]`. |
+
+No mode produces prompt text, acting instructions, or user-facing content.
+
+### RegulationResult
+
+```python
+@dataclass(frozen=True)
+class RegulationResult:
+    previous_mode: str          # Coping mode before regulation
+    current_mode: str           # Coping mode after regulation
+    changed: bool               # True when previous_mode != current_mode
+    reason: RegulationReason    # Enum: NONE, HIGH_TENSION_POSITIVE_DOMINANCE,
+                                #       HIGH_TENSION_NONPOSITIVE_DOMINANCE, RECOVERED
+```
+
+`RegulationReason` is a `str` enum with the following values:
+
+| Value | Meaning |
+|---|---|
+| `none` | No change in coping mode |
+| `high_tension_positive_dominance` | Activation with dominance > 0 (→ DEFENSIVE) |
+| `high_tension_nonpositive_dominance` | Activation with dominance ≤ 0 (→ DISSOCIATED) |
+| `recovered` | Tension dropped to recovery threshold (→ HEALTHY) |
+
+`RegulationResult` contains no prompt text, no user content, no LLM output, no
+acting instruction, and no metacognitive strategy.
+
+## Out of scope (this document)
+
 - Integration of these models into `ConversationEngine` (→ #234).
 - Persistence changes.
 - API or frontend changes.

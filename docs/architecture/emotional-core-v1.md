@@ -431,13 +431,14 @@ value_after_decay = baseline + (value_before - baseline) * factor
 
 ### Appraisal shift caps
 
-No single appraisal can move an axis more than **0.25** (configurable via `TransitionConfig`):
+No single appraisal can move an axis more than the configured maximum (default **0.25**, configurable via `TransitionConfig`):
 
 ```python
 effective_shift = clamp(appraisal_shift, -configured_max, configured_max)
 ```
 
-Each axis (`pleasure`, `arousal`, `dominance`) has its own configurable cap.
+Each axis (`pleasure`, `arousal`, `dominance`) has its own configurable cap in `[0.0, 1.0]`.
+A cap of `0.0` disables the axis entirely (no shift is applied).
 
 ### Discrete emotions are not accumulated
 

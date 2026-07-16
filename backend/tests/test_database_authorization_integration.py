@@ -77,11 +77,23 @@ def assert_denied(op, *args, **kwargs):
     # PostgREST typically returns 401 or 403 or 42501 for RLS / permission denied.
     assert exc.value.code in ("42501", "PGRST301") or "401" in str(exc.value) or "403" in str(exc.value)
 
+
+def get_valid_payload(table, uid, id_suffix="1", source_log_id=1):
+    if table == "profiles":
+        return {"user_id": uid, "persona_config": "test"}
+    if table == "chat_logs":
+        return {"user_id": uid, "role": "user", "content": "test_msg"}
+    if table == "memories":
+        return {"user_id": uid, "content": "mem"}
+    if table == "archival_extractions":
+        return {"user_id": uid, "source_chat_log_id": source_log_id, "extractor_version": 1, "schema_version": 1, "idempotency_key": f"{uid}_{id_suffix}", "facts": []}
+    return {}
+
 def test_anon_matrix(anon_client):
     tables = ["profiles", "chat_logs", "memories", "archival_extractions"]
     for table in tables:
         assert_denied(anon_client.table(table).select, "*")
-        assert_denied(anon_client.table(table).insert, {"id": "1"})
+        assert_denied(anon_client.table(table).insert, get_valid_payload(table, "anon", "1"))
         assert_denied(anon_client.table(table).update, {"content": "2"})
         assert_denied(anon_client.table(table).delete)
 
@@ -89,20 +101,25 @@ def test_auth_a_matrix(auth_client_a, auth_client_b, service_client):
     client_a, uid_a = auth_client_a
     _, uid_b = auth_client_b
 
+    # Prepare dependencies
     service_client.table("profiles").upsert([{"user_id": uid_a}, {"user_id": uid_b}]).execute()
+    log_a = service_client.table("chat_logs").insert({"user_id": uid_a, "role": "user", "content": "a"}).execute()
+    log_b = service_client.table("chat_logs").insert({"user_id": uid_b, "role": "user", "content": "b"}).execute()
+    log_id_a = log_a.data[0]['id']
+    log_id_b = log_b.data[0]['id']
 
     tables = ["profiles", "chat_logs", "memories", "archival_extractions"]
 
     for table in tables:
         # Own data
         assert_denied(client_a.table(table).select("*").eq, "user_id", uid_a)
-        assert_denied(client_a.table(table).insert, {"user_id": uid_a, "role": "user", "content": "1", "source_chat_log_id": 1, "extractor_version": 1, "schema_version": 1, "idempotency_key": "1", "facts": []})
+        assert_denied(client_a.table(table).insert, get_valid_payload(table, uid_a, "a1", log_id_a))
         assert_denied(client_a.table(table).update({"content": "2"}).eq, "user_id", uid_a)
         assert_denied(client_a.table(table).delete().eq, "user_id", uid_a)
 
         # B's data
         assert_denied(client_a.table(table).select("*").eq, "user_id", uid_b)
-        assert_denied(client_a.table(table).insert, {"user_id": uid_b, "role": "user", "content": "1", "source_chat_log_id": 1, "extractor_version": 1, "schema_version": 1, "idempotency_key": "2", "facts": []})
+        assert_denied(client_a.table(table).insert, get_valid_payload(table, uid_b, "a2", log_id_b))
         assert_denied(client_a.table(table).update({"content": "2"}).eq, "user_id", uid_b)
         assert_denied(client_a.table(table).delete().eq, "user_id", uid_b)
 
@@ -110,18 +127,23 @@ def test_auth_b_matrix(auth_client_a, auth_client_b, service_client):
     client_b, uid_b = auth_client_b
     _, uid_a = auth_client_a
 
+    res_a = service_client.table("chat_logs").select("id").eq("user_id", uid_a).limit(1).execute()
+    log_id_a = res_a.data[0]['id'] if res_a.data else 1
+    res_b = service_client.table("chat_logs").select("id").eq("user_id", uid_b).limit(1).execute()
+    log_id_b = res_b.data[0]['id'] if res_b.data else 1
+
     tables = ["profiles", "chat_logs", "memories", "archival_extractions"]
 
     for table in tables:
         # Own data
         assert_denied(client_b.table(table).select("*").eq, "user_id", uid_b)
-        assert_denied(client_b.table(table).insert, {"user_id": uid_b, "role": "user", "content": "1", "source_chat_log_id": 1, "extractor_version": 1, "schema_version": 1, "idempotency_key": "3", "facts": []})
+        assert_denied(client_b.table(table).insert, get_valid_payload(table, uid_b, "b1", log_id_b))
         assert_denied(client_b.table(table).update({"content": "2"}).eq, "user_id", uid_b)
         assert_denied(client_b.table(table).delete().eq, "user_id", uid_b)
 
         # A's data
         assert_denied(client_b.table(table).select("*").eq, "user_id", uid_a)
-        assert_denied(client_b.table(table).insert, {"user_id": uid_a, "role": "user", "content": "1", "source_chat_log_id": 1, "extractor_version": 1, "schema_version": 1, "idempotency_key": "4", "facts": []})
+        assert_denied(client_b.table(table).insert, get_valid_payload(table, uid_a, "b2", log_id_a))
         assert_denied(client_b.table(table).update({"content": "2"}).eq, "user_id", uid_a)
         assert_denied(client_b.table(table).delete().eq, "user_id", uid_a)
 

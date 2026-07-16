@@ -8,12 +8,12 @@ def run_supabase_cli():
     def _run(cmd):
         res = subprocess.run(f"supabase {cmd}", shell=True, capture_output=True, text=True)
         if res.returncode != 0:
-            raise Exception(f"Supabase CLI failed: {res.stderr}")
+            raise Exception(f"Supabase CLI failed ({cmd}): {res.stderr}")
         return res.stdout
     return _run
 
+@pytest.mark.database_integration
 def test_legacy_upgrade(run_supabase_cli):
-    # This must be run from the root where `supabase` is configured, but tests run in root via CI.
     if not os.path.exists("supabase/migrations/20240101000000_baseline.sql"):
         pytest.skip("Not running in project root with migrations")
 
@@ -55,7 +55,5 @@ def test_legacy_upgrade(run_supabase_cli):
     finally:
         if os.path.exists("supabase/20240101000002_secure_server_owned_tables.sql.tmp"):
             os.rename("supabase/20240101000002_secure_server_owned_tables.sql.tmp", "supabase/migrations/20240101000002_secure_server_owned_tables.sql")
-        try:
-            run_supabase_cli("db reset")
-        except:
-            pass
+        # Ensure we leave DB in good full state without swallowing exceptions broadly
+        run_supabase_cli("db reset")

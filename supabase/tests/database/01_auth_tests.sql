@@ -104,7 +104,10 @@ SELECT function_privs_are('public', 'test_new_func', ARRAY[]::text[], 'PUBLIC', 
 SELECT function_privs_are('public', 'test_new_func', ARRAY[]::text[], 'anon', ARRAY[]::text[], 'No default privileges for new funcs to anon');
 SELECT function_privs_are('public', 'test_new_func', ARRAY[]::text[], 'authenticated', ARRAY[]::text[], 'No default privileges for new funcs to authenticated');
 
-ROLLBACK;
+
+
+
+
 
 SELECT * FROM finish();
 ROLLBACK;

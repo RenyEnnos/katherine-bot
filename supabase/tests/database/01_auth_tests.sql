@@ -1,7 +1,7 @@
 BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS pgtap;
-SELECT plan(31);
+SELECT plan(37);
 
 -- 1. RLS Enabled
 SELECT tables_are_enabled(

@@ -4,7 +4,7 @@ from datetime import datetime, UTC
 from supabase import create_client, Client
 from sentence_transformers import SentenceTransformer
 import time
-from .relationship import UserRelationship
+from .relationship import RelationshipStateV1
 from .emotional_domain import EmotionalStateV1
 from .archival_memory import PersistedTurnRef, ArchivalExtractionEnvelope, ArchivalDuplicateError
 
@@ -60,10 +60,11 @@ class MemoryManager:
 
 
 
-    def load_user_state(self, user_id: str) -> dict:
+    def load_user_state(self, user_id: str, default_timestamp: float | None = None) -> dict:
         """
         Loads the full user state from Supabase 'profiles' table.
-        If not found, creates a default profile.
+        If not found, creates a default profile using the given ``default_timestamp``
+        (or ``self._clock()`` if not provided).
         Raises StateLoadError on transient database failures.
         """
         if not self.supabase:
@@ -83,8 +84,8 @@ class MemoryManager:
                 raise StateLoadError("Resposta inválida do banco de dados na leitura.")
 
             if len(response.data) == 0:
-                # Create default profile
-                default_state = self._get_default_state(user_id)
+                # Create default profile with the provided timestamp or clock
+                default_state = self._get_default_state(user_id, timestamp=default_timestamp)
                 try:
                     insert_response = self.supabase.table("profiles").insert({
                         "user_id": user_id,
@@ -118,24 +119,33 @@ class MemoryManager:
         except Exception as e:
             raise StateLoadError("Falha ao carregar estado do usuário.") from e
 
-    def _get_default_state(self, user_id: str):
-        v1_state = EmotionalStateV1.neutral(timestamp=self._clock())
+    def _get_default_state(self, user_id: str, timestamp: float | None = None):
+        effective_timestamp = (
+            timestamp if timestamp is not None else self._clock()
+        )
+        v1_state = EmotionalStateV1.neutral(timestamp=effective_timestamp)
         return {
             "persona_config": "Katherine...",
             "user_profile": {},
-            "relationship_state": UserRelationship(user_id=user_id).to_dict(),
+            "relationship_state": RelationshipStateV1.neutral(timestamp=effective_timestamp).to_dict(),
             "emotional_state": v1_state.to_dict()
         }
 
-    def sync_state(self, user_id: str, emotional_state: EmotionalStateV1, relationship: UserRelationship, user_profile: dict = None):
+    def sync_state(self, user_id: str, emotional_state: EmotionalStateV1, relationship: RelationshipStateV1, user_profile: dict = None):
         """
         Persists the current state to Supabase.
-        Accepts only ``EmotionalStateV1`` (serialized via ``.to_dict()`` for JSONB).
-        Raises ``StatePersistenceError`` on invalid type or database failure.
+        Accepts only ``EmotionalStateV1`` and ``RelationshipStateV1`` (serialized via
+        ``.to_dict()`` for JSONB). Raises ``StatePersistenceError`` on invalid type
+        or database failure.
         """
         if not isinstance(emotional_state, EmotionalStateV1):
             raise StatePersistenceError(
                 "emotional_state must be an EmotionalStateV1 instance."
+            )
+
+        if not isinstance(relationship, RelationshipStateV1):
+            raise StatePersistenceError(
+                "relationship must be a RelationshipStateV1 instance."
             )
 
         if not self.supabase:

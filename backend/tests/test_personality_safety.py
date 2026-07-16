@@ -1,16 +1,17 @@
 import sys
 import os
+import time
 import pytest
 import math
 from unittest.mock import MagicMock
 from backend.engine import ConversationEngine
 from backend.emotional_core import EmotionalState, AffectiveEngine, OCCAppraisal, CopingMechanism
-from backend.relationship import UserRelationship
+from backend.relationship import RelationshipStateV1, compute_bond_label
 
 def test_system_prompt_safety():
     engine = ConversationEngine()
     state = EmotionalState()
-    relationship = UserRelationship(user_id="test_user")
+    relationship = RelationshipStateV1.neutral(timestamp=time.time())
     
     prompt = engine._build_system_prompt(state, "context", relationship)
     
@@ -194,7 +195,7 @@ def test_end_to_end_coercion_to_label():
     
     # Build complete system prompt to check end-to-end output
     conv_engine = ConversationEngine()
-    relationship = UserRelationship(user_id="test_user")
+    relationship = RelationshipStateV1.neutral(timestamp=time.time())
     prompt = conv_engine._build_system_prompt(new_state, "context", relationship)
     
     # Assert absence of submissive terms in label and acting/coping instructions

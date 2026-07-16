@@ -50,7 +50,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from backend.engine import ConversationEngine
-from backend.memory import MemoryManager, StatePersistenceError, StateLoadError
+from backend.memory import (
+    MemoryManager,
+    StateLoadError,
+    StatePersistenceError,
+)
 from backend.emotional_domain import (
     AppraisalV1,
     EmotionalDomainError,
@@ -60,7 +64,7 @@ from backend.emotional_domain import (
     transition,
 )
 from backend.emotion_presentation import EmotionStateResponse
-from backend.relationship import UserRelationship
+from backend.relationship import RelationshipStateV1, compute_bond_label
 
 
 # ─── Fixed clock ─────────────────────────────────────────────────────────────
@@ -133,37 +137,37 @@ class TestSyncStateValidation:
     def test_accepts_emotional_state_v1(self):
         mm = self._make_mm()
         state = EmotionalStateV1.neutral(timestamp=FIXED_CLOCK)
-        rel = UserRelationship(user_id="u")
+        rel = RelationshipStateV1.neutral(timestamp=FIXED_CLOCK)
         mm.sync_state("u", state, rel)
         mm.supabase.table.assert_called_once_with("profiles")
 
     def test_rejects_legacy_emotional_state(self):
         mm = self._make_mm()
-        rel = UserRelationship(user_id="u")
+        rel = RelationshipStateV1.neutral(timestamp=FIXED_CLOCK)
         with pytest.raises(StatePersistenceError):
             mm.sync_state("u", "not a state", rel)
 
     def test_rejects_dict(self):
         mm = self._make_mm()
-        rel = UserRelationship(user_id="u")
+        rel = RelationshipStateV1.neutral(timestamp=FIXED_CLOCK)
         with pytest.raises(StatePersistenceError):
             mm.sync_state("u", {"pleasure": 0.0}, rel)
 
     def test_rejects_magic_mock(self):
         mm = self._make_mm()
-        rel = UserRelationship(user_id="u")
+        rel = RelationshipStateV1.neutral(timestamp=FIXED_CLOCK)
         with pytest.raises(StatePersistenceError):
             mm.sync_state("u", MagicMock(), rel)
 
     def test_rejects_none(self):
         mm = self._make_mm()
-        rel = UserRelationship(user_id="u")
+        rel = RelationshipStateV1.neutral(timestamp=FIXED_CLOCK)
         with pytest.raises(StatePersistenceError):
             mm.sync_state("u", None, rel)
 
     def test_invalid_type_does_not_call_db(self):
         mm = self._make_mm()
-        rel = UserRelationship(user_id="u")
+        rel = RelationshipStateV1.neutral(timestamp=FIXED_CLOCK)
         with pytest.raises(StatePersistenceError):
             mm.sync_state("u", "bad", rel)
         # Verify no DB call was made
@@ -241,12 +245,9 @@ class TestRelationshipAdaptationSpy:
         """
         async def run():
             engine = _make_engine()
-            engine.relationship_manager = MagicMock()
-            engine.relationship_manager.update_relationship = MagicMock(
-                return_value=UserRelationship(user_id="user")
-            )
-
-            # Only valid top-level keys — no unknown keys that would trigger fallback
+            # The relationship manager is replaced by the pure transition function.
+            # We verify that the relationship is updated via transition_relationship
+            # by checking the returned state through sync_state.
             engine._perceive = MagicMock(return_value={
                 "valence": 0.5,
                 "arousal_shift": 0.2,
@@ -259,19 +260,13 @@ class TestRelationshipAdaptationSpy:
 
             await engine.process_turn("user", "Hello")
 
-            args, kwargs = engine.relationship_manager.update_relationship.call_args
-            assert len(args) >= 2
-            adapted = args[1]
-
-            # Exact set of keys expected
-            assert set(adapted.keys()) == {"valence", "triggered_emotions"}
-            # Valid emotions preserved
-            assert adapted["valence"] == 0.5
-            assert adapted["triggered_emotions"]["joy"] == 0.8
-            assert adapted["triggered_emotions"]["tenderness"] == 0.6
-            # No extra keys leaked
-            assert "raw_payload" not in adapted
-            assert "SENSITIVE_" not in str(adapted)
+            # Verify that sync_state was called with a RelationshipStateV1
+            args, _ = engine.memory_manager.sync_state.call_args
+            assert len(args) >= 3
+            rel = args[2]
+            assert isinstance(rel, RelationshipStateV1)
+            # With positive valence, trust should increase
+            assert rel.trust > 0.5
 
         asyncio.run(run())
 
@@ -280,7 +275,7 @@ class TestRelationshipAdaptationSpy:
         Cenário B — chave top-level desconhecida.
 
         * o parser utiliza fallback neutro;
-        * o relacionamento recebe adaptação neutra;
+        * o relacionamento recebe transição neutra;
         * o marcador não chega ao relacionamento;
         * o marcador não aparece nos logs;
         * o turno não falha (segue a política de fallback).
@@ -289,10 +284,6 @@ class TestRelationshipAdaptationSpy:
 
         async def run():
             engine = _make_engine()
-            engine.relationship_manager = MagicMock()
-            engine.relationship_manager.update_relationship = MagicMock(
-                return_value=UserRelationship(user_id="user")
-            )
 
             # Payload with a valid structure PLUS an unknown top-level key
             engine._perceive = MagicMock(return_value={
@@ -316,14 +307,15 @@ class TestRelationshipAdaptationSpy:
 
             log_text = stream.getvalue()
 
-            # Relationship received neutral adaptation (fallback)
-            args, kwargs = engine.relationship_manager.update_relationship.call_args
-            adapted = args[1]
-            assert adapted["valence"] == 0.0  # neutral fallback
-            assert adapted["triggered_emotions"] == {}
+            # Relationship received neutral transition (fallback)
+            args, _ = engine.memory_manager.sync_state.call_args
+            rel = args[2]
+            assert isinstance(rel, RelationshipStateV1)
+            # With neutral appraisal, metrics stay at defaults
+            assert rel.trust == 0.5
+            assert rel.affection == 0.3
             # Sensitive key never reaches relationship
-            assert SENSITIVE_KEY not in adapted
-            assert SENSITIVE_KEY not in str(adapted)
+            assert SENSITIVE_KEY not in str(rel)
 
             # Log contains sanitised fallback event, not the marker
             assert "event=emotional_appraisal_fallback" in log_text
@@ -339,15 +331,11 @@ class TestRelationshipAdaptationSpy:
         """Verify unknown emotions are stripped by the parser before reaching relationship."""
         async def run():
             engine = _make_engine()
-            engine.relationship_manager = MagicMock()
-            engine.relationship_manager.update_relationship = MagicMock(
-                return_value=UserRelationship(user_id="user")
-            )
-            # Payload with unknown emotion + raw key
+            # Payload with known emotion joy=0.8 and unknown emotion_92841=0.9
             engine._perceive = MagicMock(return_value={
-                "valence": 0.5,
-                "arousal_shift": 0.2,
-                "dominance_shift": 0.1,
+                "valence": 0.2,
+                "arousal_shift": 0.1,
+                "dominance_shift": 0.0,
                 "triggered_emotions": {
                     "joy": 0.8,
                     "unknown_emotion_92841": 0.9,
@@ -356,42 +344,46 @@ class TestRelationshipAdaptationSpy:
 
             await engine.process_turn("user", "Hello")
 
-            args, kwargs = engine.relationship_manager.update_relationship.call_args
-            adapted = args[1]
-            # Unknown emotion must not appear
-            assert "unknown_emotion_92841" not in adapted["triggered_emotions"]
+            args, _ = engine.memory_manager.sync_state.call_args
+            rel = args[2]
+            assert isinstance(rel, RelationshipStateV1)
+            # Known emotion joy > 0.3 should boost affection by 0.01
+            assert rel.affection == pytest.approx(0.31)
+            # Valence 0.2 is not > 0.2, so trust should stay at 0.5
+            # (0.2 is not strictly > 0.2, so no trust change)
+            assert rel.trust == 0.5
 
         asyncio.run(run())
 
-    def test_neutral_fallback_results_in_neutral_adaptation(self):
+    def test_neutral_fallback_results_in_neutral_transition(self):
         async def run():
             engine = _make_engine()
-            engine.relationship_manager = MagicMock()
-            engine.relationship_manager.update_relationship = MagicMock(
-                return_value=UserRelationship(user_id="user")
-            )
             # _perceive returns empty dict (triggers fallback)
             engine._perceive = MagicMock(return_value={})
 
             await engine.process_turn("user", "Hello")
 
-            args, kwargs = engine.relationship_manager.update_relationship.call_args
-            adapted = args[1]
-            assert adapted["valence"] == 0.0  # neutral fallback
-            assert adapted["triggered_emotions"] == {}
+            args, _ = engine.memory_manager.sync_state.call_args
+            rel = args[2]
+            assert isinstance(rel, RelationshipStateV1)
+            # With neutral appraisal, metrics stay at defaults
+            assert rel.trust == 0.5
+            assert rel.affection == 0.3
 
         asyncio.run(run())
 
     def test_adaptation_structure_is_clean(self):
-        """The adapter produces exactly the expected keys."""
+        """The transition function receives AppraisalV1 directly (no adapter needed)."""
+        from backend.relationship import transition_relationship, RelationshipTransitionConfig
         ap = AppraisalV1.create(
             valence_shift=0.3, arousal_shift=-0.1, dominance_shift=0.0,
             discrete_emotions={"joy": 0.7},
         )
-        adapted = ConversationEngine._adapt_appraisal_for_relationship(ap)
-        assert set(adapted.keys()) == {"valence", "triggered_emotions"}
-        assert adapted["valence"] == 0.3
-        assert adapted["triggered_emotions"]["joy"] == 0.7
+        state = RelationshipStateV1.neutral(timestamp=FIXED_CLOCK)
+        config = RelationshipTransitionConfig.defaults()
+        new_state = transition_relationship(state, ap, FIXED_CLOCK + 1, config)
+        assert new_state.trust > 0.5
+        assert new_state.timestamp > FIXED_CLOCK
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -428,7 +420,7 @@ class TestFailClosedThroughProcessTurn:
             engine.groq_manager.chat_completion = MagicMock()
             engine.memory_manager.save_turn = MagicMock()
             engine.memory_manager.sync_state = MagicMock()
-            engine.relationship_manager = MagicMock()
+
             bg_tasks = MagicMock()
 
             with pytest.raises(EmotionalDomainError):
@@ -440,7 +432,10 @@ class TestFailClosedThroughProcessTurn:
             engine.groq_manager.chat_completion.assert_not_called()
             engine.memory_manager.save_turn.assert_not_called()
             engine.memory_manager.sync_state.assert_not_called()
-            engine.relationship_manager.update_relationship.assert_not_called()
+            # transition_relationship is called inside process_turn, but
+            # since the corrupt snapshot blocks the flow before transition,
+            # sync_state is never called (relationship never reached)
+            engine.memory_manager.sync_state.assert_not_called()
             bg_tasks.add_task.assert_not_called()
 
         asyncio.run(run())
@@ -548,7 +543,7 @@ class TestJSONBPersistence:
             energy=0.9, tension=0.2, coping_mode="HEALTHY",
             timestamp=FIXED_CLOCK,
         )
-        rel = UserRelationship(user_id="u")
+        rel = RelationshipStateV1.neutral(timestamp=FIXED_CLOCK)
         mm.sync_state("u", state, rel)
 
         # Capture what was passed to supabase.update()
@@ -575,6 +570,14 @@ class TestJSONBPersistence:
         assert eq_call is not None
         assert eq_call[0] == ("user_id", "u")
 
+        # Relationship payload must also be v1 and not contain user_id or bond_label
+        rel_payload = update_data["relationship_state"]
+        assert isinstance(rel_payload, dict)
+        assert rel_payload["schema_version"] == 1
+        assert "user_id" not in rel_payload
+        assert "bond_label" not in rel_payload
+        assert "last_interaction" not in rel_payload
+
     def test_persisted_payload_has_only_v1_fields(self):
         """The payload must contain only the fields from EmotionalStateV1.to_dict()."""
         v1_fields = {
@@ -590,6 +593,86 @@ class TestJSONBPersistence:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Correction 7: Archival scheduling test
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Correction 4a: Single relationship transition per turn
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestSingleRelationshipTransition:
+    """Proves exactly one transition_relationship call per successful turn
+    and that both transition() and transition_relationship() receive the
+    SAME AppraisalV1 object (by identity, not equality).
+    """
+
+    def test_one_transition_relationship_per_turn(self):
+        async def run():
+            engine = _make_engine()
+            from backend.emotional_domain import transition as real_emotion_transition
+            from backend.emotional_domain import AppraisalV1
+            from backend.relationship import (
+                transition_relationship as real_rel_transition,
+                RelationshipStateV1,
+                RelationshipTransitionConfig,
+            )
+
+            # Tracking spies that capture the appraisal objects
+            emotional_appraisals = []
+            def emotion_tracking_spy(*args, **kwargs):
+                emotional_appraisals.append(kwargs.get("appraisal", args[1] if len(args) > 1 else None))
+                return real_emotion_transition(*args, **kwargs)
+
+            rel_captured_results = []
+            rel_appraisals = []
+            def rel_tracking_spy(*args, **kwargs):
+                rel_appraisals.append(kwargs.get("appraisal", args[1] if len(args) > 1 else None))
+                result = real_rel_transition(*args, **kwargs)
+                rel_captured_results.append(result)
+                return result
+
+            with patch("backend.engine.transition", side_effect=emotion_tracking_spy) as mock_emotion, \
+                 patch("backend.engine.transition_relationship", side_effect=rel_tracking_spy) as mock_rel:
+
+                resp, emotions = await engine.process_turn("user", "Hello")
+
+                # ── Exactly one call each ────────────────────────────────────
+                assert mock_emotion.call_count == 1
+                assert mock_rel.call_count == 1
+
+                # ── Both receive the same AppraisalV1 object (identity, not value) ──
+                emotional_appraisal = emotional_appraisals[0]
+                rel_appraisal = rel_appraisals[0]
+                assert emotional_appraisal is rel_appraisal, (
+                    "transition() and transition_relationship() must receive "
+                    "the SAME AppraisalV1 object, not two equal copies."
+                )
+
+                # ── AppraisalV1 is not a dict ────────────────────────────────
+                assert isinstance(emotional_appraisal, AppraisalV1)
+                assert not isinstance(emotional_appraisal, dict)
+
+                # ── Inspect relationship transition arguments ────────────────
+                rel_kwargs = mock_rel.call_args[1]
+                rel_previous_state = rel_kwargs.get("previous_state")
+                rel_current_time = rel_kwargs.get("current_time")
+                rel_config = rel_kwargs.get("config")
+
+                assert isinstance(rel_previous_state, RelationshipStateV1)
+                assert isinstance(rel_config, RelationshipTransitionConfig)
+
+                # current_time matches injected clock
+                assert rel_current_time == FIXED_CLOCK
+                # Also verify emotional transition receives the same clock
+                emotion_kwargs = mock_emotion.call_args[1]
+                assert emotion_kwargs.get("current_time") == FIXED_CLOCK
+
+                # ── The result is delivered to sync_state ────────────────────
+                assert len(rel_captured_results) == 1
+                args_sync, _ = engine.memory_manager.sync_state.call_args
+                sync_rel = args_sync[2]
+                assert sync_rel is rel_captured_results[0]
+
+        asyncio.run(run())
+
 
 class TestArchivalScheduling:
     """Archival extraction scheduling: order on success, zero on sync_state failure."""
@@ -678,6 +761,131 @@ class TestArchivalScheduling:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Correction 8: Sanitised logging with unique markers
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Correction 10: First-turn regression test  (clock alignment)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestNewProfileFirstTurn:
+    """
+    First turn of a brand-new user with an advancing clock must succeed.
+
+    Before the fix, the new-profile snapshots were created with a *different*
+    (later) clock call than ``current_time``, causing ``transition_relationship()``
+    to reject the turn with a clock-regression error.
+
+    After the fix, ``load_user_state()`` accepts an explicit ``default_timestamp``
+    that matches the turn's ``current_time``, so both emotional and relationship
+    snapshots are born with the exact same timestamp as the turn.
+    """
+
+    def test_first_turn_with_advancing_clock(self):
+        async def run():
+            # ── Advancing clock that would have masked the defect          ──
+            times = iter([100.0, 100.1, 100.2, 100.3])
+            clock = lambda: next(times)
+
+            # ── Isolate from real SentenceTransformer (would hang in CI)  ──
+            with patch("backend.memory.SentenceTransformer", return_value=MagicMock()) as embedding_cls:
+                engine = ConversationEngine(clock=clock)
+            embedding_cls.assert_called_once()
+
+            # ── Mock Supabase: empty select (new user), then insert OK     ──
+            engine.memory_manager.supabase = MagicMock()
+            mock_select = MagicMock(data=[], error=None)
+            engine.memory_manager.supabase.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_select  # noqa: E501
+            mock_insert = MagicMock(data=[{"user_id": "new_user"}], error=None)
+            engine.memory_manager.supabase.table.return_value.insert.return_value.execute.return_value = mock_insert  # noqa: E501
+
+            # ── Mock other engine dependencies                             ──
+            engine.memory_manager.get_context = MagicMock(return_value="[ctx]")
+            engine.memory_manager.sync_state = MagicMock()
+            engine.memory_manager.save_turn = MagicMock()
+            llm_response = MagicMock()
+            llm_response.choices = [MagicMock()]
+            llm_response.choices[0].message.content = "Hello!"
+            engine.groq_manager.chat_completion = MagicMock(return_value=llm_response)
+            engine._perceive = MagicMock(return_value={
+                "valence": 0.2, "arousal_shift": 0.1, "dominance_shift": 0.0,
+                "triggered_emotions": {"joy": 0.3},
+            })
+
+            # ── Imports for real transition functions / spies             ──
+            from backend.emotional_domain import transition as real_e_transition
+            from backend.emotional_domain import AppraisalV1
+            from backend.relationship import (
+                transition_relationship as real_r_transition,
+                RelationshipStateV1,
+                RelationshipTransitionConfig,
+            )
+
+            emotional_appraisals: list = []
+            rel_appraisals: list = []
+            rel_results: list = []
+
+            def emotion_spy(*args, **kwargs):
+                ap = kwargs.get("appraisal", args[1] if len(args) > 1 else None)
+                emotional_appraisals.append(ap)
+                return real_e_transition(*args, **kwargs)
+
+            def rel_spy(*args, **kwargs):
+                ap = kwargs.get("appraisal", args[1] if len(args) > 1 else None)
+                rel_appraisals.append(ap)
+                result = real_r_transition(*args, **kwargs)
+                rel_results.append(result)
+                return result
+
+            with patch("backend.engine.transition", side_effect=emotion_spy) as m_e, \
+                 patch("backend.engine.transition_relationship", side_effect=rel_spy) as m_r:
+
+                resp, emotions = await engine.process_turn("new_user", "Hello")
+
+                # ── 1. First turn succeeds ────────────────────────────────
+                assert resp is not None
+
+                # ── 2. Profile created for authenticated user_id ──────────
+                insert_call = engine.memory_manager.supabase.table.return_value.insert.call_args
+                assert insert_call is not None
+                inserted = insert_call[0][0]
+                assert inserted["user_id"] == "new_user"
+
+                # ── 3 & 4 & 5. Both snapshots share turn timestamp ────────
+                assert inserted["emotional_state"]["timestamp"] == 100.0
+                assert inserted["relationship_state"]["timestamp"] == 100.0
+
+                # ── 6 & 7 & 8 & 9. Relationship payload invariants ────────
+                rel_payload = inserted["relationship_state"]
+                assert rel_payload["schema_version"] == 1
+                assert "user_id" not in rel_payload
+                assert "bond_label" not in rel_payload
+                assert "last_interaction" not in rel_payload
+
+                # ── 10 & 11. Exactly one transition call each ─────────────
+                assert m_e.call_count == 1
+                assert m_r.call_count == 1
+
+                # ── 12 & 13. Same AppraisalV1 object by identity ──────────
+                emotional_appraisal = emotional_appraisals[0]
+                rel_appraisal = rel_appraisals[0]
+                assert emotional_appraisal is rel_appraisal
+                assert isinstance(emotional_appraisal, AppraisalV1)
+                assert not isinstance(emotional_appraisal, dict)
+
+                # ── 14. sync_state receives the transition result ─────────
+                assert len(rel_results) == 1
+                args_sync, _ = engine.memory_manager.sync_state.call_args
+                assert args_sync[2] is rel_results[0]
+
+                # ── Current time is 100.0 (first clock call) ──────────────
+                assert m_r.call_args[1]["current_time"] == 100.0
+                assert m_e.call_args[1]["current_time"] == 100.0
+
+                # ── Config type check ─────────────────────────────────────
+                assert isinstance(m_r.call_args[1]["config"], RelationshipTransitionConfig)
+                assert isinstance(m_r.call_args[1]["previous_state"], RelationshipStateV1)
+
+        asyncio.run(run())
+
 
 class TestSanitisedLogging:
     """Fallback logs contain only event and code, never sensitive markers."""

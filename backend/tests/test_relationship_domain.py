@@ -1001,6 +1001,79 @@ class TestNewProfileDefault:
         assert reconstructed.trust == 0.5
         assert reconstructed.timestamp == FIXED_CLOCK
 
+    def test_get_default_state_with_explicit_timestamp(self):
+        """Both emotional and relationship snapshots use the given timestamp."""
+        mm = MemoryManager(clock=lambda: FIXED_CLOCK)
+        mm.supabase = None
+        state = mm._get_default_state("user", timestamp=123.0)
+        assert state["emotional_state"]["timestamp"] == 123.0
+        assert state["relationship_state"]["timestamp"] == 123.0
+
+    def test_get_default_state_fallback_clock_called_once(self):
+        """Without explicit timestamp, clock() is called exactly once and shared."""
+        call_count = 0
+
+        def advancing_clock():
+            nonlocal call_count
+            call_count += 1
+            return 100.0
+
+        mm = MemoryManager(clock=advancing_clock)
+        mm.supabase = None
+        state = mm._get_default_state("user")
+        assert call_count == 1
+        assert state["emotional_state"]["timestamp"] == 100.0
+        assert state["relationship_state"]["timestamp"] == 100.0
+
+    def test_existing_user_does_not_create_new_profile(self):
+        """When select returns existing profile, insert is not called."""
+        from unittest.mock import MagicMock
+        mm = MemoryManager(clock=lambda: FIXED_CLOCK)
+        mm.supabase = MagicMock()
+        mock_select = MagicMock(
+            data=[{
+                "user_id": "existing",
+                "persona_config": "...",
+                "user_profile": {},
+                "relationship_state": {},
+                "emotional_state": {},
+            }],
+            error=None,
+        )
+        mm.supabase.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_select
+
+        state = mm.load_user_state("existing")
+        # Insert must NOT have been called — existing profile was returned
+        mm.supabase.table.return_value.insert.assert_not_called()
+        assert state is not None
+
+    def test_existing_missing_relationship_returns_empty_dict(self):
+        """Existing profile without relationship_state key returns {} for it.
+
+        The engine code handles this by creating ``RelationshipStateV1.neutral()``
+        when ``rel_data`` is falsy.
+        """
+        from unittest.mock import MagicMock
+        mm = MemoryManager(clock=lambda: FIXED_CLOCK)
+        mm.supabase = MagicMock()
+        mock_select = MagicMock(
+            data=[{
+                "user_id": "existing",
+                "persona_config": "...",
+                "user_profile": {},
+                # relationship_state key is absent
+                "emotional_state": {},
+            }],
+            error=None,
+        )
+        mm.supabase.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_select
+
+        state = mm.load_user_state("existing")
+        rel_data = state.get("relationship_state")
+        # {}.get("relationship_state") or {} → {} (falsy → engine will create neutral)
+        assert rel_data == {}
+        assert "user_id" not in rel_data
+
     def test_new_profile_insert_payload(self):
         """Verify the payload sent to Supabase insert on new profile creation."""
         from unittest.mock import MagicMock

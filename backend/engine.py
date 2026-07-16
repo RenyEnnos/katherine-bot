@@ -141,7 +141,10 @@ class ConversationEngine:
 
             # 1. Load State from Supabase (Offloaded to thread)
             # Raises StateLoadError on DB failure
-            user_state = await asyncio.to_thread(self.memory_manager.load_user_state, user_id)
+            # Pass current_time so new profile snapshots use the same timestamp as the turn
+            user_state = await asyncio.to_thread(
+                self.memory_manager.load_user_state, user_id, default_timestamp=current_time
+            )
 
             # Migration boundary: legacy or v1 snapshot → EmotionalStateV1
             raw_emotional_state = user_state.get("emotional_state", {})

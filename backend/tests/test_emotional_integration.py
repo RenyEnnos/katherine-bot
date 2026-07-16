@@ -606,59 +606,47 @@ class TestSingleRelationshipTransition:
                 RelationshipTransitionConfig,
             )
 
-            # Use a tracking spy that captures the actual return value
+            # Tracking spy that captures the actual return value
             captured_results = []
             def tracking_spy(*args, **kwargs):
                 result = real_transition(*args, **kwargs)
                 captured_results.append(result)
                 return result
 
-            with patch("backend.engine.transition_relationship", side_effect=tracking_spy):
+            with patch("backend.engine.transition_relationship", side_effect=tracking_spy) as mock_transition:
                 resp, emotions = await engine.process_turn("user", "Hello")
 
-            # Exactly one call
-            assert len(captured_results) == 1
+                # Exactly one call
+                assert len(captured_results) == 1
+                assert mock_transition.call_count == 1
 
-            # Inspect call arguments
-            call_kwargs = tracking_spy.captured_kwargs if hasattr(tracking_spy, 'captured_kwargs') else {}
-            # We need to capture args properly - use the patch's call_args
-            import backend.engine as eng_mod
-            # Actually, accessing through the module directly since we patched at module level
-            from unittest.mock import ANY
-            mock_transition = eng_mod.transition_relationship
+                # Inspect arguments from the mock (inside the with block while patch is active)
+                call_kwargs = mock_transition.call_args[1]
 
-            # Exactly one call
-            assert mock_transition.call_count == 1
+                previous_state = call_kwargs.get("previous_state")
+                appraisal = call_kwargs.get("appraisal")
+                current_time = call_kwargs.get("current_time")
+                config = call_kwargs.get("config")
 
-            # Inspect arguments
-            call_kwargs = mock_transition.call_args[1]
-            previous_state = call_kwargs.get("previous_state")
-            appraisal = call_kwargs.get("appraisal")
-            current_time = call_kwargs.get("current_time")
-            config = call_kwargs.get("config")
+                assert isinstance(previous_state, RelationshipStateV1)
 
-            # previous_state is RelationshipStateV1
-            assert isinstance(previous_state, RelationshipStateV1)
+                from backend.emotional_domain import AppraisalV1
+                assert isinstance(appraisal, AppraisalV1)
+                assert isinstance(appraisal.valence_shift, float)
 
-            # appraisal is the same AppraisalV1 from parser (not a dict)
-            from backend.emotional_domain import AppraisalV1
-            assert isinstance(appraisal, AppraisalV1)
-            assert isinstance(appraisal.valence_shift, float)
+                # No intermediate dict adapter — AppraisalV1 is passed directly
+                assert not isinstance(appraisal, dict)
 
-            # No intermediate dict adapter
-            assert not isinstance(appraisal, dict)
+                # current_time matches injected clock
+                assert current_time == FIXED_CLOCK
 
-            # current_time matches injected clock
-            assert current_time == FIXED_CLOCK
+                # config is RelationshipTransitionConfig
+                assert isinstance(config, RelationshipTransitionConfig)
 
-            # config is RelationshipTransitionConfig
-            assert isinstance(config, RelationshipTransitionConfig)
-
-            # The result of this single call is the relationship delivered to sync_state
-            assert len(captured_results) == 1
-            args_sync, _ = engine.memory_manager.sync_state.call_args
-            sync_rel = args_sync[2]
-            assert sync_rel is captured_results[0]
+                # The result of this single call is the relationship delivered to sync_state
+                args_sync, _ = engine.memory_manager.sync_state.call_args
+                sync_rel = args_sync[2]
+                assert sync_rel is captured_results[0]
 
         asyncio.run(run())
 

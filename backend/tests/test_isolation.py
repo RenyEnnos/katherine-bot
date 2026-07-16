@@ -210,7 +210,8 @@ def test_lock_cleanup_on_cancellation_during_thread_work():
             load_finished = True
             return {
                 "emotional_state": _legacy_emotion_dict(),
-                "relationship_state": RelationshipStateV1.neutral(timestamp=time.time()).to_dict()
+                # Use a fixed low timestamp to avoid clock regression with real time.time() clock
+                "relationship_state": RelationshipStateV1.neutral(timestamp=500.0).to_dict()
             }
 
         engine.memory_manager.load_user_state = MagicMock(side_effect=mock_load)
@@ -407,7 +408,8 @@ def test_lock_cleanup_on_repeated_cancellation_during_thread_work():
             load_finished = True
             return {
                 "emotional_state": _legacy_emotion_dict(),
-                "relationship_state": RelationshipStateV1.neutral(timestamp=time.time()).to_dict()
+                # Use a fixed low timestamp to avoid clock regression with real time.time() clock
+                "relationship_state": RelationshipStateV1.neutral(timestamp=500.0).to_dict()
             }
 
         engine.memory_manager.load_user_state = MagicMock(side_effect=mock_load)

@@ -595,58 +595,77 @@ class TestJSONBPersistence:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestSingleRelationshipTransition:
-    """Proves exactly one transition_relationship call per successful turn."""
+    """Proves exactly one transition_relationship call per successful turn
+    and that both transition() and transition_relationship() receive the
+    SAME AppraisalV1 object (by identity, not equality).
+    """
 
     def test_one_transition_relationship_per_turn(self):
         async def run():
             engine = _make_engine()
+            from backend.emotional_domain import transition as real_emotion_transition
+            from backend.emotional_domain import AppraisalV1
             from backend.relationship import (
-                transition_relationship as real_transition,
+                transition_relationship as real_rel_transition,
                 RelationshipStateV1,
                 RelationshipTransitionConfig,
             )
 
-            # Tracking spy that captures the actual return value
-            captured_results = []
-            def tracking_spy(*args, **kwargs):
-                result = real_transition(*args, **kwargs)
-                captured_results.append(result)
+            # Tracking spies that capture the appraisal objects
+            emotional_appraisals = []
+            def emotion_tracking_spy(*args, **kwargs):
+                emotional_appraisals.append(kwargs.get("appraisal", args[1] if len(args) > 1 else None))
+                return real_emotion_transition(*args, **kwargs)
+
+            rel_captured_results = []
+            rel_appraisals = []
+            def rel_tracking_spy(*args, **kwargs):
+                rel_appraisals.append(kwargs.get("appraisal", args[1] if len(args) > 1 else None))
+                result = real_rel_transition(*args, **kwargs)
+                rel_captured_results.append(result)
                 return result
 
-            with patch("backend.engine.transition_relationship", side_effect=tracking_spy) as mock_transition:
+            with patch("backend.engine.transition", side_effect=emotion_tracking_spy) as mock_emotion, \
+                 patch("backend.engine.transition_relationship", side_effect=rel_tracking_spy) as mock_rel:
+
                 resp, emotions = await engine.process_turn("user", "Hello")
 
-                # Exactly one call
-                assert len(captured_results) == 1
-                assert mock_transition.call_count == 1
+                # ── Exactly one call each ────────────────────────────────────
+                assert mock_emotion.call_count == 1
+                assert mock_rel.call_count == 1
 
-                # Inspect arguments from the mock (inside the with block while patch is active)
-                call_kwargs = mock_transition.call_args[1]
+                # ── Both receive the same AppraisalV1 object (identity, not value) ──
+                emotional_appraisal = emotional_appraisals[0]
+                rel_appraisal = rel_appraisals[0]
+                assert emotional_appraisal is rel_appraisal, (
+                    "transition() and transition_relationship() must receive "
+                    "the SAME AppraisalV1 object, not two equal copies."
+                )
 
-                previous_state = call_kwargs.get("previous_state")
-                appraisal = call_kwargs.get("appraisal")
-                current_time = call_kwargs.get("current_time")
-                config = call_kwargs.get("config")
+                # ── AppraisalV1 is not a dict ────────────────────────────────
+                assert isinstance(emotional_appraisal, AppraisalV1)
+                assert not isinstance(emotional_appraisal, dict)
 
-                assert isinstance(previous_state, RelationshipStateV1)
+                # ── Inspect relationship transition arguments ────────────────
+                rel_kwargs = mock_rel.call_args[1]
+                rel_previous_state = rel_kwargs.get("previous_state")
+                rel_current_time = rel_kwargs.get("current_time")
+                rel_config = rel_kwargs.get("config")
 
-                from backend.emotional_domain import AppraisalV1
-                assert isinstance(appraisal, AppraisalV1)
-                assert isinstance(appraisal.valence_shift, float)
-
-                # No intermediate dict adapter — AppraisalV1 is passed directly
-                assert not isinstance(appraisal, dict)
+                assert isinstance(rel_previous_state, RelationshipStateV1)
+                assert isinstance(rel_config, RelationshipTransitionConfig)
 
                 # current_time matches injected clock
-                assert current_time == FIXED_CLOCK
+                assert rel_current_time == FIXED_CLOCK
+                # Also verify emotional transition receives the same clock
+                emotion_kwargs = mock_emotion.call_args[1]
+                assert emotion_kwargs.get("current_time") == FIXED_CLOCK
 
-                # config is RelationshipTransitionConfig
-                assert isinstance(config, RelationshipTransitionConfig)
-
-                # The result of this single call is the relationship delivered to sync_state
+                # ── The result is delivered to sync_state ────────────────────
+                assert len(rel_captured_results) == 1
                 args_sync, _ = engine.memory_manager.sync_state.call_args
                 sync_rel = args_sync[2]
-                assert sync_rel is captured_results[0]
+                assert sync_rel is rel_captured_results[0]
 
         asyncio.run(run())
 

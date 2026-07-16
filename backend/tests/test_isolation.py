@@ -91,7 +91,7 @@ def test_identity_binding():
         assert args[0] == auth_id
         # The relationship is now RelationshipStateV1 (no user_id field)
         # Identity is verified by the user_id argument, not from the state
-        assert args[0] == auth_id
+        assert isinstance(args[2], RelationshipStateV1)
     asyncio.run(run_test())
 
 def test_fail_closed_load():

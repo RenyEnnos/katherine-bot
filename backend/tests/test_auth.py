@@ -320,7 +320,7 @@ def test_http_chat_persistence_failure_sanitization(client_app, mock_supabase, c
     # Mock load_user_state to succeed
     engine.memory_manager.load_user_state = MagicMock(return_value={
         "emotional_state": EmotionalState().to_dict(),
-        "relationship_state": RelationshipStateV1.neutral(timestamp=time.time()).to_dict()
+        "relationship_state": RelationshipStateV1.neutral(timestamp=1700000000.0).to_dict()
     })
 
     # Mock sync_state (update) to raise a sensitive exception

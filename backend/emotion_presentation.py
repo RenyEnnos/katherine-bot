@@ -30,6 +30,12 @@ from .emotional_domain.models import (
 )
 
 
+# ─── Domain error for presentation layer ────────────────────────────────────
+
+class PresentationError(ValueError):
+    """Raised when a presentation-layer invariant is violated."""
+
+
 # ─── Schema version ──────────────────────────────────────────────────────────
 
 PUBLIC_EMOTION_SCHEMA_VERSION: int = 1
@@ -174,6 +180,14 @@ class EmotionStateResponse(BaseModel):
     def _limit_to_three(cls, value: List[PublicDominantEmotion]) -> List[PublicDominantEmotion]:
         if len(value) > 3:
             raise ValueError("At most 3 dominant emotions are allowed per the public contract.")
+        # Reject duplicate emotion names
+        seen = set()
+        for item in value:
+            if item.name in seen:
+                raise ValueError(
+                    f"Duplicate dominant emotion '{item.name}' is not allowed."
+                )
+            seen.add(item.name)
         return value
 
     @field_validator("timestamp", mode="before")
@@ -211,6 +225,20 @@ def project_public_emotion(
 
     It does NOT mutate either input.
     """
+    # Validate inputs — fail predictably before AttributeError can escape
+    if state is None:
+        raise PresentationError("state cannot be None.")
+    if appraisal is None:
+        raise PresentationError("appraisal cannot be None.")
+    if not isinstance(state, EmotionalStateV1):
+        raise TypeError(
+            f"state must be an EmotionalStateV1, got {type(state).__name__}."
+        )
+    if not isinstance(appraisal, AppraisalV1):
+        raise TypeError(
+            f"appraisal must be an AppraisalV1, got {type(appraisal).__name__}."
+        )
+
     # 1. Mood label from PAD
     mood_label = classify_pad_mood(state.pleasure, state.arousal, state.dominance)
 

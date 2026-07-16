@@ -324,12 +324,6 @@ test('validateEmotionState: duplicate emotion names returns null', () => {
     assert.strictEqual(validateEmotionState(payload), null);
 });
 
-test('validateEmotionState: schema_version preserved in result', () => {
-    const result = validateEmotionState(VALID_PAYLOAD);
-    assert(result !== null);
-    assert.strictEqual(result.schema_version, 1);
-});
-
 // ─── validateEmotionState: canonical emotion names accepted ─────────────────
 
 test('validateEmotionState: all canonical names accepted', () => {
@@ -362,10 +356,73 @@ test('getEmotionLabel: another known emotion', () => {
     assert.strictEqual(getEmotionLabel('anger'), 'Raiva');
 });
 
-test('getEmotionLabel: unknown emotion falls back to name', () => {
-    assert.strictEqual(getEmotionLabel('unknown_emotion'), 'unknown_emotion');
+test('getEmotionLabel: unknown emotion returns null', () => {
+    assert.strictEqual(getEmotionLabel('unknown_emotion'), null);
 });
 
-test('getEmotionLabel: empty string', () => {
-    assert.strictEqual(getEmotionLabel(''), '');
+test('getEmotionLabel: empty string returns null', () => {
+    assert.strictEqual(getEmotionLabel(''), null);
+});
+
+test('getEmotionLabel: null returns null', () => {
+    assert.strictEqual(getEmotionLabel(null), null);
+});
+
+test('getEmotionLabel: number returns null', () => {
+    assert.strictEqual(getEmotionLabel(42), null);
+});
+
+// ─── validateEmotionState: reference isolation (defensive copy) ──────────
+
+test('validateEmotionState does not share reference with original payload', () => {
+    const original = {
+        schema_version: 1,
+        mood_label: 'NEUTRA',
+        pad: { pleasure: 0, arousal: 0, dominance: 0 },
+        dominant_emotions: [{ name: 'joy', intensity: 0.8 }],
+        timestamp: 1700000000,
+    };
+    const result = validateEmotionState(original);
+    assert(result !== null);
+
+    // Modifying the original should not affect the result
+    original.dominant_emotions[0].name = 'anger';
+    original.dominant_emotions[0].intensity = 0.5;
+    original.dominant_emotions.push({ name: 'fear', intensity: 0.9 });
+
+    assert.strictEqual(result.dominant_emotions.length, 1);
+    assert.strictEqual(result.dominant_emotions[0].name, 'joy');
+    assert.strictEqual(result.dominant_emotions[0].intensity, 0.8);
+});
+
+test('validateEmotionState: schema_version preserved as 1 in result', () => {
+    const payload = {
+        schema_version: 1,
+        mood_label: 'NEUTRA',
+        pad: { pleasure: 0, arousal: 0, dominance: 0 },
+        dominant_emotions: [{ name: 'joy', intensity: 0.8 }],
+        timestamp: 1700000000,
+    };
+    const result = validateEmotionState(payload);
+    assert(result !== null);
+    assert.strictEqual(result.schema_version, 1);
+});
+
+test('validateEmotionState: clearing previous state from invalid response', () => {
+    // Simulate: previous state was valid, new response is invalid
+    const validResponse = {
+        schema_version: 1,
+        mood_label: 'NEUTRA',
+        pad: { pleasure: 0, arousal: 0, dominance: 0 },
+        dominant_emotions: [{ name: 'joy', intensity: 0.8 }],
+        timestamp: 1700000000,
+    };
+    const validated = validateEmotionState(validResponse);
+    assert(validated !== null);
+
+    // Now an invalid response comes in — should clear
+    assert.strictEqual(validateEmotionState(null), null);
+    assert.strictEqual(validateEmotionState(undefined), null);
+    assert.strictEqual(validateEmotionState({}), null);
+    assert.strictEqual(validateEmotionState({ schema_version: 2 }), null);
 });

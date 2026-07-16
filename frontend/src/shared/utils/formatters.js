@@ -85,11 +85,18 @@ export const validateEmotionState = (payload) => {
     // Valid timestamp
     if (typeof payload.timestamp !== 'number' || !Number.isFinite(payload.timestamp)) return null;
 
+    // Deep-copy dominant_emotions to avoid sharing references with the outside payload.
+    // Each emotion object is reconstructed so mutations to the original payload have
+    // no effect on the validated result.
+    const clonedEmotions = payload.dominant_emotions.map(
+        (item) => ({ name: item.name, intensity: item.intensity })
+    );
+
     return {
         schema_version: 1,
         pad: { pleasure, arousal, dominance },
         mood_label: payload.mood_label,
-        dominant_emotions: payload.dominant_emotions,
+        dominant_emotions: clonedEmotions,
         timestamp: payload.timestamp,
     };
 };
@@ -115,6 +122,10 @@ export const EMOTION_LABELS = {
 
 /**
  * Get the display label for a canonical emotion name.
- * Falls back to the canonical name if not found in the map.
+ * Returns null if the name is not a known canonical emotion.
+ * This ensures unknown/untrusted payload names are never rendered as raw text.
  */
-export const getEmotionLabel = (name) => EMOTION_LABELS[name] || name;
+export const getEmotionLabel = (name) => {
+    if (!name || typeof name !== 'string') return null;
+    return EMOTION_LABELS[name] || null;
+};

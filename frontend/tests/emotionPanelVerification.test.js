@@ -2,201 +2,308 @@
 process.env.NODE_ENV = 'test';
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { readFileSync, existsSync } from 'fs';
-import { resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import EmotionPanel from '../src/features/chat/components/EmotionPanel.jsx';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = resolve(__dirname, '..');
-const EMOTION_PANEL_PATH = resolve(PROJECT_ROOT, 'src/features/chat/components/EmotionPanel.jsx');
-const USE_CHAT_PATH = resolve(PROJECT_ROOT, 'src/features/chat/hooks/useChat.js');
+// ─── Helpers ────────────────────────────────────────────────────────────────
 
-// Verify the files exist before reading
-if (!existsSync(EMOTION_PANEL_PATH)) {
-    throw new Error(`EmotionPanel file not found at: ${EMOTION_PANEL_PATH}`);
-}
-if (!existsSync(USE_CHAT_PATH)) {
-    throw new Error(`useChat file not found at: ${USE_CHAT_PATH}`);
-}
+const NEUTRAL_PAYLOAD = {
+    schema_version: 1,
+    mood_label: 'NEUTRA',
+    pad: { pleasure: 0, arousal: 0, dominance: 0 },
+    dominant_emotions: [],
+    timestamp: 1700000000,
+};
 
-const emotionPanelSource = readFileSync(EMOTION_PANEL_PATH, 'utf-8');
-const useChatSource = readFileSync(USE_CHAT_PATH, 'utf-8');
+const renderPanel = (props = {}) => {
+    return renderToStaticMarkup(React.createElement(EmotionPanel, props));
+};
 
-// ─── Verify EmotionPanel doesn't reference forbidden fields ─────────────────
+// ─── 1. Null payload ───────────────────────────────────────────────────────
 
-test('EmotionPanel does not reference acting_instruction', () => {
-    const hasActingInstruction = emotionPanelSource.includes('acting_instruction');
-    assert.strictEqual(hasActingInstruction, false,
-        'EmotionPanel should not reference acting_instruction');
+test('null emotionState does not render the panel', () => {
+    const html = renderPanel({ emotionState: null });
+    assert.strictEqual(html, '');
 });
 
-test('EmotionPanel does not reference coping_mode', () => {
-    const hasCopingMode = emotionPanelSource.includes('coping_mode');
-    assert.strictEqual(hasCopingMode, false,
-        'EmotionPanel should not reference coping_mode');
+test('undefined emotionState does not render the panel', () => {
+    const html = renderPanel({ emotionState: undefined });
+    assert.strictEqual(html, '');
 });
 
-test('EmotionPanel does not reference libido', () => {
-    const hasLibido = emotionPanelSource.includes('libido');
-    assert.strictEqual(hasLibido, false,
-        'EmotionPanel should not reference libido');
+test('emotionState without pad does not render the panel', () => {
+    const html = renderPanel({ emotionState: { ...NEUTRAL_PAYLOAD, pad: null } });
+    assert.strictEqual(html, '');
 });
 
-test('EmotionPanel does not reference aggression', () => {
-    const hasAggression = emotionPanelSource.includes('aggression');
-    assert.strictEqual(hasAggression, false,
-        'EmotionPanel should not reference aggression');
+// ─── 2. Empty dominant_emotions ─────────────────────────────────────────────
+
+test('empty dominant_emotions renders PAD without emotion badges', () => {
+    const html = renderPanel({ emotionState: NEUTRAL_PAYLOAD });
+    // Should contain progress bars
+    assert.ok(html.includes('role="progressbar"'), 'Should render progress bars');
+    // Should NOT contain emotion badge spans (text-gray-200 is unique to badges)
+    assert.ok(!html.includes('text-gray-200'), 'Should not render emotion badges');
+    // Should not contain percent values from badges (only from PAD labels)
+    assert.ok(!html.includes('Alegria'), 'Should not render emotion labels');
 });
 
-test('EmotionPanel uses dominant_emotions array instead of flat fields', () => {
-    assert.ok(emotionPanelSource.includes('dominant_emotions'),
-        'EmotionPanel should reference dominant_emotions');
-    // The panel should read from dominant_emotions array, not flat fields like joy, sadness, etc.
-    const forbiddenTopLevelEmotions = [
-        'emotionState.joy', 'emotionState.sadness', 'emotionState.anger',
-        'emotionState.fear', 'emotionState.disgust',
-    ];
-    for (const field of forbiddenTopLevelEmotions) {
-        assert.strictEqual(emotionPanelSource.includes(field), false,
-            `EmotionPanel should not reference '${field}' directly`);
+// ─── 3. PAD -1, 0, 1 produces 0, 50, 100 percent ───────────────────────────
+
+test('PAD -1 produces 0% for each dimension', () => {
+    const html = renderPanel({
+        emotionState: {
+            ...NEUTRAL_PAYLOAD,
+            pad: { pleasure: -1, arousal: -1, dominance: -1 },
+        },
+    });
+    // aria-valuenow should be 0 for all PAD bars
+    const nows = [...html.matchAll(/aria-valuenow="(\d+)"/g)].map(m => parseInt(m[1], 10));
+    assert.ok(nows.every(v => v === 0), `All aria-valuenow should be 0, got ${nows}`);
+});
+
+test('PAD 0 produces 50% for each dimension', () => {
+    const html = renderPanel({
+        emotionState: {
+            ...NEUTRAL_PAYLOAD,
+            pad: { pleasure: 0, arousal: 0, dominance: 0 },
+        },
+    });
+    const nows = [...html.matchAll(/aria-valuenow="(\d+)"/g)].map(m => parseInt(m[1], 10));
+    assert.ok(nows.every(v => v === 50), `All aria-valuenow should be 50, got ${nows}`);
+});
+
+test('PAD 1 produces 100% for each dimension', () => {
+    const html = renderPanel({
+        emotionState: {
+            ...NEUTRAL_PAYLOAD,
+            pad: { pleasure: 1, arousal: 1, dominance: 1 },
+        },
+    });
+    const nows = [...html.matchAll(/aria-valuenow="(\d+)"/g)].map(m => parseInt(m[1], 10));
+    assert.ok(nows.every(v => v === 100), `All aria-valuenow should be 100, got ${nows}`);
+});
+
+// ─── 4. ARIA progress bar attributes ────────────────────────────────────────
+
+test('progress bars have role="progressbar"', () => {
+    const html = renderPanel({ emotionState: NEUTRAL_PAYLOAD });
+    const bars = html.match(/role="progressbar"/g);
+    assert.strictEqual(bars && bars.length, 3, 'Should have 3 progress bars');
+});
+
+test('progress bars have aria-valuemin="0"', () => {
+    const html = renderPanel({ emotionState: NEUTRAL_PAYLOAD });
+    const mins = html.match(/aria-valuemin="0"/g);
+    assert.ok(mins && mins.length === 3, 'All 3 bars should have aria-valuemin="0"');
+});
+
+test('progress bars have aria-valuemax="100"', () => {
+    const html = renderPanel({ emotionState: NEUTRAL_PAYLOAD });
+    assert.ok(html.includes('aria-valuemax="100"'), 'Should have aria-valuemax="100"');
+});
+
+test('progress bars have aria-valuenow with correct value', () => {
+    const html = renderPanel({
+        emotionState: {
+            ...NEUTRAL_PAYLOAD,
+            pad: { pleasure: 0.5, arousal: -0.3, dominance: 0.8 },
+        },
+    });
+    // pleasure 0.5 -> 75, arousal -0.3 -> 35, dominance 0.8 -> 90
+    assert.ok(html.includes('aria-valuenow="75"'), 'pleasure=0.5 should show 75');
+    assert.ok(html.includes('aria-valuenow="35"'), 'arousal=-0.3 should show 35');
+    assert.ok(html.includes('aria-valuenow="90"'), 'dominance=0.8 should show 90');
+});
+
+test('progress bars are associated to a labelledby ID', () => {
+    const html = renderPanel({ emotionState: NEUTRAL_PAYLOAD });
+    // Each bar has aria-labelledby pointing to an ID
+    assert.ok(html.includes('aria-labelledby="emotion-label-'), 'Should have aria-labelledby');
+    // All IDs are present and referenced
+    const labels = ['Prazer', 'Energia', 'Dominância'];
+    for (const label of labels) {
+        assert.ok(html.includes(label), `Should contain label "${label}"`);
     }
 });
 
-test('EmotionPanel reads PAD from nested pad object', () => {
-    assert.ok(emotionPanelSource.includes('pad[') || emotionPanelSource.includes('.pad.'),
-        'EmotionPanel should read PAD values from nested pad object');
+// ─── 5. Width clamping ─────────────────────────────────────────────────────
+
+test('width percent is never below 0% or above 100%', () => {
+    const extremePayload = {
+        ...NEUTRAL_PAYLOAD,
+        pad: { pleasure: -10, arousal: 10, dominance: -999 },
+    };
+    const html = renderPanel({ emotionState: extremePayload });
+    const widths = [...html.matchAll(/style="width:\s*([\d.]+)%"/g)].map(m => parseFloat(m[1]));
+    for (const w of widths) {
+        assert.ok(w >= 0 && w <= 100, `Width ${w}% should be in [0, 100]`);
+    }
 });
 
-test('EmotionPanel uses bipolarToPercent helper', () => {
-    assert.ok(emotionPanelSource.includes('bipolarToPercent'),
-        'EmotionPanel should use bipolarToPercent for PAD values');
+// ─── 6. Emotions in received order ─────────────────────────────────────────
+
+test('emotions appear in received order', () => {
+    const payload = {
+        ...NEUTRAL_PAYLOAD,
+        dominant_emotions: [
+            { name: 'joy', intensity: 0.8 },
+            { name: 'sadness', intensity: 0.5 },
+        ],
+    };
+    const html = renderPanel({ emotionState: payload });
+    const joyIndex = html.indexOf('Alegria');
+    const sadnessIndex = html.indexOf('Tristeza');
+    assert.ok(joyIndex >= 0, 'Should contain Alegria');
+    assert.ok(sadnessIndex >= 0, 'Should contain Tristeza');
+    assert.ok(joyIndex < sadnessIndex, 'Alegria should appear before Tristeza');
 });
 
-test('EmotionPanel uses intensityToPercent helper', () => {
-    assert.ok(emotionPanelSource.includes('intensityToPercent'),
-        'EmotionPanel should use intensityToPercent for emotion intensities');
+// ─── 7. At most 3 emotions rendered ────────────────────────────────────────
+
+test('at most 3 emotions are rendered even if payload has 5', () => {
+    const payload = {
+        ...NEUTRAL_PAYLOAD,
+        dominant_emotions: [
+            { name: 'joy', intensity: 0.9 },
+            { name: 'anger', intensity: 0.8 },
+            { name: 'sadness', intensity: 0.7 },
+            { name: 'fear', intensity: 0.6 },
+            { name: 'disgust', intensity: 0.5 },
+        ],
+    };
+    const html = renderPanel({ emotionState: payload });
+    // Count occurrences of known labels
+    const labelCount = (html.match(/(Alegria|Raiva|Tristeza|Medo|Nojo)/g) || []).length;
+    assert.strictEqual(labelCount, 3, 'Should render exactly 3 emotions');
 });
 
-// ─── Behavioral: formatter functions (ARIA compliance) ──────────────────────
-
-test('bipolarToPercent output is always between 0 and 100 (ARIA compliance)', () => {
-    return import('../src/shared/utils/formatters.js').then(({ bipolarToPercent }) => {
-        const testValues = [-2, -1, -0.5, 0, 0.5, 1, 2, NaN, Infinity, -Infinity, null, undefined, 'string'];
-        for (const val of testValues) {
-            const result = bipolarToPercent(val);
-            assert.ok(result >= 0 && result <= 100,
-                `bipolarToPercent(${val}) = ${result} should be in [0, 100]`);
-        }
-    });
+test('exactly 3 emotions renders all 3', () => {
+    const payload = {
+        ...NEUTRAL_PAYLOAD,
+        dominant_emotions: [
+            { name: 'joy', intensity: 0.9 },
+            { name: 'anger', intensity: 0.8 },
+            { name: 'sadness', intensity: 0.7 },
+        ],
+    };
+    const html = renderPanel({ emotionState: payload });
+    const labelCount = (html.match(/(Alegria|Raiva|Tristeza)/g) || []).length;
+    assert.strictEqual(labelCount, 3, 'Should render all 3 emotions');
 });
 
-test('intensityToPercent output is always between 0 and 100 (ARIA compliance)', () => {
-    return import('../src/shared/utils/formatters.js').then(({ intensityToPercent }) => {
-        const testValues = [-1, -0.5, 0, 0.5, 1, 1.5, NaN, Infinity, -Infinity, null, undefined, 'string'];
-        for (const val of testValues) {
-            const result = intensityToPercent(val);
-            assert.ok(result >= 0 && result <= 100,
-                `intensityToPercent(${val}) = ${result} should be in [0, 100]`);
-        }
-    });
+// ─── 8. Unknown emotion name not in HTML ───────────────────────────────────
+
+test('unknown emotion name does not appear as raw text', () => {
+    const payload = {
+        ...NEUTRAL_PAYLOAD,
+        dominant_emotions: [
+            { name: 'joy', intensity: 0.8 },
+            { name: 'non_existent_emotion', intensity: 0.7 },
+            { name: 'anger', intensity: 0.6 },
+        ],
+    };
+    const html = renderPanel({ emotionState: payload });
+    // Joy and Anger should be rendered
+    assert.ok(html.includes('Alegria'), 'Should render known emotion');
+    assert.ok(html.includes('Raiva'), 'Should render known emotion');
+    // Unknown emotion name should NOT appear
+    assert.ok(!html.includes('non_existent_emotion'), 'Unknown name should not appear');
 });
 
-test('EmotionPanel has role="progressbar" ARIA attributes', () => {
-    assert.ok(emotionPanelSource.includes('role="progressbar"'),
-        'EmotionPanel should include role="progressbar"');
-    assert.ok(emotionPanelSource.includes('aria-valuenow'),
-        'EmotionPanel should include aria-valuenow');
-    assert.ok(emotionPanelSource.includes('aria-valuemin'),
-        'EmotionPanel should include aria-valuemin');
-    assert.ok(emotionPanelSource.includes('aria-valuemax="100"'),
-        'EmotionPanel should include aria-valuemax="100"');
+// ─── 9. Forbidden fields not rendered ──────────────────────────────────────
+
+test('acting_instruction does not appear in HTML even if present in adversarial object', () => {
+    const adversarial = {
+        ...NEUTRAL_PAYLOAD,
+        acting_instruction: 'secret',
+        coping_mode: 'MANIC',
+        libido: 0.9,
+        aggression: 0.8,
+    };
+    const html = renderPanel({ emotionState: adversarial });
+    assert.ok(!html.includes('secret'), 'acting_instruction should not appear');
+    assert.ok(!html.includes('MANIC'), 'coping_mode should not appear');
+    assert.ok(!html.includes('libido'), 'libido should not appear');
+    assert.ok(!html.includes('aggression'), 'aggression should not appear');
 });
 
-// ─── Behavioral: validateEmotionState integration tests ─────────────────────
+// ─── 10. Intensity converted 0..1 to 0..100 ────────────────────────────────
 
-test('validateEmotionState is called on every response (source inspection)', () => {
-    assert.ok(useChatSource.includes('validateEmotionState'),
-        'useChat should call validateEmotionState');
+test('intensity 0 → 0% displayed', () => {
+    const payload = {
+        ...NEUTRAL_PAYLOAD,
+        dominant_emotions: [
+            { name: 'joy', intensity: 0 },
+        ],
+    };
+    const html = renderPanel({ emotionState: payload });
+    // Should be rendered with 0%
+    assert.ok(html.includes('Alegria 0%'), 'Should show 0% for zero intensity');
 });
 
-test('useChat always sets emotionState (even to null) on response', () => {
-    // Check that emotion_state is ALWAYS validated (not conditionally)
-    const guardedByIf = useChatSource.includes('if (data.emotion_state) {');
-    assert.strictEqual(guardedByIf, false,
-        'useChat should not guard emotion_state validation with an if check - always validate');
-    assert.ok(useChatSource.includes('setEmotionState(validated)'),
-        'useChat should always set emotionState (even to null)');
+test('intensity 0.5 → 50% displayed', () => {
+    const payload = {
+        ...NEUTRAL_PAYLOAD,
+        dominant_emotions: [
+            { name: 'joy', intensity: 0.5 },
+        ],
+    };
+    const html = renderPanel({ emotionState: payload });
+    assert.ok(html.includes('Alegria 50%'), 'Should show 50% for 0.5 intensity');
 });
 
-// ─── Behavioral: validateEmotionState pure function (extracted hook logic) ──
-
-test('validateEmotionState rejects invalid payload — pure function test', () => {
-    return import('../src/shared/utils/formatters.js').then(({ validateEmotionState }) => {
-        // Known invalid cases
-        assert.strictEqual(validateEmotionState(null), null);
-        assert.strictEqual(validateEmotionState(undefined), null);
-        assert.strictEqual(validateEmotionState([]), null);
-        assert.strictEqual(validateEmotionState({}), null);
-
-        // Valid payload
-        const valid = {
-            schema_version: 1,
-            mood_label: 'NEUTRA',
-            pad: { pleasure: 0, arousal: 0, dominance: 0 },
-            dominant_emotions: [],
-            timestamp: 1700000000,
-        };
-        assert.notStrictEqual(validateEmotionState(valid), null);
-
-        // Invalid: missing emotion_state (simulating missing backend data)
-        assert.strictEqual(validateEmotionState(undefined), null,
-            'undefined payload should return null — panel cleared');
-    });
+test('intensity 1 → 100% displayed', () => {
+    const payload = {
+        ...NEUTRAL_PAYLOAD,
+        dominant_emotions: [
+            { name: 'joy', intensity: 1 },
+        ],
+    };
+    const html = renderPanel({ emotionState: payload });
+    assert.ok(html.includes('Alegria 100%'), 'Should show 100% for max intensity');
 });
 
-test('validateEmotionState with more than 3 emotions returns null', () => {
-    return import('../src/shared/utils/formatters.js').then(({ validateEmotionState }) => {
-        const payload = {
-            schema_version: 1,
-            mood_label: 'NEUTRA',
-            pad: { pleasure: 0, arousal: 0, dominance: 0 },
-            dominant_emotions: [
-                { name: 'joy', intensity: 0.8 },
-                { name: 'anger', intensity: 0.7 },
-                { name: 'fear', intensity: 0.6 },
-                { name: 'sadness', intensity: 0.5 },
-            ],
-            timestamp: 1700000000,
-        };
-        assert.strictEqual(validateEmotionState(payload), null,
-            '>3 emotions should reject entire payload');
-    });
+test('intensity above 1 clamped to 100%', () => {
+    const payload = {
+        ...NEUTRAL_PAYLOAD,
+        dominant_emotions: [
+            { name: 'joy', intensity: 1.5 },
+        ],
+    };
+    const html = renderPanel({ emotionState: payload });
+    // intensityToPercent clamps to 100
+    assert.ok(html.includes('Alegria 100%'), 'Should clamp to 100%');
 });
 
-test('validateEmotionState with unknown emotion name returns null', () => {
-    return import('../src/shared/utils/formatters.js').then(({ validateEmotionState }) => {
-        const payload = {
-            schema_version: 1,
-            mood_label: 'NEUTRA',
-            pad: { pleasure: 0, arousal: 0, dominance: 0 },
-            dominant_emotions: [{ name: 'invalid_emotion', intensity: 0.5 }],
-            timestamp: 1700000000,
-        };
-        assert.strictEqual(validateEmotionState(payload), null,
-            'unknown emotion name should reject entire payload');
-    });
+test('intensity below 0 clamped to 0%', () => {
+    const payload = {
+        ...NEUTRAL_PAYLOAD,
+        dominant_emotions: [
+            { name: 'joy', intensity: -0.5 },
+        ],
+    };
+    const html = renderPanel({ emotionState: payload });
+    assert.ok(html.includes('Alegria 0%'), 'Should clamp to 0%');
 });
 
-test('EmotionPanel getEmotionLabel exposes canonical name for known emotion', () => {
-    return import('../src/shared/utils/formatters.js').then(({ getEmotionLabel, EMOTION_LABELS }) => {
-        // All defined emotions should have a display label
-        const knownEmotions = Object.keys(EMOTION_LABELS);
-        assert.ok(knownEmotions.length > 0, 'EMOTION_LABELS should have entries');
-        for (const name of knownEmotions) {
-            const label = getEmotionLabel(name);
-            assert.notStrictEqual(label, name,
-                `Known emotion '${name}' should have a translated label`);
-            assert.ok(label.length > 0, `Label for '${name}' should not be empty`);
-        }
-    });
+// ─── Integration: full valid payload rendering ──────────────────────────────
+
+test('full valid payload renders correctly', () => {
+    const payload = {
+        schema_version: 1,
+        mood_label: 'ALEGRE/EXCITADA',
+        pad: { pleasure: 0.6, arousal: 0.7, dominance: 0.2 },
+        dominant_emotions: [
+            { name: 'joy', intensity: 0.9 },
+            { name: 'trust', intensity: 0.6 },
+        ],
+        timestamp: 1700000000,
+    };
+    const html = renderPanel({ emotionState: payload });
+    assert.ok(html.includes('ALEGRE/EXCITADA'), 'Should render mood label');
+    assert.ok(html.includes('Alegria 90%'), 'Should render joy');
+    assert.ok(html.includes('Confiança 60%'), 'Should render trust');
+    assert.ok(html.includes('role="progressbar"'), 'Should have progress bars');
 });

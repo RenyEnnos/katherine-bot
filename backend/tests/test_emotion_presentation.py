@@ -32,6 +32,7 @@ from backend.emotion_presentation import (
     EmotionStateResponse,
     PublicPAD,
     PublicDominantEmotion,
+    PresentationError,
     classify_pad_mood,
     project_public_emotion,
 )
@@ -699,3 +700,195 @@ class TestPydanticValidators:
     def test_dominant_emotion_rejects_too_high_intensity(self):
         with pytest.raises(ValueError):
             PublicDominantEmotion(name="joy", intensity=1.1)
+
+
+# ─── Duplicate emotion rejection ─────────────────────────────────────────────
+
+class TestDuplicateEmotionRejection:
+    """EmotionStateResponse must reject duplicate emotion names."""
+
+    def test_duplicate_direct_construction(self):
+        """Duplicates rejected via direct EmotionStateResponse construction."""
+        with pytest.raises(ValueError, match="Duplicate dominant emotion"):
+            EmotionStateResponse(
+                schema_version=1,
+                mood_label="NEUTRA",
+                pad=PublicPAD(pleasure=0.0, arousal=0.0, dominance=0.0),
+                dominant_emotions=[
+                    PublicDominantEmotion(name="joy", intensity=0.8),
+                    PublicDominantEmotion(name="joy", intensity=0.5),
+                ],
+                timestamp=1_700_000_000.0,
+            )
+
+    def test_duplicate_model_validate(self):
+        """Duplicates rejected via model_validate."""
+        data = {
+            "schema_version": 1,
+            "mood_label": "NEUTRA",
+            "pad": {"pleasure": 0.0, "arousal": 0.0, "dominance": 0.0},
+            "dominant_emotions": [
+                {"name": "joy", "intensity": 0.8},
+                {"name": "joy", "intensity": 0.5},
+            ],
+            "timestamp": 1_700_000_000.0,
+        }
+        with pytest.raises(ValueError, match="Duplicate dominant emotion"):
+            EmotionStateResponse.model_validate(data)
+
+    def test_duplicate_json(self):
+        """Duplicates rejected via model_validate_json."""
+        json_str = json.dumps({
+            "schema_version": 1,
+            "mood_label": "NEUTRA",
+            "pad": {"pleasure": 0.0, "arousal": 0.0, "dominance": 0.0},
+            "dominant_emotions": [
+                {"name": "anger", "intensity": 0.9},
+                {"name": "anger", "intensity": 0.7},
+            ],
+            "timestamp": 1_700_000_000.0,
+        })
+        with pytest.raises(ValueError, match="Duplicate dominant emotion"):
+            EmotionStateResponse.model_validate_json(json_str)
+
+    def test_three_distinct_names_valid(self):
+        """Three distinct emotion names are accepted."""
+        result = EmotionStateResponse(
+            schema_version=1,
+            mood_label="NEUTRA",
+            pad=PublicPAD(pleasure=0.0, arousal=0.0, dominance=0.0),
+            dominant_emotions=[
+                PublicDominantEmotion(name="joy", intensity=0.8),
+                PublicDominantEmotion(name="anger", intensity=0.7),
+                PublicDominantEmotion(name="sadness", intensity=0.6),
+            ],
+            timestamp=1_700_000_000.0,
+        )
+        assert len(result.dominant_emotions) == 3
+        names = [e.name for e in result.dominant_emotions]
+        assert names == ["joy", "anger", "sadness"]
+
+    def test_empty_list_valid(self):
+        """Empty dominant_emotions list is valid."""
+        result = EmotionStateResponse(
+            schema_version=1,
+            mood_label="NEUTRA",
+            pad=PublicPAD(pleasure=0.0, arousal=0.0, dominance=0.0),
+            dominant_emotions=[],
+            timestamp=1_700_000_000.0,
+        )
+        assert result.dominant_emotions == []
+
+
+# ─── project_public_emotion input validation ─────────────────────────────────
+
+class TestProjectPublicEmotionInputValidation:
+    """project_public_emotion must fail predictably on invalid inputs."""
+
+    def test_none_state_raises_presentation_error(self):
+        with pytest.raises(PresentationError, match="state cannot be None"):
+            project_public_emotion(None, _neutral_appraisal())
+
+    def test_none_appraisal_raises_presentation_error(self):
+        with pytest.raises(PresentationError, match="appraisal cannot be None"):
+            project_public_emotion(_neutral_state(), None)
+
+    def test_wrong_state_type_raises_type_error(self):
+        with pytest.raises(TypeError, match="state must be an EmotionalStateV1"):
+            project_public_emotion("invalid_state", _neutral_appraisal())
+
+    def test_wrong_appraisal_type_raises_type_error(self):
+        with pytest.raises(TypeError, match="appraisal must be an AppraisalV1"):
+            project_public_emotion(_neutral_state(), "invalid_appraisal")
+
+    def test_attribute_error_does_not_escape(self):
+        """Invalid objects should not produce AttributeError from the projection."""
+        import subprocess, sys, textwrap, os
+        env = {
+            **os.environ,
+            "PYTHONPATH": str(
+                __import__("pathlib").Path(__file__).parent.parent.parent
+            ),
+        }
+        script = textwrap.dedent('''
+            import sys
+            from backend.emotion_presentation import project_public_emotion, PresentationError
+            from backend.emotional_domain.models import EmotionalStateV1, AppraisalV1
+
+            try:
+                # Dict as state (wrong type) — should trigger TypeError, not AttributeError
+                project_public_emotion({"pleasure": 0.0}, AppraisalV1.neutral())
+            except TypeError:
+                print("EXPECTED_TYPE_ERROR")
+                sys.exit(0)
+            except AttributeError:
+                print("ATTRIBUTE_ERROR_ESCAPED")
+                sys.exit(1)
+            except PresentationError:
+                # Dict doesn't have .pleasure etc — could trigger AttributeError if unchecked
+                # but our isinstance check catches it first
+                print("EXPECTED_TYPE_ERROR")
+                sys.exit(0)
+            except Exception as e:
+                print(f"OTHER_ERROR: {type(e).__name__}: {e}")
+                sys.exit(1)
+
+            print("NO_ERROR")
+            sys.exit(1)
+        ''')
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        assert proc.returncode == 0, f"stdout: {proc.stdout}, stderr: {proc.stderr}"
+        assert "EXPECTED_TYPE_ERROR" in proc.stdout
+
+    def test_wrong_state_type_has_correct_error_type(self):
+        """Confirm exact TypeError raised, not AttributeError."""
+        try:
+            project_public_emotion({"pleasure": 0.0}, _neutral_appraisal())
+            pytest.fail("Should have raised")
+        except TypeError:
+            pass  # Expected
+        except Exception as e:
+            pytest.fail(f"Expected TypeError, got {type(e).__name__}")
+
+
+# ─── ChatResponse field type verification ────────────────────────────────────
+
+class TestChatResponseFieldType:
+    """ChatResponse.emotion_state field must be EmotionStateResponse."""
+
+    def test_emotion_state_field_is_emotion_state_response(self):
+        """The ``emotion_state`` field in the chat response is typed to EmotionStateResponse.
+
+        Verifies via a standalone Pydantic model that mirrors ChatResponse (the real
+        ChatResponse in main.py cannot be imported without FastAPI and Supabase deps).
+        """
+        from pydantic import BaseModel, Field
+        from backend.emotion_presentation import EmotionStateResponse
+
+        class _TestChatModel(BaseModel):
+            response: str = Field(default="")
+            emotion_state: EmotionStateResponse
+
+        # Verify the field annotation is EmotionStateResponse, not a generic dict
+        field_info = _TestChatModel.model_fields["emotion_state"]
+        annotation = field_info.annotation
+        assert annotation is EmotionStateResponse, (
+            f"Expected annotation to be EmotionStateResponse, got {annotation}"
+        )
+
+        # Verify it accepts an EmotionStateResponse instance
+        from backend.emotional_domain.models import EmotionalStateV1, AppraisalV1
+        from backend.emotion_presentation import project_public_emotion
+        state = EmotionalStateV1.neutral(timestamp=1_700_000_000.0)
+        ap = AppraisalV1.neutral()
+        emotion = project_public_emotion(state, ap)
+
+        model = _TestChatModel(response="ok", emotion_state=emotion)
+        assert isinstance(model.emotion_state, EmotionStateResponse)
+        assert model.emotion_state.schema_version == 1

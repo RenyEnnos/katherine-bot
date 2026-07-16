@@ -28,11 +28,13 @@ const EmotionPanel = ({ emotionState }) => {
                 <div className="text-xl font-semibold text-white mb-1">{mood_label}</div>
             </div>
 
-            {/* Discrete Emotions */}
-            {dominant_emotions && dominant_emotions.length > 0 && (
+            {/* Discrete Emotions — defensive rendering */}
+            {Array.isArray(dominant_emotions) && dominant_emotions.length > 0 && (
                 <div className="mb-4 flex flex-wrap gap-2">
-                    {dominant_emotions.map((emotion) => {
+                    {dominant_emotions.slice(0, 3).map((emotion) => {
                         const displayLabel = getEmotionLabel(emotion.name);
+                        // Skip items without a recognized canonical label
+                        if (displayLabel === null) return null;
                         const pct = intensityToPercent(emotion.intensity);
                         return (
                             <span

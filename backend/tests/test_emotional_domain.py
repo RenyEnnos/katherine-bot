@@ -1037,7 +1037,7 @@ class TestIsolatedSubprocessImport:
         proc = self._run_isolation_script("""
             import os
             # Unset common env vars
-            for k in ['GROQ_API_KEY', 'GROQ_API_KEY_2', 'SUPABASE_URL', 'SUPABASE_KEY']:
+            for k in ['GROQ_API_KEY', 'GROQ_API_KEY_2', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']:
                 os.environ.pop(k, None)
             import backend.emotional_domain
             from backend.emotional_domain import EmotionalStateV1, AppraisalV1

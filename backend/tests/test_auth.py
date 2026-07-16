@@ -12,7 +12,7 @@ def mock_external_dependencies():
     mock_env = {
         'GROQ_API_KEY': 'mock_key',
         'SUPABASE_URL': 'http://mock',
-        'SUPABASE_KEY': 'mock_key'
+        'SUPABASE_SERVICE_ROLE_KEY': 'mock_key'
     }
     os.environ.update(mock_env)
 

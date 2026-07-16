@@ -6,6 +6,45 @@ on:
       - main
 
 jobs:
+
+  database:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v3
+        with:
+          version: '1.162.4'
+
+      - name: Start Supabase
+        run: supabase start
+
+      - name: Run Database Tests
+        run: |
+          supabase db reset
+          supabase test db
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Pytest & Supabase Py
+        run: pip install pytest supabase
+
+      - name: Run Integration Tests
+        run: |
+          # Use supabase status to extract keys directly
+          export SUPABASE_URL="http://127.0.0.1:54321"
+          export SUPABASE_ANON_KEY=$(supabase status -o env | grep ANON_KEY | cut -d '=' -f2 | tr -d '"')
+          export SUPABASE_SERVICE_ROLE_KEY=$(supabase status -o env | grep SERVICE_ROLE_KEY | cut -d '=' -f2 | tr -d '"')
+          export PYTHONPATH="."
+          python -m pytest backend/tests/test_database_authorization_integration.py
+
+      - name: Stop Supabase
+        if: always()
+        run: supabase stop
   backend:
     runs-on: ubuntu-latest
     steps:

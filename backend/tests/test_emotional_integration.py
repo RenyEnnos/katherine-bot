@@ -833,49 +833,49 @@ class TestNewProfileFirstTurn:
 
                 resp, emotions = await engine.process_turn("new_user", "Hello")
 
-            # ── 1. First turn succeeds ────────────────────────────────────
-            assert resp is not None
+                # ── 1. First turn succeeds ────────────────────────────────
+                assert resp is not None
 
-            # ── 2. Profile created for authenticated user_id ──────────────
-            insert_call = engine.memory_manager.supabase.table.return_value.insert.call_args
-            assert insert_call is not None
-            inserted = insert_call[0][0]
-            assert inserted["user_id"] == "new_user"
+                # ── 2. Profile created for authenticated user_id ──────────
+                insert_call = engine.memory_manager.supabase.table.return_value.insert.call_args
+                assert insert_call is not None
+                inserted = insert_call[0][0]
+                assert inserted["user_id"] == "new_user"
 
-            # ── 3 & 4 & 5. Both snapshots share the turn's timestamp ──────
-            assert inserted["emotional_state"]["timestamp"] == 100.0
-            assert inserted["relationship_state"]["timestamp"] == 100.0
+                # ── 3 & 4 & 5. Both snapshots share turn timestamp ────────
+                assert inserted["emotional_state"]["timestamp"] == 100.0
+                assert inserted["relationship_state"]["timestamp"] == 100.0
 
-            # ── 6 & 7 & 8 & 9. Relationship payload invariants ────────────
-            rel_payload = inserted["relationship_state"]
-            assert rel_payload["schema_version"] == 1
-            assert "user_id" not in rel_payload
-            assert "bond_label" not in rel_payload
-            assert "last_interaction" not in rel_payload
+                # ── 6 & 7 & 8 & 9. Relationship payload invariants ────────
+                rel_payload = inserted["relationship_state"]
+                assert rel_payload["schema_version"] == 1
+                assert "user_id" not in rel_payload
+                assert "bond_label" not in rel_payload
+                assert "last_interaction" not in rel_payload
 
-            # ── 10 & 11. Exactly one transition call each ─────────────────
-            assert m_e.call_count == 1
-            assert m_r.call_count == 1
+                # ── 10 & 11. Exactly one transition call each ─────────────
+                assert m_e.call_count == 1
+                assert m_r.call_count == 1
 
-            # ── 12 & 13. Same AppraisalV1 object by identity ──────────────
-            emotional_appraisal = emotional_appraisals[0]
-            rel_appraisal = rel_appraisals[0]
-            assert emotional_appraisal is rel_appraisal
-            assert isinstance(emotional_appraisal, AppraisalV1)
-            assert not isinstance(emotional_appraisal, dict)
+                # ── 12 & 13. Same AppraisalV1 object by identity ──────────
+                emotional_appraisal = emotional_appraisals[0]
+                rel_appraisal = rel_appraisals[0]
+                assert emotional_appraisal is rel_appraisal
+                assert isinstance(emotional_appraisal, AppraisalV1)
+                assert not isinstance(emotional_appraisal, dict)
 
-            # ── 14. sync_state receives the transition result ─────────────
-            assert len(rel_results) == 1
-            args_sync, _ = engine.memory_manager.sync_state.call_args
-            assert args_sync[2] is rel_results[0]
+                # ── 14. sync_state receives the transition result ─────────
+                assert len(rel_results) == 1
+                args_sync, _ = engine.memory_manager.sync_state.call_args
+                assert args_sync[2] is rel_results[0]
 
-            # ── Current time is 100.0 (first clock call) ──────────────────
-            assert m_r.call_args[1]["current_time"] == 100.0
-            assert m_e.call_args[1]["current_time"] == 100.0
+                # ── Current time is 100.0 (first clock call) ──────────────
+                assert m_r.call_args[1]["current_time"] == 100.0
+                assert m_e.call_args[1]["current_time"] == 100.0
 
-            # ── Config type check ─────────────────────────────────────────
-            assert isinstance(m_r.call_args[1]["config"], RelationshipTransitionConfig)
-            assert isinstance(m_r.call_args[1]["previous_state"], RelationshipStateV1)
+                # ── Config type check ─────────────────────────────────────
+                assert isinstance(m_r.call_args[1]["config"], RelationshipTransitionConfig)
+                assert isinstance(m_r.call_args[1]["previous_state"], RelationshipStateV1)
 
         asyncio.run(run())
 

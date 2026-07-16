@@ -45,6 +45,7 @@ from __future__ import annotations
 import copy
 import math
 from typing import Any, Dict
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -64,6 +65,17 @@ from backend.emotion_presentation import EmotionStateResponse
 
 # ─── Fixed clock ─────────────────────────────────────────────────────────────
 FIXED_CLOCK = 1_700_000_000.0
+
+
+# ─── SentenceTransformer isolation ───────────────────────────────────────────
+@pytest.fixture(autouse=True)
+def _mock_sentence_transformer():
+    """Prevent any real SentenceTransformer model loading in all tests."""
+    with patch(
+        "backend.memory.SentenceTransformer",
+        return_value=MagicMock(),
+    ):
+        yield
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────

@@ -50,7 +50,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from backend.engine import ConversationEngine
-from backend.memory import MemoryManager, StatePersistenceError, StateLoadError
+from backend.memory import (
+    MemoryManager,
+    StateLoadError,
+    StatePersistenceError,
+)
 from backend.emotional_domain import (
     AppraisalV1,
     EmotionalDomainError,
@@ -781,7 +785,10 @@ class TestNewProfileFirstTurn:
             times = iter([100.0, 100.1, 100.2, 100.3])
             clock = lambda: next(times)
 
-            engine = ConversationEngine(clock=clock)
+            # ── Isolate from real SentenceTransformer (would hang in CI)  ──
+            with patch("backend.memory.SentenceTransformer", return_value=MagicMock()) as embedding_cls:
+                engine = ConversationEngine(clock=clock)
+            embedding_cls.assert_called_once()
 
             # ── Mock Supabase: empty select (new user), then insert OK     ──
             engine.memory_manager.supabase = MagicMock()

@@ -452,6 +452,36 @@ class TestTriggers:
         with pytest.raises(RelationshipDomainError):
             RelationshipStateV1.from_dict(d)
 
+    def test_rejects_33_unique_items(self):
+        """33 unique items must be rejected."""
+        items = [f"unique{i}" for i in range(33)]
+        with pytest.raises(RelationshipDomainError):
+            RelationshipStateV1.create(
+                trust=0.5, affection=0.3, tension=0.0,
+                triggers=items,
+                timestamp=FIXED_CLOCK,
+            )
+
+    def test_rejects_33_repeated_items(self):
+        """33 items where many are repeated must also be rejected (limit on input)."""
+        items = ["same"] * 33
+        with pytest.raises(RelationshipDomainError):
+            RelationshipStateV1.create(
+                trust=0.5, affection=0.3, tension=0.0,
+                triggers=items,
+                timestamp=FIXED_CLOCK,
+            )
+
+    def test_rejects_large_repeated_collection(self):
+        """Collection with 100 items that would dedup to 1 must still be rejected."""
+        items = ["same"] * 100
+        with pytest.raises(RelationshipDomainError):
+            RelationshipStateV1.create(
+                trust=0.5, affection=0.3, tension=0.0,
+                triggers=items,
+                timestamp=FIXED_CLOCK,
+            )
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 10. Alterar a lista original não altera o snapshot
@@ -942,6 +972,68 @@ class TestNewProfileDefault:
         assert "bond_label" not in data
         assert "schema_version" in data
 
+    def test_get_default_state_returns_valid_v1(self):
+        """Call the real MemoryManager._get_default_state with injected clock."""
+        mm = MemoryManager(clock=lambda: FIXED_CLOCK)
+        mm.supabase = None  # prevent DB access
+        default = mm._get_default_state("test_user")
+        rel_data = default["relationship_state"]
+
+        # Must be a dict (to_dict output)
+        assert isinstance(rel_data, dict)
+        # Must have schema_version == 1
+        assert rel_data["schema_version"] == RELATIONSHIP_SCHEMA_VERSION
+        # Must have the injected clock timestamp
+        assert rel_data["timestamp"] == FIXED_CLOCK
+        # Must have exactly the v1 fields
+        expected_keys = {"trust", "affection", "tension", "triggers",
+                         "timestamp", "schema_version"}
+        assert set(rel_data.keys()) == expected_keys
+        # Must NOT contain user_id
+        assert "user_id" not in rel_data
+        # Must NOT contain bond_label
+        assert "bond_label" not in rel_data
+        # Must NOT contain last_interaction
+        assert "last_interaction" not in rel_data
+        # Must be deserializable by from_dict
+        reconstructed = RelationshipStateV1.from_dict(rel_data)
+        assert isinstance(reconstructed, RelationshipStateV1)
+        assert reconstructed.trust == 0.5
+        assert reconstructed.timestamp == FIXED_CLOCK
+
+    def test_new_profile_insert_payload(self):
+        """Verify the payload sent to Supabase insert on new profile creation."""
+        from unittest.mock import MagicMock
+        mm = MemoryManager(clock=lambda: FIXED_CLOCK)
+        mm.supabase = MagicMock()
+        mock_insert_resp = MagicMock()
+        mock_insert_resp.data = [{"user_id": "new_user"}]
+        mock_insert_resp.error = None
+        mm.supabase.table.return_value.insert.return_value.execute.return_value = mock_insert_resp
+
+        # Use the real load_user_state with a mock that returns empty (triggers new profile)
+        mock_select_resp = MagicMock()
+        mock_select_resp.data = []
+        mock_select_resp.error = None
+        mm.supabase.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_select_resp
+
+        state = mm.load_user_state("new_user")
+        rel_data = state["relationship_state"]
+
+        # Verify the insert call included the correct relationship payload
+        insert_call_args = mm.supabase.table.return_value.insert.call_args
+        assert insert_call_args is not None
+        inserted = insert_call_args[0][0]
+        rel_inserted = inserted["relationship_state"]
+        assert isinstance(rel_inserted, dict)
+        assert rel_inserted["schema_version"] == RELATIONSHIP_SCHEMA_VERSION
+        assert "user_id" not in rel_inserted
+        assert "bond_label" not in rel_inserted
+        # Verify the relationship in the returned state is also valid
+        reconstructed = RelationshipStateV1.from_dict(rel_data)
+        assert isinstance(reconstructed, RelationshipStateV1)
+        assert reconstructed.timestamp == FIXED_CLOCK
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 27. sync_state() rejeita tipo relacional inválido antes de tocar no banco
@@ -1081,17 +1173,60 @@ class TestEmotionStateResponseNoRelationship:
 class TestTransitionConfigValidation:
     """RelationshipTransitionConfig is immutable and validated."""
 
+    _CONFIG_FIELDS_WITH_BOOL = [
+        "trust_positive_threshold", "trust_positive_delta", "trust_negative_threshold",
+        "tenderness_threshold", "tenderness_boost", "joy_threshold", "joy_boost",
+        "gratitude_threshold", "gratitude_boost", "anger_threshold", "anger_spike",
+        "disgust_threshold", "disgust_spike", "tension_valence_threshold",
+        "tension_valence_spike", "reconciliation_valence_threshold", "reconciliation_delta",
+    ]
+
     def test_default_config_accepted(self):
         config = RelationshipTransitionConfig.defaults()
         assert isinstance(config, RelationshipTransitionConfig)
 
-    def test_bool_trust_threshold_rejected(self):
+    @pytest.mark.parametrize("field", _CONFIG_FIELDS_WITH_BOOL)
+    def test_bool_rejected(self, field):
         with pytest.raises(RelationshipDomainError):
-            RelationshipTransitionConfig(trust_positive_threshold=True)
+            RelationshipTransitionConfig(**{field: True})
+
+    @pytest.mark.parametrize("field", _CONFIG_FIELDS_WITH_BOOL)
+    def test_none_rejected(self, field):
+        with pytest.raises(RelationshipDomainError):
+            RelationshipTransitionConfig(**{field: None})
+
+    @pytest.mark.parametrize("field", _CONFIG_FIELDS_WITH_BOOL)
+    def test_string_rejected(self, field):
+        with pytest.raises(RelationshipDomainError):
+            RelationshipTransitionConfig(**{field: "bad"})
+
+    @pytest.mark.parametrize("field", _CONFIG_FIELDS_WITH_BOOL)
+    def test_nan_rejected(self, field):
+        with pytest.raises(RelationshipDomainError):
+            RelationshipTransitionConfig(**{field: float("nan")})
+
+    @pytest.mark.parametrize("field", _CONFIG_FIELDS_WITH_BOOL)
+    def test_inf_rejected(self, field):
+        with pytest.raises(RelationshipDomainError):
+            RelationshipTransitionConfig(**{field: float("inf")})
+
+    @pytest.mark.parametrize("field", _CONFIG_FIELDS_WITH_BOOL)
+    def test_neg_inf_rejected(self, field):
+        with pytest.raises(RelationshipDomainError):
+            RelationshipTransitionConfig(**{field: float("-inf")})
+
+    def test_huge_int_overflow_rejected(self):
+        """Very large integers that Overflow float conversion must be rejected."""
+        with pytest.raises(RelationshipDomainError):
+            RelationshipTransitionConfig(trust_positive_threshold=10**1000)
 
     def test_out_of_range_anger_spike_rejected(self):
         with pytest.raises(RelationshipDomainError):
             RelationshipTransitionConfig(anger_spike=1.5)
+
+    def test_out_of_range_below_rejected(self):
+        with pytest.raises(RelationshipDomainError):
+            RelationshipTransitionConfig(trust_positive_delta=-0.01)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

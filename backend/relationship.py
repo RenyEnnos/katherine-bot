@@ -189,7 +189,7 @@ def _validate_triggers(raw: object) -> Tuple[str, ...]:
 
     Rules:
     - Accept only list or tuple.
-    - Max 32 items.
+    - Max 32 items (applied to the input collection BEFORE dedup).
     - Each item must be a string; apply .strip().
     - Reject empty after strip.
     - Max 128 characters per item.
@@ -199,6 +199,12 @@ def _validate_triggers(raw: object) -> Tuple[str, ...]:
     if not isinstance(raw, (list, tuple)):
         raise RelationshipDomainError(
             f"triggers must be a list or tuple, got {type(raw).__name__}."
+        )
+
+    # Apply limit to the input collection BEFORE deduplication
+    if len(raw) > 32:
+        raise RelationshipDomainError(
+            f"triggers must have at most 32 items, got {len(raw)}."
         )
 
     seen: set = set()
@@ -220,11 +226,6 @@ def _validate_triggers(raw: object) -> Tuple[str, ...]:
         if stripped not in seen:
             seen.add(stripped)
             result.append(stripped)
-
-    if len(result) > 32:
-        raise RelationshipDomainError(
-            f"triggers must have at most 32 items, got {len(result)}."
-        )
 
     return tuple(result)
 
@@ -588,11 +589,6 @@ class RelationshipTransitionConfig:
             "reconciliation_delta",
             0.0, 1.0,
         )
-        _validate_config_float(
-            self.reconciliation_valence_threshold,
-            "reconciliation_valence_threshold",
-            -1.0, 1.0,
-        )
 
     @classmethod
     def defaults(cls) -> "RelationshipTransitionConfig":
@@ -601,7 +597,11 @@ class RelationshipTransitionConfig:
 
 
 def _validate_config_float(raw: object, name: str, lo: float, hi: float) -> None:
-    """Validate a config field: must be finite float in [lo, hi]."""
+    """Validate a config field: must be finite float in [lo, hi].
+
+    Rejects: bool, None, str, list, dict, NaN, Inf, and integers too large
+    to convert to float. All failures produce ``RelationshipDomainError``.
+    """
     if isinstance(raw, bool):
         raise RelationshipDomainError(
             f"RelationshipTransitionConfig: '{name}' must be a finite float, got bool."
@@ -611,7 +611,12 @@ def _validate_config_float(raw: object, name: str, lo: float, hi: float) -> None
             f"RelationshipTransitionConfig: '{name}' must be a finite float, "
             f"got {type(raw).__name__}."
         )
-    f = float(raw)
+    try:
+        f = float(raw)
+    except (OverflowError, ValueError, TypeError):
+        raise RelationshipDomainError(
+            f"RelationshipTransitionConfig: '{name}' is not a finite float value."
+        )
     if not math.isfinite(f):
         raise RelationshipDomainError(
             f"RelationshipTransitionConfig: '{name}' must be finite."

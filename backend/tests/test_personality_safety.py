@@ -1,5 +1,6 @@
 import sys
 import os
+import time
 import pytest
 import math
 from unittest.mock import MagicMock

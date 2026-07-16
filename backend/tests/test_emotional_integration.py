@@ -590,6 +590,79 @@ class TestJSONBPersistence:
 # Correction 7: Archival scheduling test
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Correction 4a: Single relationship transition per turn
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestSingleRelationshipTransition:
+    """Proves exactly one transition_relationship call per successful turn."""
+
+    def test_one_transition_relationship_per_turn(self):
+        async def run():
+            engine = _make_engine()
+            from backend.relationship import (
+                transition_relationship as real_transition,
+                RelationshipStateV1,
+                RelationshipTransitionConfig,
+            )
+
+            # Use a tracking spy that captures the actual return value
+            captured_results = []
+            def tracking_spy(*args, **kwargs):
+                result = real_transition(*args, **kwargs)
+                captured_results.append(result)
+                return result
+
+            with patch("backend.engine.transition_relationship", side_effect=tracking_spy):
+                resp, emotions = await engine.process_turn("user", "Hello")
+
+            # Exactly one call
+            assert len(captured_results) == 1
+
+            # Inspect call arguments
+            call_kwargs = tracking_spy.captured_kwargs if hasattr(tracking_spy, 'captured_kwargs') else {}
+            # We need to capture args properly - use the patch's call_args
+            import backend.engine as eng_mod
+            # Actually, accessing through the module directly since we patched at module level
+            from unittest.mock import ANY
+            mock_transition = eng_mod.transition_relationship
+
+            # Exactly one call
+            assert mock_transition.call_count == 1
+
+            # Inspect arguments
+            call_kwargs = mock_transition.call_args[1]
+            previous_state = call_kwargs.get("previous_state")
+            appraisal = call_kwargs.get("appraisal")
+            current_time = call_kwargs.get("current_time")
+            config = call_kwargs.get("config")
+
+            # previous_state is RelationshipStateV1
+            assert isinstance(previous_state, RelationshipStateV1)
+
+            # appraisal is the same AppraisalV1 from parser (not a dict)
+            from backend.emotional_domain import AppraisalV1
+            assert isinstance(appraisal, AppraisalV1)
+            assert isinstance(appraisal.valence_shift, float)
+
+            # No intermediate dict adapter
+            assert not isinstance(appraisal, dict)
+
+            # current_time matches injected clock
+            assert current_time == FIXED_CLOCK
+
+            # config is RelationshipTransitionConfig
+            assert isinstance(config, RelationshipTransitionConfig)
+
+            # The result of this single call is the relationship delivered to sync_state
+            assert len(captured_results) == 1
+            args_sync, _ = engine.memory_manager.sync_state.call_args
+            sync_rel = args_sync[2]
+            assert sync_rel is captured_results[0]
+
+        asyncio.run(run())
+
+
 class TestArchivalScheduling:
     """Archival extraction scheduling: order on success, zero on sync_state failure."""
 

@@ -2,7 +2,7 @@ import asyncio
 import pytest
 import time
 import threading
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from backend.engine import ConversationEngine
 from backend.emotional_core import EmotionalState, AffectiveEngine
 from backend.emotional_domain import AppraisalV1, EmotionalStateV1, ParseErrorCode, parse_llm_appraisal
@@ -25,6 +25,13 @@ def _legacy_emotion_dict(pleasure=0.0, arousal=0.0, dominance=0.0) -> dict:
         "coping_mode": "HEALTHY",
         "last_update": time.time(),
     }
+
+
+@pytest.fixture(autouse=True)
+def _mock_sentence_transformer():
+    """Prevent real SentenceTransformer model loading."""
+    with patch("backend.memory.SentenceTransformer", return_value=MagicMock()):
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -63,7 +70,7 @@ def test_user_isolation():
             "A": {"emotional_state": _legacy_emotion_dict(pleasure=0.5)},
             "B": {"emotional_state": _legacy_emotion_dict(pleasure=-0.5)}
         }
-        engine.memory_manager.load_user_state = MagicMock(side_effect=lambda uid: states.get(uid, {}))
+        engine.memory_manager.load_user_state = MagicMock(side_effect=lambda uid, **kwargs: states.get(uid, {}))
         engine._perceive = MagicMock(return_value={})
         _, state_a = await engine.process_turn("A", "Msg A")
         _, state_b = await engine.process_turn("B", "Msg B")
@@ -133,7 +140,7 @@ def test_concurrent_requests_serialization():
         engine = ConversationEngine()
         user_id = "test_user"
         db = {user_id: {"emotional_state": _legacy_emotion_dict(pleasure=0.0)}}
-        engine.memory_manager.load_user_state = MagicMock(side_effect=lambda uid: db[uid].copy())
+        engine.memory_manager.load_user_state = MagicMock(side_effect=lambda uid, **kwargs: db[uid].copy())
         def mock_sync(uid, state, rel, profile=None): db[uid]["emotional_state"] = state.to_dict()
         engine.memory_manager.sync_state = MagicMock(side_effect=mock_sync)
         engine.memory_manager.save_turn = MagicMock()
@@ -203,7 +210,7 @@ def test_lock_cleanup_on_cancellation_during_thread_work():
         load_release = threading.Event()
         load_finished = False
 
-        def mock_load(uid):
+        def mock_load(uid, **kwargs):
             load_reached.set()
             load_release.wait(timeout=2)
             nonlocal load_finished
@@ -337,7 +344,7 @@ def test_lock_cleanup_on_cancellation_during_waiting():
         load_reached = threading.Event()
         load_release = threading.Event()
 
-        def mock_load(uid):
+        def mock_load(uid, **kwargs):
             load_reached.set()
             load_release.wait(timeout=2)
             return {"emotional_state": _legacy_emotion_dict()}
@@ -401,7 +408,7 @@ def test_lock_cleanup_on_repeated_cancellation_during_thread_work():
         load_release = threading.Event()
         load_finished = False
 
-        def mock_load(uid):
+        def mock_load(uid, **kwargs):
             load_reached.set()
             load_release.wait(timeout=2)
             nonlocal load_finished

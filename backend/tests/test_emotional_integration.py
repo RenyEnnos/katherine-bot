@@ -22,9 +22,9 @@ Coverage map (43 behavioural requirements):
 17. Novo perfil é criado com snapshot v1 desde o início.
 18. sync_state() persiste to_dict() v1 (JSONB dict, not JSON string).
 19. Snapshot persistido contém schema_version e timestamp, sem last_update.
-20. Resposta pública mantém exatamente as chaves atuais.
-21. Resposta pública contém last_update derivado do timestamp.
-22. Resposta pública não contém schema_version, timestamp, appraisal ou regulation.
+20. Resposta pública é um ``EmotionStateResponse``, não um dict.
+21. Resposta pública contém os campos obrigatórios do contrato v1.
+22. Resposta pública não contém campos internos (acting_instruction, coping_mode, etc.).
 23. Falha de persistência não retorna sucesso.
 24. Falha de persistência não agenda extração arquivística.
 25. Extração arquivística agendada somente após turno e estado persistidos.
@@ -59,6 +59,7 @@ from backend.emotional_domain import (
     parse_llm_appraisal,
     transition,
 )
+from backend.emotion_presentation import EmotionStateResponse
 from backend.relationship import UserRelationship
 
 
@@ -668,7 +669,8 @@ class TestArchivalScheduling:
             engine = _make_engine()
             resp, emotions = await engine.process_turn("user", "Hello")
             assert resp is not None
-            assert isinstance(emotions, dict)
+            assert isinstance(emotions, EmotionStateResponse)
+            assert emotions.schema_version == 1
 
         asyncio.run(run())
 
@@ -784,62 +786,85 @@ class TestSanitisedLogging:
             resp, emotions = await engine.process_turn("user", "Hello")
             # Should still succeed with neutral fallback
             assert resp is not None
-            # Emotional state reflects neutral fallback (zero shifts)
-            assert emotions["pleasure"] == 0.0
-            assert emotions["last_update"] == FIXED_CLOCK
+            # Emotional state is EmotionStateResponse with neutral values
+            assert isinstance(emotions, EmotionStateResponse)
+            assert emotions.pad.pleasure == 0.0
+            assert emotions.timestamp == FIXED_CLOCK
 
         asyncio.run(run())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Correction 9: Exact public contract test
+# Correction 9: Exact public contract test (updated for EmotionStateResponse)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestPublicContract:
-    """Public response has exactly the 10 legacy keys, no internal fields."""
+    """Public response is an EmotionStateResponse with versioned v1 fields."""
 
-    EXPECTED_PUBLIC_KEYS = {
-        "pleasure", "arousal", "dominance",
-        "libido", "aggression", "connection", "energy",
-        "tension", "coping_mode", "last_update",
+    EXPECTED_PUBLIC_FIELDS = {
+        "schema_version",
+        "mood_label",
+        "pad",
+        "dominant_emotions",
+        "timestamp",
     }
 
-    def test_projection_has_exact_legacy_keys(self):
+    def test_projection_is_emotion_state_response(self):
         state = EmotionalStateV1.create(
             pleasure=0.5, arousal=-0.2, dominance=0.3,
             libido=0.1, aggression=0.0, connection=0.7,
             energy=0.9, tension=0.2, coping_mode="HEALTHY",
             timestamp=FIXED_CLOCK,
         )
-        projected = ConversationEngine._project_emotion_state(state)
-        assert set(projected.keys()) == self.EXPECTED_PUBLIC_KEYS
+        appraisal = AppraisalV1.create(
+            valence_shift=0.2, arousal_shift=0.1, dominance_shift=0.0,
+            discrete_emotions={"joy": 0.5},
+        )
+        projected = ConversationEngine._project_emotion_state(state, appraisal)
+        assert isinstance(projected, EmotionStateResponse)
+        data = projected.model_dump()
+        assert set(data.keys()) == self.EXPECTED_PUBLIC_FIELDS
 
-    def test_last_update_equals_timestamp(self):
+    def test_serialized_format_does_not_contain_internal_fields(self):
         state = EmotionalStateV1.create(
             pleasure=0.0, arousal=0.0, dominance=0.0,
             libido=0.0, aggression=0.0, connection=0.5,
             energy=0.8, tension=0.0, coping_mode="HEALTHY",
             timestamp=FIXED_CLOCK,
         )
-        projected = ConversationEngine._project_emotion_state(state)
-        assert projected["last_update"] == FIXED_CLOCK
-        assert projected["last_update"] == state.timestamp
+        appraisal = AppraisalV1.neutral()
+        projected = ConversationEngine._project_emotion_state(state, appraisal)
+        json_str = projected.model_dump_json()
 
-    def test_no_internal_fields_in_projection(self):
+        # Must contain the new contract fields
+        assert '"schema_version"' in json_str
+        assert '"mood_label"' in json_str
+        assert '"timestamp"' in json_str
+
+        # Must NOT contain internal fields
+        forbidden = [
+            "acting_instruction", "coping_mode", "libido", "aggression",
+            "connection", "energy", "tension", "regulation", "fallback",
+            "last_update",
+        ]
+        for field in forbidden:
+            assert field not in json_str, f"Forbidden field '{field}' found in JSON"
+
+    def test_timestamp_preserved(self):
         state = EmotionalStateV1.neutral(timestamp=FIXED_CLOCK)
-        projected = ConversationEngine._project_emotion_state(state)
-        assert "schema_version" not in projected
-        assert "timestamp" not in projected
-        assert "appraisal" not in projected
-        assert "regulation" not in projected
-        assert "fallback" not in projected
+        appraisal = AppraisalV1.neutral()
+        projected = ConversationEngine._project_emotion_state(state, appraisal)
+        assert projected.timestamp == FIXED_CLOCK
+        assert projected.timestamp == state.timestamp
 
-    def test_process_turn_returns_projected_format(self):
+    def test_process_turn_returns_emotion_state_response(self):
         async def run():
             engine = _make_engine()
             resp, emotions = await engine.process_turn("user", "Hello")
-            assert set(emotions.keys()) == self.EXPECTED_PUBLIC_KEYS
-            assert emotions["last_update"] == FIXED_CLOCK
+            assert isinstance(emotions, EmotionStateResponse)
+            assert emotions.schema_version == 1
+            assert emotions.mood_label is not None
+            assert emotions.timestamp == FIXED_CLOCK
 
         asyncio.run(run())
 

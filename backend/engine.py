@@ -14,6 +14,7 @@ from .emotional_domain import (
     parse_llm_appraisal,
     transition,
 )
+from .emotion_presentation import project_public_emotion, EmotionStateResponse
 from .memory import MemoryManager
 from .relationship import RelationshipManager, UserRelationship
 from .lock_manager import UserLockManager
@@ -120,24 +121,13 @@ class ConversationEngine:
             logger.error("Event: archival_extraction_store_failed")
 
     @staticmethod
-    def _project_emotion_state(state: EmotionalStateV1) -> dict:
-        """Project ``EmotionalStateV1`` to the legacy public response format.
+    def _project_emotion_state(state: EmotionalStateV1, appraisal: AppraisalV1) -> EmotionStateResponse:
+        """Project ``EmotionalStateV1`` and ``AppraisalV1`` into the public DTO.
 
-        The persisted format uses ``timestamp`` and ``schema_version``;
-        the public contract exposes ``last_update`` and omits internal fields.
+        This produces the typed, versioned ``EmotionStateResponse`` that is safe
+        to send to the browser. No internal fields leak through this projection.
         """
-        return {
-            "pleasure": state.pleasure,
-            "arousal": state.arousal,
-            "dominance": state.dominance,
-            "libido": state.libido,
-            "aggression": state.aggression,
-            "connection": state.connection,
-            "energy": state.energy,
-            "tension": state.tension,
-            "coping_mode": state.coping_mode,
-            "last_update": state.timestamp,
-        }
+        return project_public_emotion(state, appraisal)
 
     @staticmethod
     def _adapt_appraisal_for_relationship(appraisal: AppraisalV1) -> dict:
@@ -235,8 +225,8 @@ class ConversationEngine:
             if background_tasks:
                 background_tasks.add_task(self.run_archival_extraction, turn_ref)
 
-            # Return projected public format (timestamp → last_update, no internal fields)
-            return response_text, self._project_emotion_state(new_state)
+            # Return projected public format (typed DTO, no internal fields)
+            return response_text, self._project_emotion_state(new_state, appraisal)
 
         async with self.lock_manager.lock(user_id):
             task = asyncio.create_task(run_under_lock())

@@ -13,6 +13,7 @@ import os
 from dotenv import load_dotenv
 from .engine import ConversationEngine
 from .memory import MAX_MESSAGE_LENGTH
+from .emotion_presentation import EmotionStateResponse
 
 load_dotenv()
 
@@ -71,7 +72,7 @@ class ChatInput(BaseModel):
 
 class ChatResponse(BaseModel):
     response: str
-    emotion_state: dict
+    emotion_state: EmotionStateResponse
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(

@@ -8,7 +8,9 @@
         "build": "vite build",
         "lint": "eslint .",
         "preview": "vite preview",
-        "test": "node --test tests/*.test.js"
+        "test:node": "node --test tests/*.test.js",
+        "test:component": "vitest run --config vitest.config.mjs",
+        "test": "npm run test:node && npm run test:component"
     },
     "dependencies": {
         "@supabase/auth-ui-react": "^0.4.7",

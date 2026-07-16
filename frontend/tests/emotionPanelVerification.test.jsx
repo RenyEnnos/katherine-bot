@@ -1,6 +1,6 @@
 /* global process */
 process.env.NODE_ENV = 'test';
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';

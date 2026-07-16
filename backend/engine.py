@@ -16,7 +16,13 @@ from .emotional_domain import (
 )
 from .emotion_presentation import project_public_emotion, EmotionStateResponse
 from .memory import MemoryManager
-from .relationship import RelationshipManager, UserRelationship
+from .relationship import (
+    RelationshipStateV1,
+    RelationshipTransitionConfig,
+    compute_bond_label,
+    migrate_legacy_relationship_snapshot,
+    transition_relationship,
+)
 from .lock_manager import UserLockManager
 from .archival_memory import (
     PersistedTurnRef,
@@ -35,7 +41,7 @@ class ConversationEngine:
         self.presentation = AffectiveEngine()  # read-only presentation helpers
         self.transition_config = TransitionConfig.defaults()  # immutable, stateless
         self.memory_manager = MemoryManager(clock=clock)
-        self.relationship_manager = RelationshipManager()
+        self.relationship_config = RelationshipTransitionConfig.defaults()
         self.lock_manager = UserLockManager()
         self.model_main = "llama-3.3-70b-versatile"
         self.model_fast = "llama-3.1-8b-instant"
@@ -129,19 +135,6 @@ class ConversationEngine:
         """
         return project_public_emotion(state, appraisal)
 
-    @staticmethod
-    def _adapt_appraisal_for_relationship(appraisal: AppraisalV1) -> dict:
-        """Adapt a validated ``AppraisalV1`` to the dict format expected by
-        ``RelationshipManager.update_relationship()``.
-
-        This is a temporary adapter that should be redesigned in the
-        appropriate relational issue, not here.
-        """
-        return {
-            "valence": appraisal.valence_shift,
-            "triggered_emotions": dict(appraisal.discrete_emotions),
-        }
-
     async def process_turn(self, user_id: str, user_message: str, background_tasks: Optional[BackgroundTasks] = None):
         async def run_under_lock():
             current_time = self._clock()
@@ -155,11 +148,12 @@ class ConversationEngine:
             emotional_state = migrate_legacy_snapshot(raw_emotional_state)
 
             # Hydrate Relationship State - Enforce authenticated user_id
+            # Identity comes from the authenticated user_id passed to load_user_state
             rel_data = user_state.get("relationship_state")
             if rel_data:
-                relationship = UserRelationship.from_dict(rel_data, user_id=user_id)
+                relationship = migrate_legacy_relationship_snapshot(rel_data)
             else:
-                relationship = UserRelationship(user_id=user_id)
+                relationship = RelationshipStateV1.neutral(timestamp=current_time)
 
             # 2. Perception & Memory Retrieval
             context = await asyncio.to_thread(self.memory_manager.get_context, user_id, user_message, user_state)
@@ -187,9 +181,13 @@ class ConversationEngine:
             )
             new_state = transition_result.state
 
-            # Feed relationship from validated AppraisalV1, never the raw LLM dict
-            perception_for_rel = self._adapt_appraisal_for_relationship(appraisal)
-            relationship = self.relationship_manager.update_relationship(relationship, perception_for_rel)
+            # Feed relationship from validated AppraisalV1 directly
+            relationship = transition_relationship(
+                previous_state=relationship,
+                appraisal=appraisal,
+                current_time=current_time,
+                config=self.relationship_config,
+            )
 
             # 5. Meta-Cognition: DEACTIVATED as per P0 instructions
             adaptation_strategy = ""
@@ -295,7 +293,7 @@ class ConversationEngine:
         Modo de Enfrentamento: {emotion_state.coping_mode}
 
         === SEU RELACIONAMENTO COM O USUÁRIO ===
-        VÍNCULO: {relationship.bond_label}
+        VÍNCULO: {compute_bond_label(relationship)}
         Confiança: {relationship.trust:.2f} | Afeto: {relationship.affection:.2f} | Tensão/Mágoa: {relationship.tension:.2f}
 
         === INSTRUÇÃO DE ATUAÇÃO (IMPORTANTE) ===

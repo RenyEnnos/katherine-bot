@@ -314,13 +314,13 @@ def test_http_chat_load_failure_sanitization(client_app, mock_supabase, caplog):
 def test_http_chat_persistence_failure_sanitization(client_app, mock_supabase, caplog):
     from backend.main import engine
     from backend.emotional_core import EmotionalState
-    from backend.relationship import UserRelationship
+    from backend.relationship import RelationshipStateV1
     mock_supabase.auth.get_user.return_value = MockAuthResponse(user=MockUser("user123"))
 
     # Mock load_user_state to succeed
     engine.memory_manager.load_user_state = MagicMock(return_value={
         "emotional_state": EmotionalState().to_dict(),
-        "relationship_state": UserRelationship(user_id="user123").to_dict()
+        "relationship_state": RelationshipStateV1.neutral(timestamp=time.time()).to_dict()
     })
 
     # Mock sync_state (update) to raise a sensitive exception

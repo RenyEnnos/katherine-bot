@@ -4,7 +4,7 @@ from datetime import datetime, UTC
 from supabase import create_client, Client
 from sentence_transformers import SentenceTransformer
 import time
-from .relationship import UserRelationship
+from .relationship import RelationshipStateV1
 from .emotional_domain import EmotionalStateV1
 from .archival_memory import PersistedTurnRef, ArchivalExtractionEnvelope, ArchivalDuplicateError
 
@@ -123,19 +123,25 @@ class MemoryManager:
         return {
             "persona_config": "Katherine...",
             "user_profile": {},
-            "relationship_state": UserRelationship(user_id=user_id).to_dict(),
+            "relationship_state": RelationshipStateV1.neutral(timestamp=self._clock()).to_dict(),
             "emotional_state": v1_state.to_dict()
         }
 
-    def sync_state(self, user_id: str, emotional_state: EmotionalStateV1, relationship: UserRelationship, user_profile: dict = None):
+    def sync_state(self, user_id: str, emotional_state: EmotionalStateV1, relationship: RelationshipStateV1, user_profile: dict = None):
         """
         Persists the current state to Supabase.
-        Accepts only ``EmotionalStateV1`` (serialized via ``.to_dict()`` for JSONB).
-        Raises ``StatePersistenceError`` on invalid type or database failure.
+        Accepts only ``EmotionalStateV1`` and ``RelationshipStateV1`` (serialized via
+        ``.to_dict()`` for JSONB). Raises ``StatePersistenceError`` on invalid type
+        or database failure.
         """
         if not isinstance(emotional_state, EmotionalStateV1):
             raise StatePersistenceError(
                 "emotional_state must be an EmotionalStateV1 instance."
+            )
+
+        if not isinstance(relationship, RelationshipStateV1):
+            raise StatePersistenceError(
+                "relationship must be a RelationshipStateV1 instance."
             )
 
         if not self.supabase:

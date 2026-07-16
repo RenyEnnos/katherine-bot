@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 from backend.engine import ConversationEngine
 from backend.emotional_core import EmotionalState, AffectiveEngine
 from backend.emotional_domain import AppraisalV1, EmotionalStateV1, ParseErrorCode, parse_llm_appraisal
-from backend.relationship import UserRelationship
+from backend.relationship import RelationshipStateV1
 from backend.memory import StatePersistenceError, StateLoadError, MemoryManager
 
 
@@ -76,7 +76,8 @@ def test_identity_binding():
         engine = ConversationEngine()
         auth_id = "auth_user"
         engine.memory_manager.load_user_state = MagicMock(return_value={
-            "relationship_state": {"user_id": "wrong"},
+            "relationship_state": {"user_id": "wrong", "trust": 0.5, "affection": 0.3,
+                                    "tension": 0.0, "triggers": [], "last_interaction": time.time()},
             "emotional_state": _legacy_emotion_dict(),
         })
         m = MagicMock(); m.choices = [MagicMock()]; m.choices[0].message.content = "Hi"
@@ -88,7 +89,9 @@ def test_identity_binding():
         await engine.process_turn(auth_id, "Hello")
         args, _ = sync_mock.call_args
         assert args[0] == auth_id
-        assert args[2].user_id == auth_id
+        # The relationship is now RelationshipStateV1 (no user_id field)
+        # Identity is verified by the user_id argument, not from the state
+        assert args[0] == auth_id
     asyncio.run(run_test())
 
 def test_fail_closed_load():
@@ -207,7 +210,7 @@ def test_lock_cleanup_on_cancellation_during_thread_work():
             load_finished = True
             return {
                 "emotional_state": _legacy_emotion_dict(),
-                "relationship_state": UserRelationship(user_id=uid).to_dict()
+                "relationship_state": RelationshipStateV1.neutral(timestamp=time.time()).to_dict()
             }
 
         engine.memory_manager.load_user_state = MagicMock(side_effect=mock_load)
@@ -404,7 +407,7 @@ def test_lock_cleanup_on_repeated_cancellation_during_thread_work():
             load_finished = True
             return {
                 "emotional_state": _legacy_emotion_dict(),
-                "relationship_state": UserRelationship(user_id=uid).to_dict()
+                "relationship_state": RelationshipStateV1.neutral(timestamp=time.time()).to_dict()
             }
 
         engine.memory_manager.load_user_state = MagicMock(side_effect=mock_load)

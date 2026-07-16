@@ -260,7 +260,7 @@ async def test_process_turn_schedules_background_task(backend):
 
 def test_chat_response_format(client_app, mock_supabase):
     from backend.main import engine
-    from backend.relationship import UserRelationship
+    from backend.relationship import RelationshipStateV1
     
     mock_user = MockUser(id="user123")
     mock_supabase.auth.get_user.return_value = MockAuthResponse(user=mock_user)
@@ -268,7 +268,7 @@ def test_chat_response_format(client_app, mock_supabase):
     # Mock load_user_state to succeed with valid legacy emotion state
     engine.memory_manager.load_user_state = MagicMock(return_value={
         "emotional_state": _valid_legacy_emotion_dict(),
-        "relationship_state": UserRelationship(user_id="user123").to_dict()
+        "relationship_state": RelationshipStateV1.neutral(timestamp=1700000000.0).to_dict()
     })
     
     from backend.emotion_presentation import EmotionStateResponse, PublicPAD, PublicDominantEmotion

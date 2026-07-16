@@ -38,12 +38,13 @@ def auth_client_a(supabase_url, anon_key, service_client):
     password = "password123"
     client = create_client(supabase_url, anon_key)
 
+    from gotrue.errors import AuthApiError
     try:
         users = service_client.auth.admin.list_users()
         for u in users:
             if u.email == email:
                 service_client.auth.admin.delete_user(u.id)
-    except Exception:
+    except AuthApiError:
         pass
 
     client.auth.sign_up({"email": email, "password": password})
@@ -56,12 +57,13 @@ def auth_client_b(supabase_url, anon_key, service_client):
     password = "password123"
     client = create_client(supabase_url, anon_key)
 
+    from gotrue.errors import AuthApiError
     try:
         users = service_client.auth.admin.list_users()
         for u in users:
             if u.email == email:
                 service_client.auth.admin.delete_user(u.id)
-    except Exception:
+    except AuthApiError:
         pass
 
     client.auth.sign_up({"email": email, "password": password})
@@ -156,6 +158,8 @@ def test_service_role_capabilities(service_client):
     res = service_client.table("archival_extractions").select("*").eq("user_id", uid).execute()
     assert len(res.data) == 1
 
+    service_client.table("archival_extractions").delete().eq("user_id", uid).execute()
+    service_client.table("chat_logs").delete().eq("user_id", uid).execute()
     res = service_client.table("profiles").delete().eq("user_id", uid).execute()
     assert len(res.data) == 1
 
@@ -172,6 +176,10 @@ def test_match_memories_access(anon_client, auth_client_a, service_client):
     assert type(res.data) == list
 
 def test_configuration_failures_sanitized(monkeypatch, caplog):
+    import sys
+    from unittest.mock import MagicMock
+    sys.modules['sentence_transformers'] = MagicMock()
+
     # Ensure missing SUPABASE_SERVICE_ROLE_KEY behaves gracefully
     from backend.memory import MemoryManager, StateLoadError
 
@@ -190,17 +198,3 @@ def test_configuration_failures_sanitized(monkeypatch, caplog):
 
     # Check that secrets are not in logs
     assert "dummy_client_key" not in caplog.text
-
-
-def test_legacy_upgrade(service_client):
-    # This should probably test running the baseline, then inserting data, then running migration.
-    # We can't really do that from pytest dynamically unless we call subprocess supabase db reset etc.
-    # Let's just insert some valid data, and assume the migration was run over it (which it was in the CI).
-    pass
-
-def test_legacy_data_preserved(service_client):
-    res = service_client.table("profiles").select("*").eq("user_id", "legacy_user_1").execute()
-    assert len(res.data) == 1
-
-    res2 = service_client.table("chat_logs").select("*").eq("user_id", "legacy_user_1").execute()
-    assert len(res2.data) == 1

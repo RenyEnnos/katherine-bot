@@ -1,7 +1,7 @@
 BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS pgtap;
-SELECT plan(37);
+SELECT plan(48);
 
 -- 1. RLS Enabled
 SELECT tables_are_enabled(
@@ -62,21 +62,49 @@ SELECT throws_ok('empty_content', '23514');
 SELECT has_index('public', 'chat_logs', 'chat_logs_user_id_created_at_id_idx');
 SELECT index_is_type('public', 'chat_logs', 'chat_logs_user_id_created_at_id_idx', 'btree');
 SELECT is(
-    (SELECT string_agg(a.attname, ',' ORDER BY i.indkey::text)
-     FROM pg_index i
-     JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY((string_to_array(i.indkey::text, ' ')::int2[]))
-     WHERE i.indexrelid = 'chat_logs_user_id_created_at_id_idx'::regclass),
-    'user_id,created_at,id',
-    'Index columns are correct'
+    (SELECT pg_get_indexdef('chat_logs_user_id_created_at_id_idx'::regclass)),
+    'CREATE INDEX chat_logs_user_id_created_at_id_idx ON public.chat_logs USING btree (user_id, created_at DESC, id DESC)',
+    'Index columns and DESC order are correct'
 );
 
 -- 8. FK testing (chat_logs does NOT have cascade)
 SELECT has_fk('public', 'chat_logs', 'chat_logs_user_id_fkey');
 
+
 -- 9. Archival Extraction FKs and unique
+SELECT is(
+    (SELECT confdeltype FROM pg_constraint WHERE conname = 'archival_extractions_user_id_fkey'),
+    'c'::"char",
+    'archival_extractions_user_id_fkey has ON DELETE CASCADE'
+);
+SELECT is(
+    (SELECT confdeltype FROM pg_constraint WHERE conname = 'archival_extractions_user_id_source_chat_log_id_fkey'),
+    'c'::"char",
+    'archival_extractions_user_id_source_chat_log_id_fkey has ON DELETE CASCADE'
+);
+
 SELECT has_fk('public', 'archival_extractions', 'archival_extractions_user_id_fkey');
 SELECT has_fk('public', 'archival_extractions', 'archival_extractions_user_id_source_chat_log_id_fkey');
 SELECT has_index('public', 'archival_extractions', 'archival_extractions_idempotency_key_idx');
+
+-- Test default privileges by creating new objects
+CREATE TABLE public.test_new_table (id int);
+CREATE SEQUENCE public.test_new_seq;
+CREATE FUNCTION public.test_new_func() RETURNS void LANGUAGE sql AS $$ SELECT 1; $$;
+
+SELECT table_privs_are('public', 'test_new_table', 'PUBLIC', ARRAY[]::text[], 'No default privileges for new tables to PUBLIC');
+SELECT table_privs_are('public', 'test_new_table', 'anon', ARRAY[]::text[], 'No default privileges for new tables to anon');
+SELECT table_privs_are('public', 'test_new_table', 'authenticated', ARRAY[]::text[], 'No default privileges for new tables to authenticated');
+
+SELECT sequence_privs_are('public', 'test_new_seq', 'PUBLIC', ARRAY[]::text[], 'No default privileges for new seqs to PUBLIC');
+SELECT sequence_privs_are('public', 'test_new_seq', 'anon', ARRAY[]::text[], 'No default privileges for new seqs to anon');
+SELECT sequence_privs_are('public', 'test_new_seq', 'authenticated', ARRAY[]::text[], 'No default privileges for new seqs to authenticated');
+
+SELECT function_privs_are('public', 'test_new_func', ARRAY[]::text[], 'PUBLIC', ARRAY[]::text[], 'No default privileges for new funcs to PUBLIC');
+SELECT function_privs_are('public', 'test_new_func', ARRAY[]::text[], 'anon', ARRAY[]::text[], 'No default privileges for new funcs to anon');
+SELECT function_privs_are('public', 'test_new_func', ARRAY[]::text[], 'authenticated', ARRAY[]::text[], 'No default privileges for new funcs to authenticated');
+
+ROLLBACK;
 
 SELECT * FROM finish();
 ROLLBACK;

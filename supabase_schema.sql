@@ -47,7 +47,7 @@ returns table (
 language plpgsql
 as $$
 begin
-  return query;
+  return query
   select
     memories.id,
     memories.content,

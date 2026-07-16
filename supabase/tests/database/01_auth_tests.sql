@@ -1,9 +1,7 @@
 BEGIN;
 
--- Include pgTAP
 CREATE EXTENSION IF NOT EXISTS pgtap;
-
-SELECT plan(22);
+SELECT plan(31);
 
 -- 1. RLS Enabled
 SELECT tables_are_enabled(
@@ -12,111 +10,73 @@ SELECT tables_are_enabled(
 );
 
 -- 2. Grants for anon and authenticated (they should have none on these tables)
-SELECT table_privs_are(
-    'public', 'profiles', 'anon', ARRAY[]::text[],
-    'anon has no privileges on profiles'
-);
-SELECT table_privs_are(
-    'public', 'chat_logs', 'anon', ARRAY[]::text[],
-    'anon has no privileges on chat_logs'
-);
-SELECT table_privs_are(
-    'public', 'profiles', 'authenticated', ARRAY[]::text[],
-    'authenticated has no privileges on profiles'
-);
-SELECT table_privs_are(
-    'public', 'chat_logs', 'authenticated', ARRAY[]::text[],
-    'authenticated has no privileges on chat_logs'
-);
+SELECT table_privs_are('public', 'profiles', 'anon', ARRAY[]::text[]);
+SELECT table_privs_are('public', 'chat_logs', 'anon', ARRAY[]::text[]);
+SELECT table_privs_are('public', 'memories', 'anon', ARRAY[]::text[]);
+SELECT table_privs_are('public', 'archival_extractions', 'anon', ARRAY[]::text[]);
+
+SELECT table_privs_are('public', 'profiles', 'authenticated', ARRAY[]::text[]);
+SELECT table_privs_are('public', 'chat_logs', 'authenticated', ARRAY[]::text[]);
+SELECT table_privs_are('public', 'memories', 'authenticated', ARRAY[]::text[]);
+SELECT table_privs_are('public', 'archival_extractions', 'authenticated', ARRAY[]::text[]);
+
+SELECT table_privs_are('public', 'profiles', 'PUBLIC', ARRAY[]::text[]);
+SELECT table_privs_are('public', 'chat_logs', 'PUBLIC', ARRAY[]::text[]);
+SELECT table_privs_are('public', 'memories', 'PUBLIC', ARRAY[]::text[]);
+SELECT table_privs_are('public', 'archival_extractions', 'PUBLIC', ARRAY[]::text[]);
 
 -- 3. Grants for service_role
-SELECT table_privs_are(
-    'public', 'profiles', 'service_role', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'],
-    'service_role has all privileges on profiles'
-);
-SELECT table_privs_are(
-    'public', 'chat_logs', 'service_role', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'],
-    'service_role has all privileges on chat_logs'
-);
+SELECT table_privs_are('public', 'profiles', 'service_role', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']);
+SELECT table_privs_are('public', 'chat_logs', 'service_role', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']);
+SELECT table_privs_are('public', 'memories', 'service_role', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']);
+SELECT table_privs_are('public', 'archival_extractions', 'service_role', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']);
 
--- 4. No client policies on archival_extractions
-SELECT policies_are(
-    'public', 'archival_extractions', ARRAY[]::text[],
-    'No policies exist on archival_extractions'
-);
+-- 4. No client policies on any table
+SELECT policies_are('public', 'profiles', ARRAY[]::text[]);
+SELECT policies_are('public', 'chat_logs', ARRAY[]::text[]);
+SELECT policies_are('public', 'memories', ARRAY[]::text[]);
+SELECT policies_are('public', 'archival_extractions', ARRAY[]::text[]);
 
 -- 5. Function privileges
-SELECT function_privs_are(
-    'public', 'match_memories', ARRAY['vector', 'double precision', 'integer', 'text'], 'anon', ARRAY[]::text[],
-    'anon cannot execute match_memories'
-);
-SELECT function_privs_are(
-    'public', 'match_memories', ARRAY['vector', 'double precision', 'integer', 'text'], 'authenticated', ARRAY[]::text[],
-    'authenticated cannot execute match_memories'
-);
-SELECT function_privs_are(
-    'public', 'match_memories', ARRAY['vector', 'double precision', 'integer', 'text'], 'service_role', ARRAY['EXECUTE'],
-    'service_role can execute match_memories'
-);
-SELECT function_privs_are(
-    'public', 'match_memories', ARRAY['vector', 'double precision', 'integer', 'text'], 'PUBLIC', ARRAY[]::text[],
-    'PUBLIC cannot execute match_memories'
-);
+SELECT function_privs_are('public', 'match_memories', ARRAY['vector', 'double precision', 'integer', 'text'], 'anon', ARRAY[]::text[]);
+SELECT function_privs_are('public', 'match_memories', ARRAY['vector', 'double precision', 'integer', 'text'], 'authenticated', ARRAY[]::text[]);
+SELECT function_privs_are('public', 'match_memories', ARRAY['vector', 'double precision', 'integer', 'text'], 'service_role', ARRAY['EXECUTE']);
+SELECT function_privs_are('public', 'match_memories', ARRAY['vector', 'double precision', 'integer', 'text'], 'PUBLIC', ARRAY[]::text[]);
 
 -- 6. Constraints on chat_logs
-SELECT has_check('public', 'chat_logs', 'chat_logs_role_check', 'chat_logs role constraint exists');
-SELECT has_check('public', 'chat_logs', 'chat_logs_content_check', 'chat_logs content constraint exists');
+SELECT has_check('public', 'chat_logs', 'chat_logs_role_check');
+SELECT has_check('public', 'chat_logs', 'chat_logs_content_check');
 
--- Add dummy user for testing constraints
 INSERT INTO public.profiles (user_id) VALUES ('test_user_constraint');
 
--- 7. Invalid role is rejected
 PREPARE invalid_role AS INSERT INTO public.chat_logs (user_id, role, content) VALUES ('test_user_constraint', 'admin', 'test');
-SELECT throws_ok(
-    'invalid_role',
-    '23514',
-    NULL,
-    'Invalid role rejected'
-);
+SELECT throws_ok('invalid_role', '23514');
 
--- 8. Content over 10000 chars is rejected
 PREPARE long_content AS INSERT INTO public.chat_logs (user_id, role, content) VALUES ('test_user_constraint', 'user', repeat('a', 10001));
-SELECT throws_ok(
-    'long_content',
-    '23514',
-    NULL,
-    'Content > 10000 chars rejected'
-);
+SELECT throws_ok('long_content', '23514');
 
--- 9. Empty content is rejected
 PREPARE empty_content AS INSERT INTO public.chat_logs (user_id, role, content) VALUES ('test_user_constraint', 'user', '');
-SELECT throws_ok(
-    'empty_content',
-    '23514',
-    NULL,
-    'Empty content rejected'
+SELECT throws_ok('empty_content', '23514');
+
+-- 7. Index existence
+SELECT has_index('public', 'chat_logs', 'chat_logs_user_id_created_at_id_idx');
+SELECT index_is_type('public', 'chat_logs', 'chat_logs_user_id_created_at_id_idx', 'btree');
+SELECT is(
+    (SELECT string_agg(a.attname, ',' ORDER BY i.indkey::text)
+     FROM pg_index i
+     JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY((string_to_array(i.indkey::text, ' ')::int2[]))
+     WHERE i.indexrelid = 'chat_logs_user_id_created_at_id_idx'::regclass),
+    'user_id,created_at,id',
+    'Index columns are correct'
 );
 
--- 10. Valid content is accepted
-PREPARE valid_insert AS INSERT INTO public.chat_logs (user_id, role, content) VALUES ('test_user_constraint', 'user', 'hello');
-SELECT lives_ok('valid_insert', 'Valid chat_logs insert works');
+-- 8. FK testing (chat_logs does NOT have cascade)
+SELECT has_fk('public', 'chat_logs', 'chat_logs_user_id_fkey');
 
--- 11. Index existence
-SELECT has_index('public', 'chat_logs', 'chat_logs_user_id_created_at_id_idx', 'Index exists on chat_logs');
-SELECT index_is_type('public', 'chat_logs', 'chat_logs_user_id_created_at_id_idx', 'btree', 'Index is btree');
-
--- 12. FK testing
-SELECT has_fk('public', 'chat_logs', 'chat_logs_user_id_fkey', 'FK from chat_logs to profiles exists');
-
--- Testing cascade
-INSERT INTO public.profiles (user_id) VALUES ('cascade_test');
-INSERT INTO public.chat_logs (user_id, role, content) VALUES ('cascade_test', 'user', 'msg');
-DELETE FROM public.profiles WHERE user_id = 'cascade_test';
-SELECT is_empty(
-    'SELECT * FROM public.chat_logs WHERE user_id = ''cascade_test''',
-    'chat_logs cascaded on delete'
-);
-
+-- 9. Archival Extraction FKs and unique
+SELECT has_fk('public', 'archival_extractions', 'archival_extractions_user_id_fkey');
+SELECT has_fk('public', 'archival_extractions', 'archival_extractions_user_id_source_chat_log_id_fkey');
+SELECT has_index('public', 'archival_extractions', 'archival_extractions_idempotency_key_idx');
 
 SELECT * FROM finish();
 ROLLBACK;

@@ -22,10 +22,10 @@ REVOKE ALL PRIVILEGES ON TABLE public.memories FROM PUBLIC;
 REVOKE ALL PRIVILEGES ON TABLE public.archival_extractions FROM PUBLIC;
 
 -- 4. Grant explicit minimal privileges to service_role
-GRANT ALL ON TABLE public.profiles TO service_role;
-GRANT ALL ON TABLE public.chat_logs TO service_role;
-GRANT ALL ON TABLE public.memories TO service_role;
-GRANT ALL ON TABLE public.archival_extractions TO service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.profiles TO service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.chat_logs TO service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.memories TO service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.archival_extractions TO service_role;
 
 -- Grant usage on sequences to service_role
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO service_role;
@@ -83,3 +83,9 @@ END $$;
 
 -- 7. Add index to chat_logs
 CREATE INDEX IF NOT EXISTS chat_logs_user_id_created_at_id_idx ON public.chat_logs (user_id, created_at DESC, id DESC);
+
+
+-- 8. Hardening future objects
+ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC, anon, authenticated;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM PUBLIC, anon, authenticated;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON FUNCTIONS FROM PUBLIC, anon, authenticated;

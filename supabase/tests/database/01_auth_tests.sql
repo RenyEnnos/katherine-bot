@@ -56,8 +56,14 @@ SELECT function_privs_are('public', 'match_memories', ARRAY['vector', 'double pr
 SELECT function_privs_are('public', 'match_memories', ARRAY['vector', 'double precision', 'integer', 'text'], 'PUBLIC', ARRAY[]::text[]);
 
 -- 6. Constraints on chat_logs
-SELECT has_check('public', 'chat_logs', 'chat_logs_role_check');
-SELECT has_check('public', 'chat_logs', 'chat_logs_content_check');
+SELECT ok(
+    (SELECT EXISTS(SELECT 1 FROM pg_constraint WHERE conname = 'chat_logs_role_check' AND conrelid = 'chat_logs'::regclass)),
+    'chat_logs has chat_logs_role_check constraint'
+);
+SELECT ok(
+    (SELECT EXISTS(SELECT 1 FROM pg_constraint WHERE conname = 'chat_logs_content_check' AND conrelid = 'chat_logs'::regclass)),
+    'chat_logs has chat_logs_content_check constraint'
+);
 
 INSERT INTO public.profiles (user_id) VALUES ('test_user_constraint');
 
@@ -80,7 +86,10 @@ SELECT is(
 );
 
 -- 8. FK testing (chat_logs does NOT have cascade)
-SELECT has_fk('public', 'chat_logs', 'chat_logs_user_id_fkey');
+SELECT ok(
+    (SELECT EXISTS(SELECT 1 FROM pg_constraint WHERE conname = 'chat_logs_user_id_fkey' AND conrelid = 'chat_logs'::regclass)),
+    'chat_logs has chat_logs_user_id_fkey'
+);
 
 
 -- 9. Archival Extraction FKs and unique
@@ -95,8 +104,14 @@ SELECT is(
     'archival_extractions_user_id_source_chat_log_id_fkey has ON DELETE CASCADE'
 );
 
-SELECT has_fk('public', 'archival_extractions', 'archival_extractions_user_id_fkey');
-SELECT has_fk('public', 'archival_extractions', 'archival_extractions_user_id_source_chat_log_id_fkey');
+SELECT ok(
+    (SELECT EXISTS(SELECT 1 FROM pg_constraint WHERE conname = 'archival_extractions_user_id_fkey' AND conrelid = 'archival_extractions'::regclass)),
+    'archival_extractions has archival_extractions_user_id_fkey'
+);
+SELECT ok(
+    (SELECT EXISTS(SELECT 1 FROM pg_constraint WHERE conname = 'archival_extractions_user_id_source_chat_log_id_fkey' AND conrelid = 'archival_extractions'::regclass)),
+    'archival_extractions has archival_extractions_user_id_source_chat_log_id_fkey'
+);
 SELECT has_index('public', 'archival_extractions', 'archival_extractions_idempotency_key_idx');
 
 -- Test default privileges by creating new objects

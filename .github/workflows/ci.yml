@@ -53,10 +53,22 @@ jobs:
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
         run: |
-          # Use supabase status to extract keys directly
+          set -euo pipefail
+
           export SUPABASE_URL="http://127.0.0.1:54321"
-          export SUPABASE_ANON_KEY=$(supabase status -o env | grep ANON_KEY | cut -d '=' -f2 | tr -d '"')
-          export SUPABASE_SERVICE_ROLE_KEY=$(supabase status -o env | grep SERVICE_ROLE_KEY | cut -d '=' -f2 | tr -d '"')
+
+          status_json="$(supabase status --json)"
+          echo "Supabase status verified (no secrets printed)"
+
+          env_out="$(supabase status -o env)"
+          export SUPABASE_ANON_KEY="$(printf '%s\n' "$env_out" | grep '^ANON_KEY=' | cut -d '=' -f2 | tr -d '"')"
+          export SUPABASE_SERVICE_ROLE_KEY="$(printf '%s\n' "$env_out" | grep '^SERVICE_ROLE_KEY=' | cut -d '=' -f2 | tr -d '"')"
+
+          if [ -z "$SUPABASE_ANON_KEY" ] || [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "Failed to extract Supabase keys from status output" >&2
+            exit 1
+          fi
+
           export PYTHONPATH="."
           python -m pytest backend/tests/test_database_authorization_integration.py backend/tests/test_legacy_upgrade.py
 

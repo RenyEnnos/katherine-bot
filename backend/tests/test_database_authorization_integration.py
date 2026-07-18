@@ -38,14 +38,10 @@ def auth_client_a(supabase_url, anon_key, service_client):
     password = "password123"
     client = create_client(supabase_url, anon_key)
 
-    from gotrue.errors import AuthApiError
-    try:
-        users = service_client.auth.admin.list_users()
-        for u in users:
-            if u.email == email:
-                service_client.auth.admin.delete_user(u.id)
-    except AuthApiError:
-        pass
+    users = service_client.auth.admin.list_users()
+    for u in users:
+        if u.email == email:
+            service_client.auth.admin.delete_user(u.id)
 
     client.auth.sign_up({"email": email, "password": password})
     res = client.auth.sign_in_with_password({"email": email, "password": password})
@@ -57,14 +53,10 @@ def auth_client_b(supabase_url, anon_key, service_client):
     password = "password123"
     client = create_client(supabase_url, anon_key)
 
-    from gotrue.errors import AuthApiError
-    try:
-        users = service_client.auth.admin.list_users()
-        for u in users:
-            if u.email == email:
-                service_client.auth.admin.delete_user(u.id)
-    except AuthApiError:
-        pass
+    users = service_client.auth.admin.list_users()
+    for u in users:
+        if u.email == email:
+            service_client.auth.admin.delete_user(u.id)
 
     client.auth.sign_up({"email": email, "password": password})
     res = client.auth.sign_in_with_password({"email": email, "password": password})
@@ -74,8 +66,10 @@ def auth_client_b(supabase_url, anon_key, service_client):
 def assert_denied(op, *args, **kwargs):
     with pytest.raises(APIError) as exc:
         op(*args, **kwargs).execute()
-    # PostgREST typically returns 401 or 403 or 42501 for RLS / permission denied.
-    assert exc.value.code in ("42501", "PGRST301") or "401" in str(exc.value) or "403" in str(exc.value)
+    code = getattr(exc.value, "code", None)
+    message = getattr(exc.value, "message", "") or ""
+    details = getattr(exc.value, "details", "") or ""
+    assert code in ("42501", "PGRST301") or "permission denied" in message.lower() or "insufficient privileges" in details.lower()
 
 
 def get_valid_payload(table, uid, id_suffix="1", source_log_id=1):
@@ -89,13 +83,24 @@ def get_valid_payload(table, uid, id_suffix="1", source_log_id=1):
         return {"user_id": uid, "source_chat_log_id": source_log_id, "extractor_version": 1, "schema_version": 1, "idempotency_key": f"{uid}_{id_suffix}", "facts": []}
     return {}
 
+def get_valid_update_payload(table):
+    if table == "profiles":
+        return {"persona_config": "updated"}
+    if table == "chat_logs":
+        return {"role": "assistant"}
+    if table == "memories":
+        return {"content": "updated_mem"}
+    if table == "archival_extractions":
+        return {"facts": [{"content": "updated"}]}
+    return {}
+
 def test_anon_matrix(anon_client):
     tables = ["profiles", "chat_logs", "memories", "archival_extractions"]
     for table in tables:
         assert_denied(anon_client.table(table).select, "*")
         assert_denied(anon_client.table(table).insert, get_valid_payload(table, "anon", "1"))
-        assert_denied(anon_client.table(table).update, {"content": "2"})
-        assert_denied(anon_client.table(table).delete)
+        assert_denied(anon_client.table(table).update(get_valid_update_payload(table)).eq, "user_id", "anon")
+        assert_denied(anon_client.table(table).delete().eq, "user_id", "anon")
 
 def test_auth_a_matrix(auth_client_a, auth_client_b, service_client):
     client_a, uid_a = auth_client_a
@@ -114,13 +119,13 @@ def test_auth_a_matrix(auth_client_a, auth_client_b, service_client):
         # Own data
         assert_denied(client_a.table(table).select("*").eq, "user_id", uid_a)
         assert_denied(client_a.table(table).insert, get_valid_payload(table, uid_a, "a1", log_id_a))
-        assert_denied(client_a.table(table).update({"content": "2"}).eq, "user_id", uid_a)
+        assert_denied(client_a.table(table).update(get_valid_update_payload(table)).eq, "user_id", uid_a)
         assert_denied(client_a.table(table).delete().eq, "user_id", uid_a)
 
         # B's data
         assert_denied(client_a.table(table).select("*").eq, "user_id", uid_b)
         assert_denied(client_a.table(table).insert, get_valid_payload(table, uid_b, "a2", log_id_b))
-        assert_denied(client_a.table(table).update({"content": "2"}).eq, "user_id", uid_b)
+        assert_denied(client_a.table(table).update(get_valid_update_payload(table)).eq, "user_id", uid_b)
         assert_denied(client_a.table(table).delete().eq, "user_id", uid_b)
 
 def test_auth_b_matrix(auth_client_a, auth_client_b, service_client):
@@ -138,13 +143,13 @@ def test_auth_b_matrix(auth_client_a, auth_client_b, service_client):
         # Own data
         assert_denied(client_b.table(table).select("*").eq, "user_id", uid_b)
         assert_denied(client_b.table(table).insert, get_valid_payload(table, uid_b, "b1", log_id_b))
-        assert_denied(client_b.table(table).update({"content": "2"}).eq, "user_id", uid_b)
+        assert_denied(client_b.table(table).update(get_valid_update_payload(table)).eq, "user_id", uid_b)
         assert_denied(client_b.table(table).delete().eq, "user_id", uid_b)
 
         # A's data
         assert_denied(client_b.table(table).select("*").eq, "user_id", uid_a)
         assert_denied(client_b.table(table).insert, get_valid_payload(table, uid_a, "b2", log_id_a))
-        assert_denied(client_b.table(table).update({"content": "2"}).eq, "user_id", uid_a)
+        assert_denied(client_b.table(table).update(get_valid_update_payload(table)).eq, "user_id", uid_a)
         assert_denied(client_b.table(table).delete().eq, "user_id", uid_a)
 
 def test_service_role_capabilities(service_client):
@@ -179,6 +184,19 @@ def test_service_role_capabilities(service_client):
 
     res = service_client.table("archival_extractions").select("*").eq("user_id", uid).execute()
     assert len(res.data) == 1
+
+    mem_res = service_client.table("memories").insert({"user_id": uid, "content": "mem1"}).execute()
+    assert len(mem_res.data) == 1
+
+    mem_upd = service_client.table("memories").update({"content": "mem1_updated"}).eq("user_id", uid).execute()
+    assert len(mem_upd.data) == 1
+
+    mem_sel = service_client.table("memories").select("*").eq("user_id", uid).execute()
+    assert len(mem_sel.data) == 1
+
+    service_client.table("memories").delete().eq("user_id", uid).execute()
+    mem_del = service_client.table("memories").select("*").eq("user_id", uid).execute()
+    assert len(mem_del.data) == 0
 
     service_client.table("archival_extractions").delete().eq("user_id", uid).execute()
     service_client.table("chat_logs").delete().eq("user_id", uid).execute()
@@ -220,3 +238,24 @@ def test_configuration_failures_sanitized(monkeypatch, caplog):
 
     # Check that secrets are not in logs
     assert "dummy_client_key" not in caplog.text
+
+    # Test success path with valid-looking env does not log secrets
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "valid_service_key")
+    monkeypatch.setenv("SUPABASE_URL", "http://127.0.0.1:54321")
+
+    mm2 = MemoryManager()
+    assert mm2.supabase is not None
+    assert "valid_service_key" not in caplog.text
+
+    # Test client construction with invalid URL fails closed and does not leak secrets
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "valid_service_key")
+    monkeypatch.setenv("SUPABASE_URL", "not-a-valid-url")
+
+    mm3 = MemoryManager()
+    assert mm3.supabase is None
+
+    # Verify no raw JWT/payload/SQL markers leaked into logs
+    assert "eyJ" not in caplog.text
+    assert "SELECT" not in caplog.text
+    assert "INSERT" not in caplog.text
+    assert "payload" not in caplog.text.lower()

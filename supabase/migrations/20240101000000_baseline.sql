@@ -83,4 +83,3 @@ create policy "Users can select their own archival extractions"
   on archival_extractions
   for select
   using (auth.uid()::text = user_id);
-

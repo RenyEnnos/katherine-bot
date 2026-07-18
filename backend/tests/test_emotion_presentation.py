@@ -529,7 +529,7 @@ class TestNoInfraDependencies:
         script = textwrap.dedent('''
             import sys
             import os
-            for k in ["GROQ_API_KEY", "GROQ_API_KEY_2", "SUPABASE_URL", "SUPABASE_KEY"]:
+            for k in ["GROQ_API_KEY", "GROQ_API_KEY_2", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]:
                 os.environ.pop(k, None)
 
             from backend.emotion_presentation import (

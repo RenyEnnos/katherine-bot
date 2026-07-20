@@ -1,7 +1,7 @@
 BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS pgtap;
-SELECT plan(51);
+SELECT plan(55);
 
 -- =================================================================
 -- 1. RLS Enabled
@@ -54,30 +54,23 @@ SELECT table_privs_are('public', 'chat_logs', 'authenticated', ARRAY[]::text[]);
 SELECT table_privs_are('public', 'memories', 'authenticated', ARRAY[]::text[]);
 SELECT table_privs_are('public', 'archival_extractions', 'authenticated', ARRAY[]::text[]);
 
--- PUBLIC is a pseudo-role not in pg_roles, so table_privs_are cannot look it up.
--- Use direct information_schema query instead.
-SELECT is(
-    (SELECT count(*)::int FROM information_schema.role_table_grants
-     WHERE grantee = 'PUBLIC' AND table_name = 'profiles'),
-    0,
+-- PUBLIC privileges: use has_table_privilege('public', ...) directly.
+-- information_schema.role_table_grants omits grants to PUBLIC, so it cannot
+-- be used to prove absence of PUBLIC privileges.
+SELECT ok(
+    NOT has_table_privilege('public', 'public.profiles', 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'),
     'PUBLIC has no privileges on profiles'
 );
-SELECT is(
-    (SELECT count(*)::int FROM information_schema.role_table_grants
-     WHERE grantee = 'PUBLIC' AND table_name = 'chat_logs'),
-    0,
+SELECT ok(
+    NOT has_table_privilege('public', 'public.chat_logs', 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'),
     'PUBLIC has no privileges on chat_logs'
 );
-SELECT is(
-    (SELECT count(*)::int FROM information_schema.role_table_grants
-     WHERE grantee = 'PUBLIC' AND table_name = 'memories'),
-    0,
+SELECT ok(
+    NOT has_table_privilege('public', 'public.memories', 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'),
     'PUBLIC has no privileges on memories'
 );
-SELECT is(
-    (SELECT count(*)::int FROM information_schema.role_table_grants
-     WHERE grantee = 'PUBLIC' AND table_name = 'archival_extractions'),
-    0,
+SELECT ok(
+    NOT has_table_privilege('public', 'public.archival_extractions', 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'),
     'PUBLIC has no privileges on archival_extractions'
 );
 
@@ -104,9 +97,10 @@ SELECT function_privs_are('public', 'match_memories', ARRAY['vector', 'double pr
 SELECT function_privs_are('public', 'match_memories', ARRAY['vector', 'double precision', 'integer', 'text'], 'authenticated', ARRAY[]::text[]);
 SELECT function_privs_are('public', 'match_memories', ARRAY['vector', 'double precision', 'integer', 'text'], 'service_role', ARRAY['EXECUTE']);
 
--- PUBLIC function privileges: use has_function_privilege directly
+-- PUBLIC function privileges: use has_function_privilege with lowercase 'public'
+-- (capital 'PUBLIC' is not recognized as a pseudo-role by has_function_privilege)
 SELECT ok(
-    NOT has_function_privilege('PUBLIC', 'public.match_memories(vector, double precision, integer, text)', 'EXECUTE'),
+    NOT has_function_privilege('public', 'public.match_memories(vector, double precision, integer, text)', 'EXECUTE'),
     'PUBLIC has no EXECUTE on match_memories'
 );
 
@@ -191,30 +185,49 @@ CREATE TABLE public.test_new_table (id int);
 CREATE SEQUENCE public.test_new_seq;
 CREATE FUNCTION public.test_new_func() RETURNS void LANGUAGE sql AS $$ SELECT 1; $$;
 
--- Default privileges for new tables: verify no PUBLIC/anon/authenticated grants exist
+-- Default privileges: information_schema.role_*_grants correctly reports real roles
+-- (anon, authenticated) but OMITS grants to PUBLIC. Use has_*_privilege('public', ...)
+-- for PUBLIC checks and information_schema for anon/authenticated.
+
+-- Tables: PUBLIC check
+SELECT ok(
+    NOT has_table_privilege('public', 'public.test_new_table', 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'),
+    'No default table privileges to PUBLIC'
+);
+-- Tables: anon/authenticated check (information_schema is valid for real roles)
 SELECT is(
     (SELECT count(*)::int FROM information_schema.role_table_grants
-     WHERE table_name = 'test_new_table' AND grantee IN ('PUBLIC', 'anon', 'authenticated')),
+     WHERE table_name = 'test_new_table' AND grantee IN ('anon', 'authenticated')),
     0,
-    'No default table privileges to PUBLIC/anon/authenticated'
+    'No default table privileges to anon or authenticated'
 );
 
--- Default privileges for new sequences
+-- Sequences: PUBLIC check
+SELECT ok(
+    NOT has_sequence_privilege('public', 'public.test_new_seq', 'USAGE, SELECT, UPDATE'),
+    'No default sequence privileges to PUBLIC'
+);
+-- Sequences: anon/authenticated check
 SELECT is(
     (SELECT count(*)::int FROM information_schema.role_usage_grants
-     WHERE object_name = 'test_new_seq' AND grantee IN ('PUBLIC', 'anon', 'authenticated')),
+     WHERE object_name = 'test_new_seq' AND grantee IN ('anon', 'authenticated')),
     0,
-    'No default sequence privileges to PUBLIC/anon/authenticated'
+    'No default sequence privileges to anon or authenticated'
 );
 
--- Default privileges for new functions
+-- Functions: PUBLIC check
+SELECT ok(
+    NOT has_function_privilege('public', 'public.test_new_func()', 'EXECUTE'),
+    'No default function privileges to PUBLIC'
+);
+-- Functions: anon/authenticated check
 SELECT is(
     (SELECT count(*)::int FROM information_schema.role_routine_grants
      WHERE specific_name = (SELECT specific_name FROM information_schema.routines
                             WHERE routine_name = 'test_new_func')
-     AND grantee IN ('PUBLIC', 'anon', 'authenticated')),
+     AND grantee IN ('anon', 'authenticated')),
     0,
-    'No default function privileges to PUBLIC/anon/authenticated'
+    'No default function privileges to anon or authenticated'
 );
 
 -- =================================================================
@@ -222,12 +235,17 @@ SELECT is(
 -- =================================================================
 SELECT sequence_privs_are('public', 'chat_logs_id_seq', 'service_role', ARRAY['USAGE'], 'service_role has USAGE on chat_logs_id_seq');
 
--- PUBLIC/anon/authenticated: direct count queries (these roles may not exist in pg_roles)
+-- PUBLIC: use has_sequence_privilege directly
+SELECT ok(
+    NOT has_sequence_privilege('public', 'public.chat_logs_id_seq', 'USAGE, SELECT, UPDATE'),
+    'PUBLIC has no privileges on chat_logs_id_seq'
+);
+-- anon/authenticated: information_schema is valid for real roles
 SELECT is(
     (SELECT count(*)::int FROM information_schema.role_usage_grants
-     WHERE object_name = 'chat_logs_id_seq' AND grantee IN ('PUBLIC', 'anon', 'authenticated')),
+     WHERE object_name = 'chat_logs_id_seq' AND grantee IN ('anon', 'authenticated')),
     0,
-    'No PUBLIC/anon/authenticated privileges on chat_logs_id_seq'
+    'No anon or authenticated privileges on chat_logs_id_seq'
 );
 
 SELECT * FROM finish();

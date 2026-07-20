@@ -57,25 +57,25 @@ SELECT table_privs_are('public', 'archival_extractions', 'authenticated', ARRAY[
 -- PUBLIC is a pseudo-role not in pg_roles, so table_privs_are cannot look it up.
 -- Use direct information_schema query instead.
 SELECT is(
-    (SELECT count(*) FROM information_schema.role_table_grants
+    (SELECT count(*)::int FROM information_schema.role_table_grants
      WHERE grantee = 'PUBLIC' AND table_name = 'profiles'),
     0,
     'PUBLIC has no privileges on profiles'
 );
 SELECT is(
-    (SELECT count(*) FROM information_schema.role_table_grants
+    (SELECT count(*)::int FROM information_schema.role_table_grants
      WHERE grantee = 'PUBLIC' AND table_name = 'chat_logs'),
     0,
     'PUBLIC has no privileges on chat_logs'
 );
 SELECT is(
-    (SELECT count(*) FROM information_schema.role_table_grants
+    (SELECT count(*)::int FROM information_schema.role_table_grants
      WHERE grantee = 'PUBLIC' AND table_name = 'memories'),
     0,
     'PUBLIC has no privileges on memories'
 );
 SELECT is(
-    (SELECT count(*) FROM information_schema.role_table_grants
+    (SELECT count(*)::int FROM information_schema.role_table_grants
      WHERE grantee = 'PUBLIC' AND table_name = 'archival_extractions'),
     0,
     'PUBLIC has no privileges on archival_extractions'
@@ -193,7 +193,7 @@ CREATE FUNCTION public.test_new_func() RETURNS void LANGUAGE sql AS $$ SELECT 1;
 
 -- Default privileges for new tables: verify no PUBLIC/anon/authenticated grants exist
 SELECT is(
-    (SELECT count(*) FROM information_schema.role_table_grants
+    (SELECT count(*)::int FROM information_schema.role_table_grants
      WHERE table_name = 'test_new_table' AND grantee IN ('PUBLIC', 'anon', 'authenticated')),
     0,
     'No default table privileges to PUBLIC/anon/authenticated'
@@ -201,7 +201,7 @@ SELECT is(
 
 -- Default privileges for new sequences
 SELECT is(
-    (SELECT count(*) FROM information_schema.role_usage_grants
+    (SELECT count(*)::int FROM information_schema.role_usage_grants
      WHERE object_name = 'test_new_seq' AND grantee IN ('PUBLIC', 'anon', 'authenticated')),
     0,
     'No default sequence privileges to PUBLIC/anon/authenticated'
@@ -209,7 +209,7 @@ SELECT is(
 
 -- Default privileges for new functions
 SELECT is(
-    (SELECT count(*) FROM information_schema.role_routine_grants
+    (SELECT count(*)::int FROM information_schema.role_routine_grants
      WHERE specific_name = (SELECT specific_name FROM information_schema.routines
                             WHERE routine_name = 'test_new_func')
      AND grantee IN ('PUBLIC', 'anon', 'authenticated')),
@@ -224,7 +224,7 @@ SELECT sequence_privs_are('public', 'chat_logs_id_seq', 'service_role', ARRAY['U
 
 -- PUBLIC/anon/authenticated: direct count queries (these roles may not exist in pg_roles)
 SELECT is(
-    (SELECT count(*) FROM information_schema.role_usage_grants
+    (SELECT count(*)::int FROM information_schema.role_usage_grants
      WHERE object_name = 'chat_logs_id_seq' AND grantee IN ('PUBLIC', 'anon', 'authenticated')),
     0,
     'No PUBLIC/anon/authenticated privileges on chat_logs_id_seq'

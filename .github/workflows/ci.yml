@@ -33,10 +33,14 @@ jobs:
           echo "Supabase API not reachable after start"
           exit 1
 
-      - name: Run Database Tests (pgTAP)
+      - name: Reset database for pgTAP tests
         run: |
           set -euo pipefail
           supabase db reset
+
+      - name: Run pgTAP tests
+        run: |
+          set -euo pipefail
           supabase test db supabase/tests/database
 
       - name: Set up Python

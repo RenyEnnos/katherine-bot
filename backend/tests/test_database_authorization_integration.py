@@ -247,26 +247,34 @@ def test_auth_b_matrix(auth_client_a, auth_client_b, service_client):
 # ---------------------------------------------------------------------------
 @pytest.fixture(scope="module")
 def service_teardown(service_client):
-    """Fixture to clean up all service role test data after the module runs."""
+    """Deterministic teardown: tries all operations, collects sanitized errors,
+    raises if any cleanup failed. Records are verified to have been removed."""
     yield
-    # Clean up in FK order: extrations → memories → chat_logs → profiles
     uid = "service_test_user_1"
+    errors = []
+
+    # Clean up in FK order: extrations → memories → chat_logs → profiles
     try:
         service_client.table("archival_extractions").delete().eq("user_id", uid).execute()
     except Exception as e:
-        logger.warning("Cleanup failed for archival_extractions: %s", type(e).__name__)
+        errors.append(f"archival_extractions:{type(e).__name__}")
     try:
         service_client.table("memories").delete().eq("user_id", uid).execute()
     except Exception as e:
-        logger.warning("Cleanup failed for memories: %s", type(e).__name__)
+        errors.append(f"memories:{type(e).__name__}")
     try:
         service_client.table("chat_logs").delete().eq("user_id", uid).execute()
     except Exception as e:
-        logger.warning("Cleanup failed for chat_logs: %s", type(e).__name__)
+        errors.append(f"chat_logs:{type(e).__name__}")
     try:
         service_client.table("profiles").delete().eq("user_id", uid).execute()
     except Exception as e:
-        logger.warning("Cleanup failed for profiles: %s", type(e).__name__)
+        errors.append(f"profiles:{type(e).__name__}")
+
+    # Fail the test if any cleanup operation failed
+    if errors:
+        logger.error("Cleanup failures: %s", ", ".join(errors))
+        pytest.fail(f"Deterministic teardown failed: {", ".join(errors)}")
 
 
 def test_service_role_profiles(service_client, service_teardown):

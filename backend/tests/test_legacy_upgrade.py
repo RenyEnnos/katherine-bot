@@ -76,12 +76,14 @@ def _ensure_hardening_present():
 
 
 def _table_count(table: str) -> int:
-    """Return the number of rows in a table via a count query."""
+    """Return the number of rows in a table via a count query.
+
+    Parses the standard psql aligned output format.
+    """
     res = _run_supabase(
         "legacy_state_query",
         ["db", "query", "--query", f"SELECT count(*) FROM public.{table}"],
     )
-    # Output: "  count\n-------\n     N\n(1 row)"
     for line in res.stdout.splitlines():
         line = line.strip()
         if line.lstrip("-").isdigit():
@@ -89,19 +91,21 @@ def _table_count(table: str) -> int:
     return -1
 
 
-def _row_returned(query: str) -> bool:
-    """Return True if the query returns at least one row."""
+def _check_exists(query: str) -> bool:
+    """Return True if the query returns at least one row.
+
+    Wraps the query with ``SELECT EXISTS (...) AS result`` so the CLI output
+    is always a deterministic ``t`` (true) or ``f`` (false) — never zero rows,
+    never a formatting-dependent footer to parse.
+    """
+    full_query = f"SELECT EXISTS ({query}) AS result"
     res = _run_supabase(
         "legacy_state_query",
-        ["db", "query", "--query", query],
+        ["db", "query", "--query", full_query],
     )
     for line in res.stdout.splitlines():
-        if line.strip().startswith("(") and "row" in line:
-            count_str = line.strip().split("(")[1].split()[0]
-            try:
-                return int(count_str) > 0
-            except ValueError:
-                return False
+        if line.strip() == "t":
+            return True
     return False
 
 
@@ -123,15 +127,7 @@ def test_valid_legacy_upgrade(supabase_service_client):
         _run_supabase("legacy_hardening_apply", ["migration", "up", "--local"])
 
         # Verify migration timestamp using the correct column: version, not name
-        ts_res = _run_supabase(
-            "legacy_state_query",
-            [
-                "db", "query", "--query",
-                "SELECT version FROM supabase_migrations.schema_migrations "
-                "WHERE version = '20240101000002'",
-            ],
-        )
-        assert _row_returned(
+        assert _check_exists(
             "SELECT 1 FROM supabase_migrations.schema_migrations "
             "WHERE version = '20240101000002'"
         ), "Hardening migration timestamp not registered"
@@ -155,24 +151,35 @@ def test_valid_legacy_upgrade(supabase_service_client):
         # Verify hardening state
         TABLES = ["profiles", "chat_logs", "memories", "archival_extractions"]
 
+        # RLS and FORCE RLS enabled on all 4 tables
+        for tbl in TABLES:
+            assert _check_exists(
+                f"SELECT 1 FROM pg_class WHERE oid = '{tbl}'::regclass "
+                f"AND relrowsecurity = true"
+            ), f"RLS not enabled for {tbl}"
+            assert _check_exists(
+                f"SELECT 1 FROM pg_class WHERE oid = '{tbl}'::regclass "
+                f"AND relforcerowsecurity = true"
+            ), f"FORCE RLS not enabled for {tbl}"
+
         # Constraints on chat_logs
-        assert _row_returned(
+        assert _check_exists(
             "SELECT 1 FROM pg_constraint "
             "WHERE conname = 'chat_logs_role_check' AND conrelid = 'chat_logs'::regclass"
         ), "chat_logs_role_check not found"
-        assert _row_returned(
+        assert _check_exists(
             "SELECT 1 FROM pg_constraint "
             "WHERE conname = 'chat_logs_content_check' AND conrelid = 'chat_logs'::regclass"
         ), "chat_logs_content_check not found"
 
         # FK on chat_logs
-        assert _row_returned(
+        assert _check_exists(
             "SELECT 1 FROM pg_constraint "
             "WHERE conname = 'chat_logs_user_id_fkey' AND conrelid = 'chat_logs'::regclass"
         ), "chat_logs_user_id_fkey not found"
 
         # Composite index
-        assert _row_returned(
+        assert _check_exists(
             "SELECT 1 FROM pg_indexes "
             "WHERE indexname = 'chat_logs_user_id_created_at_id_idx' "
             "AND tablename = 'chat_logs'"
@@ -180,25 +187,25 @@ def test_valid_legacy_upgrade(supabase_service_client):
 
         # Grants for service_role
         for tbl in TABLES:
-            assert _row_returned(
+            assert _check_exists(
                 f"SELECT 1 FROM information_schema.role_table_grants "
                 f"WHERE grantee = 'service_role' "
                 f"AND table_name = '{tbl}' "
                 f"AND privilege_type = 'SELECT'"
             ), f"Missing SELECT for service_role on {tbl}"
-            assert _row_returned(
+            assert _check_exists(
                 f"SELECT 1 FROM information_schema.role_table_grants "
                 f"WHERE grantee = 'service_role' "
                 f"AND table_name = '{tbl}' "
                 f"AND privilege_type = 'INSERT'"
             ), f"Missing INSERT for service_role on {tbl}"
-            assert _row_returned(
+            assert _check_exists(
                 f"SELECT 1 FROM information_schema.role_table_grants "
                 f"WHERE grantee = 'service_role' "
                 f"AND table_name = '{tbl}' "
                 f"AND privilege_type = 'UPDATE'"
             ), f"Missing UPDATE for service_role on {tbl}"
-            assert _row_returned(
+            assert _check_exists(
                 f"SELECT 1 FROM information_schema.role_table_grants "
                 f"WHERE grantee = 'service_role' "
                 f"AND table_name = '{tbl}' "
@@ -208,13 +215,13 @@ def test_valid_legacy_upgrade(supabase_service_client):
         # anon, authenticated, PUBLIC have no privileges
         for role in ["anon", "authenticated", "PUBLIC"]:
             for tbl in TABLES:
-                assert not _row_returned(
+                assert not _check_exists(
                     f"SELECT 1 FROM information_schema.role_table_grants "
                     f"WHERE grantee = '{role}' AND table_name = '{tbl}'"
                 ), f"Unexpected privileges for {role} on {tbl}"
 
         # Sequence privileges
-        assert _row_returned(
+        assert _check_exists(
             "SELECT 1 FROM information_schema.role_usage_grants "
             "WHERE grantee = 'service_role' "
             "AND object_name = 'chat_logs_id_seq' "
@@ -222,19 +229,19 @@ def test_valid_legacy_upgrade(supabase_service_client):
         ), "Missing USAGE for service_role on chat_logs_id_seq"
 
         for role in ["anon", "authenticated", "PUBLIC"]:
-            assert not _row_returned(
+            assert not _check_exists(
                 f"SELECT 1 FROM information_schema.role_usage_grants "
                 f"WHERE grantee = '{role}' AND object_name = 'chat_logs_id_seq'"
             ), f"Unexpected sequence privileges for {role}"
 
         # Function privileges for match_memories
-        assert _row_returned(
+        assert _check_exists(
             "SELECT 1 WHERE has_function_privilege('service_role', "
             "'public.match_memories(vector, double precision, integer, text)', 'EXECUTE')"
         ), "service_role missing EXECUTE on match_memories"
 
         for role in ["anon", "authenticated"]:
-            assert not _row_returned(
+            assert not _check_exists(
                 f"SELECT 1 WHERE has_function_privilege('{role}', "
                 "'public.match_memories(vector, double precision, integer, text)', 'EXECUTE')"
             ), f"{role} should not have EXECUTE on match_memories"
@@ -270,7 +277,7 @@ def test_invalid_legacy_rejected(supabase_service_client):
         assert "23514" in res.stderr, "Expected SQLSTATE 23514 from preflight validation"
 
         # Verify hardening migration timestamp NOT registered
-        assert not _row_returned(
+        assert not _check_exists(
             "SELECT 1 FROM supabase_migrations.schema_migrations "
             "WHERE version = '20240101000002'"
         ), "Hardening migration was registered despite invalid data"

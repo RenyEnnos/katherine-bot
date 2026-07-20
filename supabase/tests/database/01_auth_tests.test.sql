@@ -3,7 +3,11 @@ BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap;
 SELECT plan(59);
 
--- 1. RLS Enabled (pgTAP has no tables_are_enabled helper; check pg_class.relrowsecurity directly)
+-- =================================================================
+-- PHASE 1: Read-only assertions (query catalog only, no DML on protected tables)
+-- =================================================================
+
+-- 1. RLS Enabled
 SELECT ok(
   (SELECT relrowsecurity FROM pg_class WHERE oid = 'public.profiles'::regclass),
   'RLS is enabled on profiles'
@@ -73,7 +77,7 @@ SELECT function_privs_are('public', 'match_memories', ARRAY['vector', 'double pr
 SELECT function_privs_are('public', 'match_memories', ARRAY['vector', 'double precision', 'integer', 'text'], 'service_role', ARRAY['EXECUTE']);
 SELECT function_privs_are('public', 'match_memories', ARRAY['vector', 'double precision', 'integer', 'text'], 'PUBLIC', ARRAY[]::text[]);
 
--- 6. Constraints on chat_logs
+-- 6. Constraints on chat_logs (metadata check, no DML)
 SELECT ok(
     (SELECT EXISTS(SELECT 1 FROM pg_constraint WHERE conname = 'chat_logs_role_check' AND conrelid = 'chat_logs'::regclass)),
     'chat_logs has chat_logs_role_check constraint'
@@ -82,20 +86,6 @@ SELECT ok(
     (SELECT EXISTS(SELECT 1 FROM pg_constraint WHERE conname = 'chat_logs_content_check' AND conrelid = 'chat_logs'::regclass)),
     'chat_logs has chat_logs_content_check constraint'
 );
-
--- FORCE RLS + no policies blocks DML on protected tables even for the test user.
--- Temporarily bypass RLS for the INSERT to create the constraint test fixture.
-SET LOCAL row_security = off;
-INSERT INTO public.profiles (user_id) VALUES ('test_user_constraint');
-
-PREPARE invalid_role AS INSERT INTO public.chat_logs (user_id, role, content) VALUES ('test_user_constraint', 'admin', 'test');
-SELECT throws_ok('invalid_role', '23514');
-
-PREPARE long_content AS INSERT INTO public.chat_logs (user_id, role, content) VALUES ('test_user_constraint', 'user', repeat('a', 10001));
-SELECT throws_ok('long_content', '23514');
-
-PREPARE empty_content AS INSERT INTO public.chat_logs (user_id, role, content) VALUES ('test_user_constraint', 'user', '');
-SELECT throws_ok('empty_content', '23514');
 
 -- 7. Index existence
 SELECT has_index('public', 'chat_logs', 'chat_logs_user_id_created_at_id_idx');
@@ -134,7 +124,7 @@ SELECT ok(
 );
 SELECT has_index('public', 'archival_extractions', 'archival_extractions_idempotency_key_idx');
 
--- Test default privileges by creating new objects
+-- 10. Default privileges (creates new objects, no DML on protected tables)
 CREATE TABLE public.test_new_table (id int);
 CREATE SEQUENCE public.test_new_seq;
 CREATE FUNCTION public.test_new_func() RETURNS void LANGUAGE sql AS $$ SELECT 1; $$;
@@ -151,11 +141,47 @@ SELECT function_privs_are('public', 'test_new_func', ARRAY[]::text[], 'PUBLIC', 
 SELECT function_privs_are('public', 'test_new_func', ARRAY[]::text[], 'anon', ARRAY[]::text[], 'No default privileges for new funcs to anon');
 SELECT function_privs_are('public', 'test_new_func', ARRAY[]::text[], 'authenticated', ARRAY[]::text[], 'No default privileges for new funcs to authenticated');
 
--- Exact privilege on the identity sequence used by the backend (least privilege)
+-- 11. Sequence privileges on chat_logs_id_seq
 SELECT sequence_privs_are('public', 'chat_logs_id_seq', 'service_role', ARRAY['USAGE'], 'service_role has USAGE on chat_logs_id_seq');
 SELECT sequence_privs_are('public', 'chat_logs_id_seq', 'PUBLIC', ARRAY[]::text[], 'No PUBLIC privilege on chat_logs_id_seq');
 SELECT sequence_privs_are('public', 'chat_logs_id_seq', 'anon', ARRAY[]::text[], 'No anon privilege on chat_logs_id_seq');
 SELECT sequence_privs_are('public', 'chat_logs_id_seq', 'authenticated', ARRAY[]::text[], 'No authenticated privilege on chat_logs_id_seq');
+
+-- =================================================================
+-- PHASE 2: Temporarily disable RLS for write tests (constraint validation)
+-- FORCE RLS + no policies blocks all DML on protected tables even for the test user.
+-- We temporarily disable RLS on profiles and chat_logs so that:
+--   1. The fixture profile can be inserted
+--   2. The prepared INSERTs reach the CHECK constraints rather than being
+--      blocked by RLS default-deny
+-- Since this runs inside a ROLLBACK transaction, the RLS state is restored
+-- automatically when the test finishes.
+-- =================================================================
+
+ALTER TABLE public.profiles DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.chat_logs DISABLE ROW LEVEL SECURITY;
+
+INSERT INTO public.profiles (user_id) VALUES ('test_user_constraint');
+
+SELECT throws_ok(
+    $$INSERT INTO public.chat_logs (user_id, role, content) VALUES ('test_user_constraint', 'admin', 'test')$$,
+    '23514',
+    'chat_logs_role_check rejects invalid role'
+);
+
+SELECT throws_ok(
+    $$INSERT INTO public.chat_logs (user_id, role, content) VALUES ('test_user_constraint', 'user', repeat('a', 10001))$$,
+    '23514',
+    'chat_logs_content_check rejects long content'
+);
+
+SELECT throws_ok(
+    $$INSERT INTO public.chat_logs (user_id, role, content) VALUES ('test_user_constraint', 'user', '')$$,
+    '23514',
+    'chat_logs_content_check rejects empty content'
+);
+
+-- RLS is automatically re-enabled when the transaction rolls back below.
 
 SELECT * FROM finish();
 ROLLBACK;

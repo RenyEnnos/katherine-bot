@@ -1,7 +1,7 @@
 BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS pgtap;
-SELECT plan(55);
+SELECT plan(59);
 
 -- 1. RLS Enabled (pgTAP has no tables_are_enabled helper; check pg_class.relrowsecurity directly)
 SELECT ok(
@@ -21,6 +21,24 @@ SELECT ok(
   'RLS is enabled on archival_extractions'
 );
 
+-- 1b. FORCE RLS Enabled
+SELECT ok(
+  (SELECT relforcerowsecurity FROM pg_class WHERE oid = 'public.profiles'::regclass),
+  'FORCE RLS is enabled on profiles'
+);
+SELECT ok(
+  (SELECT relforcerowsecurity FROM pg_class WHERE oid = 'public.chat_logs'::regclass),
+  'FORCE RLS is enabled on chat_logs'
+);
+SELECT ok(
+  (SELECT relforcerowsecurity FROM pg_class WHERE oid = 'public.memories'::regclass),
+  'FORCE RLS is enabled on memories'
+);
+SELECT ok(
+  (SELECT relforcerowsecurity FROM pg_class WHERE oid = 'public.archival_extractions'::regclass),
+  'FORCE RLS is enabled on archival_extractions'
+);
+
 -- 2. Grants for anon and authenticated (they should have none on these tables)
 SELECT table_privs_are('public', 'profiles', 'anon', ARRAY[]::text[]);
 SELECT table_privs_are('public', 'chat_logs', 'anon', ARRAY[]::text[]);
@@ -37,7 +55,7 @@ SELECT table_privs_are('public', 'chat_logs', 'PUBLIC', ARRAY[]::text[]);
 SELECT table_privs_are('public', 'memories', 'PUBLIC', ARRAY[]::text[]);
 SELECT table_privs_are('public', 'archival_extractions', 'PUBLIC', ARRAY[]::text[]);
 
--- 3. Grants for service_role
+-- 3. Grants for service_role (exactly SELECT, INSERT, UPDATE, DELETE)
 SELECT table_privs_are('public', 'profiles', 'service_role', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']);
 SELECT table_privs_are('public', 'chat_logs', 'service_role', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']);
 SELECT table_privs_are('public', 'memories', 'service_role', ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']);
@@ -91,7 +109,6 @@ SELECT ok(
     'chat_logs has chat_logs_user_id_fkey'
 );
 
-
 -- 9. Archival Extraction FKs and unique
 SELECT is(
     (SELECT confdeltype FROM pg_constraint WHERE conname = 'archival_extractions_user_id_fkey'),
@@ -136,11 +153,6 @@ SELECT sequence_privs_are('public', 'chat_logs_id_seq', 'service_role', ARRAY['U
 SELECT sequence_privs_are('public', 'chat_logs_id_seq', 'PUBLIC', ARRAY[]::text[], 'No PUBLIC privilege on chat_logs_id_seq');
 SELECT sequence_privs_are('public', 'chat_logs_id_seq', 'anon', ARRAY[]::text[], 'No anon privilege on chat_logs_id_seq');
 SELECT sequence_privs_are('public', 'chat_logs_id_seq', 'authenticated', ARRAY[]::text[], 'No authenticated privilege on chat_logs_id_seq');
-
-
-
-
-
 
 SELECT * FROM finish();
 ROLLBACK;

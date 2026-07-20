@@ -33,10 +33,11 @@ jobs:
           echo "Supabase API not reachable after start"
           exit 1
 
-      - name: Run Database Tests
+      - name: Run Database Tests (pgTAP)
         run: |
+          set -euo pipefail
           supabase db reset
-          supabase test db
+          supabase test db supabase/tests/database
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -48,29 +49,43 @@ jobs:
           python -m pip install -r backend/requirements.txt
           python -m pip install -r backend/requirements-test.txt
 
-      - name: Run Database Integration Tests
-        env:
-          HF_HUB_OFFLINE: "1"
-          TRANSFORMERS_OFFLINE: "1"
+      - name: Extract Supabase local keys (no echo)
+        shell: bash
         run: |
           set -euo pipefail
-
-          export SUPABASE_URL="http://127.0.0.1:54321"
-
           status_json="$(supabase status --json)"
+          # Confirm we got JSON but never print it
           echo "Supabase status verified (no secrets printed)"
 
           env_out="$(supabase status -o env)"
-          export SUPABASE_ANON_KEY="$(printf '%s\n' "$env_out" | grep '^ANON_KEY=' | cut -d '=' -f2 | tr -d '"')"
-          export SUPABASE_SERVICE_ROLE_KEY="$(printf '%s\n' "$env_out" | grep '^SERVICE_ROLE_KEY=' | cut -d '=' -f2 | tr -d '"')"
+          anon_key="$(printf '%s\n' "$env_out" | grep '^ANON_KEY=' | cut -d '=' -f2 | tr -d '"')"
+          service_key="$(printf '%s\n' "$env_out" | grep '^SERVICE_ROLE_KEY=' | cut -d '=' -f2 | tr -d '"')"
 
-          if [ -z "$SUPABASE_ANON_KEY" ] || [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+          if [ -z "$anon_key" ] || [ -z "$service_key" ]; then
             echo "Failed to extract Supabase keys from status output" >&2
             exit 1
           fi
 
-          export PYTHONPATH="."
-          python -m pytest backend/tests/test_database_authorization_integration.py backend/tests/test_legacy_upgrade.py
+          echo "SUPABASE_ANON_KEY=$anon_key" >> "$GITHUB_ENV"
+          echo "SUPABASE_SERVICE_ROLE_KEY=$service_key" >> "$GITHUB_ENV"
+
+      - name: Run Legacy Upgrade Test
+        env:
+          SUPABASE_URL: "http://127.0.0.1:54321"
+          PYTHONPATH: "."
+        run: |
+          python -m pytest -q -ra backend/tests/test_legacy_upgrade.py
+
+      - name: Reset database for authorization tests
+        run: |
+          supabase db reset
+
+      - name: Run Database Authorization Integration Tests
+        env:
+          SUPABASE_URL: "http://127.0.0.1:54321"
+          PYTHONPATH: "."
+        run: |
+          python -m pytest -q -ra backend/tests/test_database_authorization_integration.py
 
       - name: Stop Supabase
         if: always()
@@ -107,13 +122,15 @@ jobs:
         run: |
           python -m compileall -q backend
 
-      - name: Run Tests
+      - name: Run Tests (excluding Supabase-dependent integration)
         env:
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
           PYTHONPATH: "."
         run: |
-          python -m pytest backend/tests --ignore=backend/tests/test_database_authorization_integration.py --ignore=backend/tests/test_legacy_upgrade.py
+          python -m pytest backend/tests \
+            --ignore=backend/tests/test_database_authorization_integration.py \
+            --ignore=backend/tests/test_legacy_upgrade.py
 
   frontend:
     runs-on: ubuntu-latest

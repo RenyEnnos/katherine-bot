@@ -83,6 +83,9 @@ SELECT ok(
     'chat_logs has chat_logs_content_check constraint'
 );
 
+-- FORCE RLS + no policies blocks DML on protected tables even for the test user.
+-- Temporarily bypass RLS for the INSERT to create the constraint test fixture.
+SET LOCAL row_security = off;
 INSERT INTO public.profiles (user_id) VALUES ('test_user_constraint');
 
 PREPARE invalid_role AS INSERT INTO public.chat_logs (user_id, role, content) VALUES ('test_user_constraint', 'admin', 'test');

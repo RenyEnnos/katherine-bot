@@ -8,10 +8,14 @@ All non-service-role assertions reject PGRST301 (JWT failure) — only 42501
 to prevent false positives from broken auth.
 """
 
+import logging
 import os
 import pytest
 from supabase import create_client
 from postgrest.exceptions import APIError
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -120,14 +124,13 @@ def assert_denied(op, *args, **kwargs):
 
     Does NOT accept PGRST301 (JWT/auth failure), because that would indicate a
     broken session rather than denied table authorization.
+    The assertion message only includes the error code, never raw message or details.
     """
     with pytest.raises(APIError) as exc:
         op(*args, **kwargs).execute()
     code = getattr(exc.value, "code", None)
     assert code == "42501", (
-        f"Expected 42501 (insufficient_privilege) but got code={code!r} "
-        f"message={getattr(exc.value, 'message', '')!r} "
-        f"details={getattr(exc.value, 'details', '')!r}"
+        f"Expected 42501 (insufficient_privilege) but got code={code!r}"
     )
 
 
@@ -242,7 +245,6 @@ def test_auth_b_matrix(auth_client_a, auth_client_b, service_client):
 # ---------------------------------------------------------------------------
 # Service role — full CRUD matrix
 # ---------------------------------------------------------------------------
-
 @pytest.fixture(scope="module")
 def service_teardown(service_client):
     """Fixture to clean up all service role test data after the module runs."""
@@ -251,20 +253,20 @@ def service_teardown(service_client):
     uid = "service_test_user_1"
     try:
         service_client.table("archival_extractions").delete().eq("user_id", uid).execute()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Cleanup failed for archival_extractions: %s", type(e).__name__)
     try:
         service_client.table("memories").delete().eq("user_id", uid).execute()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Cleanup failed for memories: %s", type(e).__name__)
     try:
         service_client.table("chat_logs").delete().eq("user_id", uid).execute()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Cleanup failed for chat_logs: %s", type(e).__name__)
     try:
         service_client.table("profiles").delete().eq("user_id", uid).execute()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Cleanup failed for profiles: %s", type(e).__name__)
 
 
 def test_service_role_profiles(service_client, service_teardown):

@@ -57,18 +57,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          status_json="$(supabase status --json)"
-          # Confirm we got JSON but never print it
+
+          # Validação sanitizada, sem imprimir o JSON.
+          supabase status -o json >/dev/null
           echo "Supabase status verified (no secrets printed)"
 
           env_out="$(supabase status -o env)"
-          anon_key="$(printf '%s\n' "$env_out" | grep '^ANON_KEY=' | cut -d '=' -f2 | tr -d '"')"
-          service_key="$(printf '%s\n' "$env_out" | grep '^SERVICE_ROLE_KEY=' | cut -d '=' -f2 | tr -d '"')"
 
-          if [ -z "$anon_key" ] || [ -z "$service_key" ]; then
-            echo "Failed to extract Supabase keys from status output" >&2
+          anon_key="$(
+            awk -F= '$1 == "ANON_KEY" {
+              sub(/^"/, "", $2)
+              sub(/"$/, "", $2)
+              print $2
+            }' <<<"$env_out"
+          )"
+
+          service_key="$(
+            awk -F= '$1 == "SERVICE_ROLE_KEY" {
+              sub(/^"/, "", $2)
+              sub(/"$/, "", $2)
+              print $2
+            }' <<<"$env_out"
+          )"
+
+          if [[ -z "$anon_key" || -z "$service_key" ]]; then
+            echo "Failed to extract required Supabase credentials" >&2
             exit 1
           fi
+
+          echo "::add-mask::$anon_key"
+          echo "::add-mask::$service_key"
 
           echo "SUPABASE_ANON_KEY=$anon_key" >> "$GITHUB_ENV"
           echo "SUPABASE_SERVICE_ROLE_KEY=$service_key" >> "$GITHUB_ENV"

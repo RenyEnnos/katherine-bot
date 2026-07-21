@@ -134,7 +134,7 @@ SELECT ok(
 -- =================================================================
 -- 7. Index existence (chat_logs)
 -- =================================================================
-SELECT has_index('public', 'chat_logs', 'chat_logs_user_id_created_at_id_idx');
+SELECT has_index('public', 'chat_logs', 'chat_logs_user_id_created_at_id_idx', 'chat_logs index exists (btree user_id, created_at DESC, id DESC)');
 SELECT index_is_type('public', 'chat_logs', 'chat_logs_user_id_created_at_id_idx', 'btree');
 SELECT is(
     (SELECT pg_get_indexdef('chat_logs_user_id_created_at_id_idx'::regclass)),
@@ -179,7 +179,7 @@ SELECT ok(
     (SELECT EXISTS(SELECT 1 FROM pg_constraint WHERE conname = 'archival_extractions_user_id_source_chat_log_id_fkey' AND conrelid = 'archival_extractions'::regclass)),
     'archival_extractions has archival_extractions_user_id_source_chat_log_id_fkey'
 );
-SELECT has_index('public', 'archival_extractions', 'archival_extractions_idempotency_key_idx');
+SELECT has_index('public', 'archival_extractions', 'archival_extractions_idempotency_key_idx', 'archival_extractions idempotency unique index exists');
 
 -- =================================================================
 -- 10. Default privileges for new objects
@@ -219,8 +219,19 @@ SELECT is(
 );
 
 -- Functions: PUBLIC check
+-- Uses aclexplode to inspect the function's actual ACL from pg_proc.proacl.
+-- has_function_privilege('public', ...) may return TRUE even when the ACL
+-- correctly excludes PUBLIC (observed behavior with pgTAP/pg_prove).
+-- aclexplode with grantee = 0 (PUBLIC pseudo-role OID) reads the catalog directly.
 SELECT ok(
-    NOT has_function_privilege('public', 'public.test_new_func()', 'EXECUTE'),
+    NOT EXISTS(
+        SELECT 1 FROM pg_proc p
+        CROSS JOIN pg_catalog.aclexplode(p.proacl) acl
+        WHERE p.proname = 'test_new_func'
+        AND p.pronamespace = 'public'::regnamespace
+        AND acl.grantee = 0
+        AND acl.privilege_type = 'EXECUTE'
+    ),
     'No default function privileges to PUBLIC'
 );
 -- Functions: anon/authenticated check

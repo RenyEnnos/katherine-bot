@@ -15,11 +15,8 @@ logger = logging.getLogger(__name__)
 # Allowed operation identifiers
 ALLOWED_OPS = frozenset({
     "legacy_baseline_reset",
-    "legacy_fixture_seed",
     "legacy_hardening_apply",
     "legacy_state_query",
-    "hardening_migration_move",
-    "hardening_migration_restore",
 })
 
 

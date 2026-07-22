@@ -298,6 +298,7 @@ async def test_run_archival_extraction_disabled_returns_early(backend):
     
     # Even with fully unmocked dependencies, it should return without touching anything
     engine.memory_manager = MagicMock()
+    engine.groq_manager = MagicMock()
     
     ref = backend.PersistedTurnRef(user_id="user123", source_chat_log_id=1, assistant_chat_log_id=2)
     

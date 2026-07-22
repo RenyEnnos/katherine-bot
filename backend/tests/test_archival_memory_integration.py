@@ -87,7 +87,7 @@ class MockAuthResponse:
 
 @pytest.mark.anyio
 async def test_run_archival_extraction_llm_failure(backend, caplog):
-    engine = backend.ConversationEngine()
+    engine = backend.ConversationEngine(archival_extraction_enabled=True)
     engine.memory_manager = MagicMock()
     engine.memory_manager.load_persisted_user_message = MagicMock(return_value="Hello")
     
@@ -109,7 +109,7 @@ async def test_run_archival_extraction_llm_failure(backend, caplog):
 
 @pytest.mark.anyio
 async def test_run_archival_extraction_validation_failure(backend, caplog):
-    engine = backend.ConversationEngine()
+    engine = backend.ConversationEngine(archival_extraction_enabled=True)
     engine.memory_manager = MagicMock()
     engine.memory_manager.load_persisted_user_message = MagicMock(return_value="Hello")
     
@@ -133,7 +133,7 @@ async def test_run_archival_extraction_validation_failure(backend, caplog):
 
 @pytest.mark.anyio
 async def test_run_archival_extraction_duplicate(backend, caplog):
-    engine = backend.ConversationEngine()
+    engine = backend.ConversationEngine(archival_extraction_enabled=True)
     engine.memory_manager = MagicMock()
     engine.memory_manager.load_persisted_user_message = MagicMock(return_value="Hello")
     
@@ -160,7 +160,7 @@ async def test_run_archival_extraction_duplicate(backend, caplog):
 
 @pytest.mark.anyio
 async def test_run_archival_extraction_store_failed(backend, caplog):
-    engine = backend.ConversationEngine()
+    engine = backend.ConversationEngine(archival_extraction_enabled=True)
     engine.memory_manager = MagicMock()
     engine.memory_manager.load_persisted_user_message = MagicMock(return_value="Hello secret message")
     
@@ -206,7 +206,7 @@ def _valid_legacy_emotion_dict():
 
 @pytest.mark.anyio
 async def test_process_turn_schedules_background_task(backend):
-    engine = backend.ConversationEngine()
+    engine = backend.ConversationEngine(archival_extraction_enabled=True)
     
     # Mock all internal methods of process_turn to focus on orchestration
     engine.memory_manager = MagicMock()
@@ -258,6 +258,58 @@ async def test_process_turn_schedules_background_task(backend):
     assert args[1].user_id == "user123"
 
 
+@pytest.mark.anyio
+async def test_process_turn_does_not_schedule_when_extraction_disabled(backend):
+    """With default archival_extraction_enabled=False, no background task is scheduled."""
+    engine = backend.ConversationEngine()  # default False
+    assert not engine.archival_extraction_enabled
+    
+    engine.memory_manager = MagicMock()
+    engine.memory_manager.load_user_state = MagicMock(return_value={
+        "emotional_state": _valid_legacy_emotion_dict(),
+        "relationship_state": {}
+    })
+    engine.memory_manager.get_context = MagicMock(return_value="context")
+    engine._perceive = MagicMock(return_value={})
+    
+    engine.memory_manager.save_turn = MagicMock(return_value=backend.PersistedTurnRef(
+        user_id="user123", source_chat_log_id=1, assistant_chat_log_id=2
+    ))
+    engine.memory_manager.sync_state = MagicMock()
+    
+    m = MagicMock()
+    m.choices = [MagicMock()]
+    m.choices[0].message.content = "reply"
+    engine.groq_manager.chat_completion = MagicMock(return_value=m)
+    
+    bg_tasks = MagicMock(spec=BackgroundTasks)
+    
+    await engine.process_turn("user123", "hello", background_tasks=bg_tasks)
+    
+    # Background task should NOT be scheduled
+    bg_tasks.add_task.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_run_archival_extraction_disabled_returns_early(backend):
+    """With archival_extraction_enabled=False, run_archival_extraction returns without doing anything."""
+    engine = backend.ConversationEngine()  # default False
+    assert not engine.archival_extraction_enabled
+    
+    # Even with fully unmocked dependencies, it should return without touching anything
+    engine.memory_manager = MagicMock()
+    engine.groq_manager = MagicMock()
+    
+    ref = backend.PersistedTurnRef(user_id="user123", source_chat_log_id=1, assistant_chat_log_id=2)
+    
+    await engine.run_archival_extraction(ref)
+    
+    # No message loading, no Groq, no storage
+    engine.memory_manager.load_persisted_user_message.assert_not_called()
+    engine.memory_manager.store_archival_extraction.assert_not_called()
+    engine.groq_manager.chat_completion.assert_not_called()
+
+
 def test_chat_response_format(client_app, mock_supabase):
     from backend.main import engine
     from backend.relationship import RelationshipStateV1
@@ -306,7 +358,7 @@ def test_chat_response_format(client_app, mock_supabase):
 
 @pytest.mark.anyio
 async def test_run_archival_extraction_load_failure(backend, caplog):
-    engine = backend.ConversationEngine()
+    engine = backend.ConversationEngine(archival_extraction_enabled=True)
     engine.memory_manager = MagicMock()
     engine.memory_manager.load_persisted_user_message = MagicMock(side_effect=Exception("DB connection error user123 secret message"))
     
@@ -333,6 +385,29 @@ def test_different_turns_same_content_distinct(backend):
     # Same turn (same user, same source_chat_log_id) produces same key (idempotency)
     key3 = backend.compute_idempotency_key("user123", 100, 1)
     assert key1 == key3
+
+
+# ---------------------------------------------------------------------------
+# ARCHIVAL EXTRACTION FLAG PARAMETER TESTS
+# ---------------------------------------------------------------------------
+
+
+def test_archival_extraction_default_disabled(backend):
+    """ConversationEngine() defaults to archival_extraction_enabled=False."""
+    engine = backend.ConversationEngine()
+    assert engine.archival_extraction_enabled is False
+
+
+def test_archival_extraction_explicit_true(backend):
+    """ConversationEngine(archival_extraction_enabled=True) sets flag True."""
+    engine = backend.ConversationEngine(archival_extraction_enabled=True)
+    assert engine.archival_extraction_enabled is True
+
+
+def test_archival_extraction_explicit_false(backend):
+    """ConversationEngine(archival_extraction_enabled=False) sets flag False."""
+    engine = backend.ConversationEngine(archival_extraction_enabled=False)
+    assert engine.archival_extraction_enabled is False
 
 
 def test_no_real_external_dependencies_proof():

@@ -29,8 +29,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize Engine
-engine = ConversationEngine()
+# Validate runtime containment before initialising the engine.
+# This runs at module load time, so multi-worker configurations fail early.
+from .runtime_containment import (
+    validate_worker_configuration,
+    parse_archival_extraction_flag,
+)
+
+validate_worker_configuration()
+
+# Parse archival extraction flag from environment (default: disabled)
+_archival_extraction_enabled = parse_archival_extraction_flag(
+    os.environ.get("ARCHIVAL_EXTRACTION_ENABLED")
+)
+
+# Initialize Engine with containment-aware configuration
+engine = ConversationEngine(
+    archival_extraction_enabled=_archival_extraction_enabled,
+)
 
 
 security = HTTPBearer(auto_error=False)
@@ -112,4 +128,6 @@ def get_history(current_user = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 if __name__ == "__main__":
+    # Development entrypoint — NOT for production use.
+    # Use ``python -m backend.serve`` for production.
     uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)

@@ -97,9 +97,9 @@ def _v1_emotion_dict(pleasure=0.0) -> dict:
     ).to_dict()
 
 
-def _make_engine(clock=FIXED_CLOCK):
+def _make_engine(clock=FIXED_CLOCK, archival_extraction_enabled=False):
     """Create a ConversationEngine with fixed clock and mocked external deps."""
-    engine = ConversationEngine(clock=lambda: clock)
+    engine = ConversationEngine(clock=lambda: clock, archival_extraction_enabled=archival_extraction_enabled)
     engine.memory_manager.load_user_state = MagicMock(return_value={
         "emotional_state": _legacy_emotion_dict(),
     })
@@ -680,7 +680,7 @@ class TestArchivalScheduling:
     def test_success_orders_save_sync_then_schedule(self):
         """On success: save_turn → sync_state → schedule → return."""
         async def run():
-            engine = _make_engine()
+            engine = _make_engine(archival_extraction_enabled=True)
             call_order = []
             bg_tasks = MagicMock()
 
@@ -718,7 +718,7 @@ class TestArchivalScheduling:
         * nenhuma resposta de sucesso é retornada.
         """
         async def run():
-            engine = _make_engine()
+            engine = _make_engine(archival_extraction_enabled=True)
             call_order = []
             bg_tasks = MagicMock()
 

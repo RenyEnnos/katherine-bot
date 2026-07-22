@@ -120,19 +120,21 @@ def _check_env_var(raw: str) -> None:
     # val == 1 — accepted
 
 
-def _check_gunicorn_args(raw: str) -> int | None:
-    """Parse ``GUNICORN_CMD_ARGS`` for ``--workers`` or ``-w`` flags.
+def _check_gunicorn_args(raw: str) -> None:
+    """Scan ``GUNICORN_CMD_ARGS``-like string for ALL worker flags.
 
-    Returns ``None`` if no worker flag is found or the value is ``1``.
-    Raises ``RuntimeContainmentError`` for any value other than ``1``
-    (or for malformed content).
+    Examines **every** occurrence of ``--workers`` or ``-w``.  Any flag with
+    a value other than ``1`` (zero, negative, >1, non-integer, missing)
+    raises ``RuntimeContainmentError``.
+
+    Multiple declarations all with value ``1`` are accepted
+    (e.g. ``--workers 1 --workers 1``).
     """
     args = raw.split()
     i = 0
     while i < len(args):
         arg = args[i]
 
-        # --workers 2  or  --workers=2
         if arg.startswith("--workers="):
             suffix = arg[len("--workers="):]
             if not suffix:
@@ -143,7 +145,8 @@ def _check_gunicorn_args(raw: str) -> int | None:
                 raise RuntimeContainmentError("Invalid worker configuration")
             if val != 1:
                 raise RuntimeContainmentError("Invalid worker configuration")
-            return None
+            i += 1
+            continue
 
         if arg == "--workers":
             i += 1
@@ -155,9 +158,9 @@ def _check_gunicorn_args(raw: str) -> int | None:
                 raise RuntimeContainmentError("Invalid worker configuration")
             if val != 1:
                 raise RuntimeContainmentError("Invalid worker configuration")
-            return None
+            i += 1
+            continue
 
-        # -w 2  or  -w2
         if arg.startswith("-w"):
             suffix = arg[2:]
             if suffix == "":
@@ -171,7 +174,6 @@ def _check_gunicorn_args(raw: str) -> int | None:
                     raise RuntimeContainmentError("Invalid worker configuration")
                 if val != 1:
                     raise RuntimeContainmentError("Invalid worker configuration")
-                return None
             else:
                 # -w2
                 try:
@@ -180,19 +182,20 @@ def _check_gunicorn_args(raw: str) -> int | None:
                     raise RuntimeContainmentError("Invalid worker configuration")
                 if val != 1:
                     raise RuntimeContainmentError("Invalid worker configuration")
-                return None
+            i += 1
+            continue
 
         i += 1
 
-    return None
+    # No worker flag found — fine (absent = 1 worker by default)
 
 
-def _collect_argv_flags(argv: list[str]) -> int | None:
+def _collect_argv_flags(argv: list[str]) -> None:
     """Scan ``sys.argv``-like list for ``--workers`` or ``-w`` flags.
 
     Same semantics as ``_check_gunicorn_args``.
     """
-    return _check_gunicorn_args(" ".join(argv))
+    _check_gunicorn_args(" ".join(argv))
 
 
 # ---------------------------------------------------------------------------
@@ -206,14 +209,16 @@ def validate_worker_configuration(
 ) -> None:
     """Validate that the environment and arguments permit single-worker mode.
 
-    Checks, in order:
+    Examines **all** known sources:
 
     1. ``WEB_CONCURRENCY`` (must be absent or ``1``)
     2. ``UVICORN_WORKERS`` (must be absent or ``1``)
-    3. ``GUNICORN_CMD_ARGS`` (must not request > 1 worker)
-    4. Process ``argv`` (must not request > 1 worker)
+    3. ``GUNICORN_CMD_ARGS`` (must not request workers other than ``1``)
+    4. Process ``argv`` (must not request workers other than ``1``)
 
-    Raises ``RuntimeContainmentError`` on the **first** violation found.
+    All occurrences across all sources are inspected.  Any violation -
+    value other than ``1``, malformed flag, or empty configuration -
+    raises ``RuntimeContainmentError``.
 
     Args:
         env: Environment dict (defaults to ``os.environ``).
@@ -228,9 +233,11 @@ def validate_worker_configuration(
         if raw is not None:
             _check_env_var(raw)
 
-    # Check GUNICORN_CMD_ARGS
+    # Check GUNICORN_CMD_ARGS — present but empty/whitespace-only is an error
     gunicorn_raw = env.get("GUNICORN_CMD_ARGS")
-    if gunicorn_raw is not None and gunicorn_raw.strip():
+    if gunicorn_raw is not None:
+        if not gunicorn_raw.strip():
+            raise RuntimeContainmentError("Invalid worker configuration")
         _check_gunicorn_args(gunicorn_raw)
 
     # Check process argv

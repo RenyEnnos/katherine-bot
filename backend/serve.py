@@ -54,17 +54,27 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parsed
 
 
-def main(argv: list[str] | None = None, runner=None) -> None:
+def main(
+    argv: list[str] | None = None,
+    runner=None,
+    env: dict[str, str] | None = None,
+) -> None:
     """Production server entrypoint.
 
     Args:
         argv: Override for ``sys.argv`` (used in tests).
         runner: Callable like ``uvicorn.run`` for injection (used in tests).
+        env: Override for ``os.environ`` (used in tests).  When ``None``,
+            the real ``os.environ`` is read.
     """
     # 1. Validate containment FIRST — before importing app modules
     from .runtime_containment import validate_worker_configuration
 
-    validate_worker_configuration()
+    # Forward env/argv to guarantee deterministic, avoid real os.environ reads.
+    if env is not None or argv is not None:
+        validate_worker_configuration(env=env, argv=argv)
+    else:
+        validate_worker_configuration()
 
     # 2. Parse arguments
     args = _parse_args(argv)

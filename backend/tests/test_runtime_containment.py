@@ -5,8 +5,24 @@ All tests are pure — no network, Docker, Supabase, Groq, embeddings, or FastAP
 
 import os
 import sys
+import unittest.mock
 import pytest
 
+# ---------------------------------------------------------------------------
+# Module-level isolation: mock heavy deps BEFORE any backend import.
+# This guarantees tests run without real Groq, Supabase, or sentence_transformers.
+# ---------------------------------------------------------------------------
+_test_mocks = {
+    "groq": unittest.mock.MagicMock(),
+    "supabase": unittest.mock.MagicMock(),
+    "supabase_auth": unittest.mock.MagicMock(),
+    "supabase_auth.errors": unittest.mock.MagicMock(),
+    "sentence_transformers": unittest.mock.MagicMock(),
+}
+for _mod_name, _mock in _test_mocks.items():
+    sys.modules[_mod_name] = _mock
+
+# Now safe to import backend modules — they will see the mocks.
 from backend.runtime_containment import (
     RuntimeContainmentError,
     parse_archival_extraction_flag,
@@ -26,11 +42,11 @@ class TestParseArchivalExtractionFlag:
     """Tests for ``parse_archival_extraction_flag``."""
 
     def test_absent_defaults_to_false(self):
-        """Flag absent (None) → False."""
+        """Flag absent (None) returns False."""
         assert parse_archival_extraction_flag(None) is False
 
     def test_false_string(self):
-        """``false`` string → False."""
+        """``false`` string returns False."""
         assert parse_archival_extraction_flag("false") is False
 
     def test_false_uppercase(self):
@@ -40,7 +56,7 @@ class TestParseArchivalExtractionFlag:
         assert parse_archival_extraction_flag("False") is False
 
     def test_true_string(self):
-        """``true`` string → True."""
+        """``true`` string returns True."""
         assert parse_archival_extraction_flag("true") is True
 
     def test_true_uppercase(self):
@@ -105,14 +121,17 @@ class TestCheckEnvVar:
 
 
 class TestCheckGunicornArgs:
-    """Tests for the internal ``_check_gunicorn_args`` helper."""
+    """Tests for the internal ``_check_gunicorn_args`` helper.
+
+    This helper scans ALL worker flag occurrences in a tokenised string.
+    """
 
     def test_no_worker_flag(self):
-        """No worker flag → accepted."""
-        assert _check_gunicorn_args("--timeout 120 --log-level info") is None
+        """No worker flag is accepted."""
+        _check_gunicorn_args("--timeout 120 --log-level info")
 
     def test_workers_1_accepted(self):
-        assert _check_gunicorn_args("--workers 1") is None
+        _check_gunicorn_args("--workers 1")
 
     def test_workers_2_rejected(self):
         with pytest.raises(RuntimeContainmentError):
@@ -145,11 +164,87 @@ class TestCheckGunicornArgs:
 
     def test_w_1_accepted(self):
         """-w 1 is accepted."""
-        assert _check_gunicorn_args("-w 1") is None
+        _check_gunicorn_args("-w 1")
 
     def test_w1_accepted(self):
         """-w1 is accepted."""
-        assert _check_gunicorn_args("-w1") is None
+        _check_gunicorn_args("-w1")
+
+    # --- Multi-declaration tests ---
+
+    def test_duplicate_1_accepted(self):
+        """Multiple --workers 1 flags are accepted."""
+        _check_gunicorn_args("--workers 1 --workers 1")
+
+    def test_duplicate_1_long_short_accepted(self):
+        """Mixed long and short forms both with value 1 are accepted."""
+        _check_gunicorn_args("--workers 1 -w1 --workers=1 -w 1")
+
+    def test_mixed_1_then_2_rejected(self):
+        """--workers 1 followed by --workers 2 is rejected."""
+        with pytest.raises(RuntimeContainmentError):
+            _check_gunicorn_args("--workers 1 --workers 2")
+
+    def test_mixed_2_then_1_rejected(self):
+        """--workers 2 followed by --workers 1 is rejected."""
+        with pytest.raises(RuntimeContainmentError):
+            _check_gunicorn_args("--workers 2 --workers 1")
+
+    def test_mixed_1_short_2_long_rejected(self):
+        """-w1 followed by --workers=2 is rejected."""
+        with pytest.raises(RuntimeContainmentError):
+            _check_gunicorn_args("-w1 --workers=2")
+
+    def test_mixed_equals_1_short_2_rejected(self):
+        """--workers=1 followed by -w2 is rejected."""
+        with pytest.raises(RuntimeContainmentError):
+            _check_gunicorn_args("--workers=1 -w2")
+
+    def test_missing_value_after_first(self):
+        """--workers 1 --workers with missing value is rejected."""
+        with pytest.raises(RuntimeContainmentError):
+            _check_gunicorn_args("--workers 1 --workers")
+
+    def test_non_int_after_valid(self):
+        """--workers 1 --workers abc is rejected."""
+        with pytest.raises(RuntimeContainmentError):
+            _check_gunicorn_args("--workers 1 --workers abc")
+
+    def test_empty_string(self):
+        """Empty string (after split becomes []) is accepted (no flags)."""
+        _check_gunicorn_args("")
+
+
+class TestCollectArgvFlags:
+    """Tests for ``_collect_argv_flags``."""
+
+    def test_no_flags(self):
+        _collect_argv_flags(["app.py"])
+
+    def test_workers_1_argv(self):
+        _collect_argv_flags(["app.py", "--workers", "1"])
+
+    def test_workers_2_argv_rejected(self):
+        with pytest.raises(RuntimeContainmentError):
+            _collect_argv_flags(["app.py", "--workers", "2"])
+
+    def test_workers_equals_2_argv_rejected(self):
+        with pytest.raises(RuntimeContainmentError):
+            _collect_argv_flags(["app.py", "--workers=2"])
+
+    def test_argv_duplicate_1_accepted(self):
+        """Multiple --workers 1 in argv is accepted."""
+        _collect_argv_flags(["app.py", "--workers", "1", "--workers", "1"])
+
+    def test_argv_mixed_1_2_rejected(self):
+        """argv with --workers 1 then --workers 2 is rejected."""
+        with pytest.raises(RuntimeContainmentError):
+            _collect_argv_flags(["app.py", "--workers", "1", "--workers", "2"])
+
+    def test_argv_w1_workers_2_rejected(self):
+        """argv with -w1 and --workers=2 is rejected."""
+        with pytest.raises(RuntimeContainmentError):
+            _collect_argv_flags(["app.py", "-w1", "--workers=2"])
 
 
 # ===================================================================
@@ -161,7 +256,7 @@ class TestValidateWorkerConfiguration:
     """Integration tests for the full ``validate_worker_configuration``."""
 
     def test_no_config(self):
-        """No configuration → single-worker accepted."""
+        """No configuration is accepted (default = 1 worker)."""
         validate_worker_configuration(env={}, argv=["app.py"])
 
     def test_web_concurrency_1(self):
@@ -188,6 +283,31 @@ class TestValidateWorkerConfiguration:
                 env={"GUNICORN_CMD_ARGS": "--workers 2"}, argv=["app.py"]
             )
 
+    def test_gunicorn_args_empty_rejected(self):
+        """Present but empty GUNICORN_CMD_ARGS is rejected."""
+        with pytest.raises(RuntimeContainmentError):
+            validate_worker_configuration(
+                env={"GUNICORN_CMD_ARGS": ""}, argv=["app.py"]
+            )
+
+    def test_gunicorn_args_whitespace_rejected(self):
+        """Present but whitespace-only GUNICORN_CMD_ARGS is rejected."""
+        with pytest.raises(RuntimeContainmentError):
+            validate_worker_configuration(
+                env={"GUNICORN_CMD_ARGS": "   "}, argv=["app.py"]
+            )
+
+    def test_gunicorn_args_absent_accepted(self):
+        """Absent GUNICORN_CMD_ARGS (None) is accepted."""
+        validate_worker_configuration(
+            env={"PATH": "/usr/bin"}, argv=["app.py"]
+        )
+
+    def test_gunicorn_args_workers_1_accepted(self):
+        validate_worker_configuration(
+            env={"GUNICORN_CMD_ARGS": "--workers 1"}, argv=["app.py"]
+        )
+
     def test_argv_workers_2_rejected(self):
         with pytest.raises(RuntimeContainmentError):
             validate_worker_configuration(env={}, argv=["app.py", "--workers", "2"])
@@ -200,13 +320,6 @@ class TestValidateWorkerConfiguration:
         with pytest.raises(RuntimeContainmentError):
             validate_worker_configuration(env={}, argv=["app.py", "-w", "2"])
 
-    def test_conflicting_config_rejected(self):
-        """WEB_CONCURRENCY=2 with argv --workers 1 → fails on first violation."""
-        with pytest.raises(RuntimeContainmentError):
-            validate_worker_configuration(
-                env={"WEB_CONCURRENCY": "2"}, argv=["app.py"]
-            )
-
     def test_absent_env_var_ignored(self):
         """Absent variables are simply skipped."""
         validate_worker_configuration(
@@ -214,17 +327,18 @@ class TestValidateWorkerConfiguration:
         )
 
     def test_multiple_1_accepted(self):
-        """All at 1 is fine."""
+        """All sources at 1 is fine."""
         validate_worker_configuration(
             env={
                 "WEB_CONCURRENCY": "1",
                 "UVICORN_WORKERS": "1",
+                "GUNICORN_CMD_ARGS": "--workers 1",
             },
-            argv=["app.py"],
+            argv=["app.py", "--workers", "1"],
         )
 
     def test_sanitized_error(self):
-        """Errors don't leak env values."""
+        """Errors don't leak env values or variable names."""
         with pytest.raises(RuntimeContainmentError) as exc:
             validate_worker_configuration(
                 env={"WEB_CONCURRENCY": "42"}, argv=["app.py"]
@@ -233,28 +347,103 @@ class TestValidateWorkerConfiguration:
         assert "42" not in msg
         assert "WEB_CONCURRENCY" not in msg
 
+    # --- Cross-source conflict tests ---
 
-# ===================================================================
-# PROCESS ARGV
-# ===================================================================
-
-
-class TestCollectArgvFlags:
-    """Tests for ``_collect_argv_flags``."""
-
-    def test_no_flags(self):
-        assert _collect_argv_flags(["app.py"]) is None
-
-    def test_workers_1_argv(self):
-        assert _collect_argv_flags(["app.py", "--workers", "1"]) is None
-
-    def test_workers_2_argv_rejected(self):
+    def test_web_concurrency_1_argv_2_rejected(self):
+        """WEB_CONCURRENCY=1 with argv --workers 2 is rejected."""
         with pytest.raises(RuntimeContainmentError):
-            _collect_argv_flags(["app.py", "--workers", "2"])
+            validate_worker_configuration(
+                env={"WEB_CONCURRENCY": "1"},
+                argv=["app.py", "--workers", "2"],
+            )
 
-    def test_workers_equals_2_argv_rejected(self):
+    def test_uvicorn_1_gunicorn_2_rejected(self):
+        """UVICORN_WORKERS=1 with GUNICORN_CMD_ARGS --workers 2 is rejected."""
         with pytest.raises(RuntimeContainmentError):
-            _collect_argv_flags(["app.py", "--workers=2"])
+            validate_worker_configuration(
+                env={
+                    "UVICORN_WORKERS": "1",
+                    "GUNICORN_CMD_ARGS": "--workers 2",
+                },
+                argv=["app.py"],
+            )
+
+    def test_gunicorn_repeated_1_and_2_rejected(self):
+        """GUNICORN_CMD_ARGS='--workers 1 --workers 2' is rejected."""
+        with pytest.raises(RuntimeContainmentError):
+            validate_worker_configuration(
+                env={"GUNICORN_CMD_ARGS": "--workers 1 --workers 2"},
+                argv=["app.py"],
+            )
+
+    def test_gunicorn_repeated_2_and_1_rejected(self):
+        """GUNICORN_CMD_ARGS='--workers 2 --workers 1' is rejected."""
+        with pytest.raises(RuntimeContainmentError):
+            validate_worker_configuration(
+                env={"GUNICORN_CMD_ARGS": "--workers 2 --workers 1"},
+                argv=["app.py"],
+            )
+
+    def test_argv_repeated_1_and_2_rejected(self):
+        """argv=['--workers', '1', '--workers', '2'] is rejected."""
+        with pytest.raises(RuntimeContainmentError):
+            validate_worker_configuration(
+                env={},
+                argv=["app.py", "--workers", "1", "--workers", "2"],
+            )
+
+    def test_argv_repeated_2_and_1_rejected(self):
+        """argv=['--workers', '2', '--workers', '1'] is rejected."""
+        with pytest.raises(RuntimeContainmentError):
+            validate_worker_configuration(
+                env={},
+                argv=["app.py", "--workers", "2", "--workers", "1"],
+            )
+
+    def test_argv_w1_workers_2_rejected(self):
+        """argv=['-w1', '--workers=2'] is rejected."""
+        with pytest.raises(RuntimeContainmentError):
+            validate_worker_configuration(
+                env={},
+                argv=["app.py", "-w1", "--workers=2"],
+            )
+
+    def test_argv_workers_1_w2_rejected(self):
+        """argv=['--workers=1', '-w2'] is rejected."""
+        with pytest.raises(RuntimeContainmentError):
+            validate_worker_configuration(
+                env={},
+                argv=["app.py", "--workers=1", "-w2"],
+            )
+
+    def test_gunicorn_prefixed_accepted(self):
+        """GUNICORN_CMD_ARGS='--workers 1 --timeout 120 -w1' is accepted."""
+        validate_worker_configuration(
+            env={"GUNICORN_CMD_ARGS": "--workers 1 --timeout 120 -w1"},
+            argv=["app.py"],
+        )
+
+    def test_gunicorn_multiple_1_accepted(self):
+        """GUNICORN_CMD_ARGS='--workers 1 -w1 --workers=1' is accepted."""
+        validate_worker_configuration(
+            env={"GUNICORN_CMD_ARGS": "--workers 1 -w1 --workers=1"},
+            argv=["app.py"],
+        )
+
+    def test_argv_multiple_1_accepted(self):
+        """Multiple --workers 1 in argv is accepted."""
+        validate_worker_configuration(
+            env={},
+            argv=["app.py", "--workers", "1", "-w1", "--workers=1"],
+        )
+
+    def test_cross_source_2_1_rejected(self):
+        """Env has 2, argv has 1, but env wins — still rejected."""
+        with pytest.raises(RuntimeContainmentError):
+            validate_worker_configuration(
+                env={"WEB_CONCURRENCY": "2"},
+                argv=["app.py", "--workers", "1"],
+            )
 
 
 # ===================================================================
@@ -266,16 +455,73 @@ class TestServeEntrypoint:
     """Tests for the production entrypoint (serve.py)."""
 
     def test_validate_before_import(self):
-        """The guardrail must raise before any heavy imports happen.
+        """A bad env must raise before any heavy imports happen.
 
-        We verify that ``validate_worker_configuration`` is called before
-        ``uvicorn.run`` by testing that a bad environment causes failure
-        even without importing uvicorn.
+        We pass a controlled env with multi-worker config to ``main()``.
+        The validation must fail *before* it tries to import ``backend.main``
+        (which would pull in groq, supabase_auth, sentence_transformers, etc.).
         """
+        from backend.serve import main
+
+        fake_runner = unittest.mock.MagicMock()
+
         with pytest.raises(RuntimeContainmentError):
-            validate_worker_configuration(
-                env={"WEB_CONCURRENCY": "2"}, argv=["serve.py"]
+            main(
+                argv=["--port", "9999"],
+                runner=fake_runner,
+                env={"WEB_CONCURRENCY": "2"},
             )
+
+        # The runner must NEVER be called — validation failed first.
+        fake_runner.assert_not_called()
+
+    def test_runner_injection_deterministic(self):
+        """Runner injection allows deterministic testing without starting a real server.
+
+        The env and argv are fully controlled, so this test always runs
+        and never skips.
+        """
+        from backend.serve import main
+
+        calls = []
+
+        def fake_runner(app, **kwargs):
+            calls.append(("run", kwargs))
+
+        main(
+            argv=["--port", "9999"],
+            runner=fake_runner,
+            env={},  # empty env = no multi-worker config
+        )
+
+        assert len(calls) == 1
+        kwargs = calls[0][1]
+        assert kwargs.get("workers") == 1
+        assert kwargs.get("reload") is False
+        assert kwargs.get("port") == 9999
+        assert kwargs.get("host") == "0.0.0.0"
+
+    def test_runner_injection_with_host(self):
+        """Custom host is passed through to the runner."""
+        from backend.serve import main
+
+        calls = []
+
+        def fake_runner(app, **kwargs):
+            calls.append(("run", kwargs))
+
+        main(
+            argv=["--host", "127.0.0.1", "--port", "8080"],
+            runner=fake_runner,
+            env={},
+        )
+
+        assert len(calls) == 1
+        kwargs = calls[0][1]
+        assert kwargs.get("host") == "127.0.0.1"
+        assert kwargs.get("port") == 8080
+        assert kwargs.get("workers") == 1
+        assert kwargs.get("reload") is False
 
     def test_port_validation(self):
         """Port validation in argparse rejects invalid ports."""
@@ -298,28 +544,35 @@ class TestServeEntrypoint:
         assert args.host == "0.0.0.0"
         assert args.port == 8000
 
-    def test_runner_injection(self):
-        """Runner injection allows testing without starting a real server."""
-        calls = []
+    def test_startup_order_proof(self):
+        """Proof that bad env fails before importing ``backend.main``.
 
-        def fake_runner(app, **kwargs):
-            calls.append(("run", kwargs))
+        We remove ``backend.main`` from ``sys.modules`` if present, then
+        try to call ``main()`` with a bad env.  If the validation runs
+        *after* the import, ``backend.main`` would be in ``sys.modules``.
+        We verify it is NOT there after the RuntimeContainmentError.
+        """
+        # Remove backend.main if previously imported (e.g. by other tests)
+        if "backend.main" in sys.modules:
+            del sys.modules["backend.main"]
 
         from backend.serve import main
 
-        try:
-            main(argv=["--port", "9999"], runner=fake_runner)
-        except RuntimeContainmentError:
-            # Environment might have multi-worker config — test runner injection only
-            pass
+        fake_runner = unittest.mock.MagicMock()
 
-        if not calls:
-            pytest.skip("Skipping due to environment worker configuration")
+        with pytest.raises(RuntimeContainmentError):
+            main(
+                argv=["--port", "9999"],
+                runner=fake_runner,
+                env={"WEB_CONCURRENCY": "2"},
+            )
 
-        kwargs = calls[0][1]
-        assert kwargs.get("workers") == 1
-        assert kwargs.get("reload") is False
-        assert kwargs.get("port") == 9999
+        # backend.main must NOT have been imported during the failed call.
+        assert "backend.main" not in sys.modules, (
+            "backend.main was imported despite validation failure"
+        )
+
+        fake_runner.assert_not_called()
 
 
 # ===================================================================

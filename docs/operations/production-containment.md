@@ -124,16 +124,31 @@ They are **not** deleted, migrated, or reprocessed.
 
 ## Rollback
 
-To roll back the containment changes without losing data:
+Reverting this PR to **code prior to #266** silently re-enables archival
+extraction on every turn because the code before #266 schedules
+``BackgroundTasks.add_task()`` unconditionally.  The flag
+``ARCHIVAL_EXTRACTION_ENABLED`` did not exist before #266.
 
-1. Revert the PR, or check out the previous deployment image/tag
-2. Ensure the deployment still uses `replicas=1` (the containment check does
-   not prevent starting, it only fails early)
-3. The database schema is unchanged — no migration rollback is needed
-4. Existing archival records remain intact
+**Do not perform a raw revert of the PR for operational purposes.**
 
-There is no silent re-activation of archival extraction on rollback because
-the flag default (`false`) is part of the code, not a database setting.
+### Safe rollback strategies
+
+1. **Rollback forward (preferred):** apply a hotfix that preserves the
+   containment checks and the ``ARCHIVAL_EXTRACTION_ENABLED=false`` default,
+   while reverting only the parts that cause the issue (if identified).
+
+2. **Backport the extraction guard:** if an older image must be used,
+   ensure it includes the ``archival_extraction_enabled`` parameter and
+   the early-return guard in ``run_archival_extraction()`` before deploying.
+
+3. **Use previous image only after porting containment:** if a rollback
+   to the previous image is unavoidable, confirm the image has been rebuilt
+   with the extraction guard backported.  Otherwise, extraction will be
+   implicitly re-enabled.
+
+The database schema is unchanged by this PR — no migration rollback
+is needed regardless of the rollback strategy.  Existing archival records
+remain intact.
 
 ---
 
@@ -141,5 +156,10 @@ the flag default (`false`) is part of the code, not a database setting.
 
 | Issue | Description |
 |-------|-------------|
-| [#274](https://github.com/RenyEnnos/katherine-bot/issues/274) | Distributed lock / revision for concurrent access |
-| [#276](https://github.com/RenyEnnos/katherine-bot/issues/276) | Governed memory lifecycle (approval, retention, deletion) |
+| [#236](https://github.com/RenyEnnos/katherine-bot/issues/236) | Consistent in-session state (coordenação do estado da conversa) |
+| [#269](https://github.com/RenyEnnos/katherine-bot/issues/269) | Revision / compare-and-swap for turn commits |
+| [#270](https://github.com/RenyEnnos/katherine-bot/issues/270) | Atomic turn commit (transação atômica do turno) |
+| [#271](https://github.com/RenyEnnos/katherine-bot/issues/271) | Persistent idempotency (idempotência persistente) |
+| [#272](https://github.com/RenyEnnos/katherine-bot/issues/272) | Inter-process coordination (coordenação entre processos) |
+| [#274](https://github.com/RenyEnnos/katherine-bot/issues/274) | Memory deletion, reset, and retention |
+| [#276](https://github.com/RenyEnnos/katherine-bot/issues/276) | Governed memory lifecycle (approval, deletion, durable persistence) |

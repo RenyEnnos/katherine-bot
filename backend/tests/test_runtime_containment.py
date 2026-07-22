@@ -1,6 +1,8 @@
 """Tests for runtime containment guardrails.
 
 All tests are pure — no network, Docker, Supabase, Groq, embeddings, or FastAPI.
+No module-level ``sys.modules`` mocks are used, so these tests do not
+contaminate the global test suite.
 """
 
 import os
@@ -8,21 +10,6 @@ import sys
 import unittest.mock
 import pytest
 
-# ---------------------------------------------------------------------------
-# Module-level isolation: mock heavy deps BEFORE any backend import.
-# This guarantees tests run without real Groq, Supabase, or sentence_transformers.
-# ---------------------------------------------------------------------------
-_test_mocks = {
-    "groq": unittest.mock.MagicMock(),
-    "supabase": unittest.mock.MagicMock(),
-    "supabase_auth": unittest.mock.MagicMock(),
-    "supabase_auth.errors": unittest.mock.MagicMock(),
-    "sentence_transformers": unittest.mock.MagicMock(),
-}
-for _mod_name, _mock in _test_mocks.items():
-    sys.modules[_mod_name] = _mock
-
-# Now safe to import backend modules — they will see the mocks.
 from backend.runtime_containment import (
     RuntimeContainmentError,
     parse_archival_extraction_flag,
@@ -452,15 +439,15 @@ class TestValidateWorkerConfiguration:
 
 
 class TestServeEntrypoint:
-    """Tests for the production entrypoint (serve.py)."""
+    """Tests for the production entrypoint (serve.py).
+
+    These tests use a fake runner, so no real Uvicorn, FastAPI, Groq,
+    Supabase, or embeddings are imported.  ``backend.main`` is never
+    loaded because the app is passed as a string target.
+    """
 
     def test_validate_before_import(self):
-        """A bad env must raise before any heavy imports happen.
-
-        We pass a controlled env with multi-worker config to ``main()``.
-        The validation must fail *before* it tries to import ``backend.main``
-        (which would pull in groq, supabase_auth, sentence_transformers, etc.).
-        """
+        """A bad env must raise before any imports happen."""
         from backend.serve import main
 
         fake_runner = unittest.mock.MagicMock()
@@ -476,26 +463,28 @@ class TestServeEntrypoint:
         fake_runner.assert_not_called()
 
     def test_runner_injection_deterministic(self):
-        """Runner injection allows deterministic testing without starting a real server.
+        """Runner injection allows deterministic testing.
 
-        The env and argv are fully controlled, so this test always runs
-        and never skips.
+        With a fake runner, no Uvicorn, FastAPI, Groq, or Supabase are
+        imported.  The env and argv are fully controlled, so this test
+        always runs and never skips.
         """
-        from backend.serve import main
+        from backend.serve import main, DEFAULT_APP_TARGET
 
         calls = []
 
-        def fake_runner(app, **kwargs):
-            calls.append(("run", kwargs))
+        def fake_runner(app_target, **kwargs):
+            calls.append((app_target, kwargs))
 
         main(
             argv=["--port", "9999"],
             runner=fake_runner,
-            env={},  # empty env = no multi-worker config
+            env={},
         )
 
         assert len(calls) == 1
-        kwargs = calls[0][1]
+        app_target, kwargs = calls[0]
+        assert app_target == DEFAULT_APP_TARGET
         assert kwargs.get("workers") == 1
         assert kwargs.get("reload") is False
         assert kwargs.get("port") == 9999
@@ -503,12 +492,12 @@ class TestServeEntrypoint:
 
     def test_runner_injection_with_host(self):
         """Custom host is passed through to the runner."""
-        from backend.serve import main
+        from backend.serve import main, DEFAULT_APP_TARGET
 
         calls = []
 
-        def fake_runner(app, **kwargs):
-            calls.append(("run", kwargs))
+        def fake_runner(app_target, **kwargs):
+            calls.append((app_target, kwargs))
 
         main(
             argv=["--host", "127.0.0.1", "--port", "8080"],
@@ -517,11 +506,33 @@ class TestServeEntrypoint:
         )
 
         assert len(calls) == 1
-        kwargs = calls[0][1]
+        app_target, kwargs = calls[0]
+        assert app_target == DEFAULT_APP_TARGET
         assert kwargs.get("host") == "127.0.0.1"
         assert kwargs.get("port") == 8080
         assert kwargs.get("workers") == 1
         assert kwargs.get("reload") is False
+
+    def test_custom_app_target(self):
+        """A custom app_target string is passed to the runner."""
+        from backend.serve import main
+
+        calls = []
+
+        def fake_runner(app_target, **kwargs):
+            calls.append((app_target, kwargs))
+
+        main(
+            argv=["--port", "9999"],
+            runner=fake_runner,
+            env={},
+            app_target="my.module:app",
+        )
+
+        assert len(calls) == 1
+        app_target, kwargs = calls[0]
+        assert app_target == "my.module:app"
+        assert kwargs.get("workers") == 1
 
     def test_port_validation(self):
         """Port validation in argparse rejects invalid ports."""
@@ -544,17 +555,14 @@ class TestServeEntrypoint:
         assert args.host == "0.0.0.0"
         assert args.port == 8000
 
-    def test_startup_order_proof(self):
+    def test_startup_order_proof(self, monkeypatch):
         """Proof that bad env fails before importing ``backend.main``.
 
-        We remove ``backend.main`` from ``sys.modules`` if present, then
-        try to call ``main()`` with a bad env.  If the validation runs
-        *after* the import, ``backend.main`` would be in ``sys.modules``.
-        We verify it is NOT there after the RuntimeContainmentError.
+        Uses a ``monkeypatch`` context so ``sys.modules`` is automatically
+        restored after the test, even on failure.
         """
-        # Remove backend.main if previously imported (e.g. by other tests)
-        if "backend.main" in sys.modules:
-            del sys.modules["backend.main"]
+        # Ensure backend.main is absent from sys.modules at test start.
+        monkeypatch.delitem(sys.modules, "backend.main", raising=False)
 
         from backend.serve import main
 
@@ -574,29 +582,114 @@ class TestServeEntrypoint:
 
         fake_runner.assert_not_called()
 
+    def test_runner_injection_no_heavy_imports(self):
+        """Proof that with a fake runner, no heavy modules are imported.
+
+        Captures a snapshot of ``sys.modules`` before calling ``main()``
+        with a valid configuration and a fake runner, then verifies that
+        no heavy application modules were loaded during the call.
+        """
+        snapshot = set(sys.modules.keys())
+
+        from backend.serve import main
+
+        calls = []
+
+        def fake_runner(app_target, **kwargs):
+            calls.append((app_target, kwargs))
+
+        main(
+            argv=["--port", "9999"],
+            runner=fake_runner,
+            env={},
+        )
+
+        # Determine which modules were newly added during main()
+        new_keys = set(sys.modules.keys()) - snapshot
+
+        # These modules should NOT have been imported — they are
+        # heavy (FastAPI, Groq, Supabase, embeddings, Uvicorn,
+        # or the application module itself).
+        forbidden = {
+            "backend.main",
+            "uvicorn",
+            "groq",
+            "fastapi",
+            "sentence_transformers",
+            "supabase",
+            "supabase_auth",
+            "supabase_auth.errors",
+            "dotenv",
+        }
+        actually_imported = new_keys & forbidden
+        assert not actually_imported, (
+            f"Heavy modules were imported despite fake runner: {actually_imported}"
+        )
+
+        assert len(calls) == 1
+        assert calls[0][1].get("workers") == 1
+        assert calls[0][1].get("reload") is False
+
 
 # ===================================================================
-# ENGINE: archival_extraction_enabled flag
+# CONTAMINATION VERIFICATION
 # ===================================================================
 
 
-class TestEngineArchivalFlag:
-    """Tests for the engine's archival_extraction_enabled parameter."""
+class TestSysModulesContamination:
+    """Verifies that importing and running containment tests does not
+    contaminate ``sys.modules`` with mock objects.
 
-    def test_default_is_false(self):
-        from backend.engine import ConversationEngine
+    These tests ensure the file plays well with the rest of the test suite
+    when run in any order.
+    """
 
-        engine = ConversationEngine()
-        assert engine.archival_extraction_enabled is False
+    def test_no_fake_groq_after_import(self):
+        """``groq`` must not be a MagicMock after importing containment."""
+        from unittest.mock import MagicMock
 
-    def test_explicit_true(self):
-        from backend.engine import ConversationEngine
+        mod = sys.modules.get("groq")
+        if mod is not None:
+            assert not isinstance(mod, MagicMock), (
+                "groq was replaced by a MagicMock — global contamination detected"
+            )
 
-        engine = ConversationEngine(archival_extraction_enabled=True)
-        assert engine.archival_extraction_enabled is True
+    def test_no_fake_supabase_after_import(self):
+        """``supabase`` must not be a MagicMock after importing containment."""
+        from unittest.mock import MagicMock
 
-    def test_explicit_false(self):
-        from backend.engine import ConversationEngine
+        mod = sys.modules.get("supabase")
+        if mod is not None:
+            assert not isinstance(mod, MagicMock), (
+                "supabase was replaced by a MagicMock — global contamination detected"
+            )
 
-        engine = ConversationEngine(archival_extraction_enabled=False)
-        assert engine.archival_extraction_enabled is False
+    def test_no_fake_supabase_auth_after_import(self):
+        """``supabase_auth`` must not be a MagicMock."""
+        from unittest.mock import MagicMock
+
+        mod = sys.modules.get("supabase_auth")
+        if mod is not None:
+            assert not isinstance(mod, MagicMock), (
+                "supabase_auth was replaced by a MagicMock — contamination detected"
+            )
+
+    def test_no_fake_sentence_transformers_after_import(self):
+        """``sentence_transformers`` must not be a MagicMock."""
+        from unittest.mock import MagicMock
+
+        mod = sys.modules.get("sentence_transformers")
+        if mod is not None:
+            assert not isinstance(mod, MagicMock), (
+                "sentence_transformers replaced by a MagicMock — contamination detected"
+            )
+
+    def test_real_modules_retain_identity(self):
+        """Well-known stdlib modules retain their original identity."""
+        import os as real_os
+        import sys as real_sys
+        import json as real_json
+
+        assert sys.modules["os"] is real_os
+        assert sys.modules["sys"] is real_sys
+        assert sys.modules["json"] is real_json

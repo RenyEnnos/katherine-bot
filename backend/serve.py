@@ -25,6 +25,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# The ASGI application target as a string.  Uvicorn lazy-imports it,
+# so ``backend.main`` (and all its heavy dependencies) are not loaded
+# until Uvicorn actually starts the server.  Tests can inject a fake
+# runner that never resolves this string, avoiding all heavy imports.
+DEFAULT_APP_TARGET = "backend.main:app"
+
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments for the production server.
@@ -58,34 +64,44 @@ def main(
     argv: list[str] | None = None,
     runner=None,
     env: dict[str, str] | None = None,
+    app_target: str | None = None,
 ) -> None:
     """Production server entrypoint.
 
     Args:
         argv: Override for ``sys.argv`` (used in tests).
         runner: Callable like ``uvicorn.run`` for injection (used in tests).
+            When ``None``, Uvicorn is imported and used as the runner.
         env: Override for ``os.environ`` (used in tests).  When ``None``,
             the real ``os.environ`` is read.
+        app_target: ASGI application target as a string (e.g.
+            ``"backend.main:app"``).  When ``runner`` is injected, this
+            string is passed through without being resolved, so the
+            application module is never imported during tests.  Defaults to
+            ``DEFAULT_APP_TARGET``.
     """
-    # 1. Validate containment FIRST — before importing app modules
+    # 1. Validate containment FIRST — before importing app modules.
     from .runtime_containment import validate_worker_configuration
 
-    # Forward env/argv to guarantee deterministic, avoid real os.environ reads.
     if env is not None or argv is not None:
         validate_worker_configuration(env=env, argv=argv)
     else:
         validate_worker_configuration()
 
-    # 2. Parse arguments
+    # 2. Parse arguments.
     args = _parse_args(argv)
 
-    # 3. Import the FastAPI app (heavy dependencies loaded after validation)
-    import uvicorn
-    from .main import app
+    # 3. Resolve runner — Uvicorn is only imported when no runner is injected.
+    resolved_target = app_target if app_target is not None else DEFAULT_APP_TARGET
 
-    actual_runner = runner if runner is not None else uvicorn.run
+    if runner is None:
+        import uvicorn
+        actual_runner = uvicorn.run
+    else:
+        actual_runner = runner
+
     actual_runner(
-        app,
+        resolved_target,
         host=args.host,
         port=args.port,
         workers=1,

@@ -386,6 +386,29 @@ def test_different_turns_same_content_distinct(backend):
     assert key1 == key3
 
 
+# ---------------------------------------------------------------------------
+# ARCHIVAL EXTRACTION FLAG PARAMETER TESTS
+# ---------------------------------------------------------------------------
+
+
+def test_archival_extraction_default_disabled(backend):
+    """ConversationEngine() defaults to archival_extraction_enabled=False."""
+    engine = backend.ConversationEngine()
+    assert engine.archival_extraction_enabled is False
+
+
+def test_archival_extraction_explicit_true(backend):
+    """ConversationEngine(archival_extraction_enabled=True) sets flag True."""
+    engine = backend.ConversationEngine(archival_extraction_enabled=True)
+    assert engine.archival_extraction_enabled is True
+
+
+def test_archival_extraction_explicit_false(backend):
+    """ConversationEngine(archival_extraction_enabled=False) sets flag False."""
+    engine = backend.ConversationEngine(archival_extraction_enabled=False)
+    assert engine.archival_extraction_enabled is False
+
+
 def test_no_real_external_dependencies_proof():
     # Programmatic proof that real SentenceTransformer, Supabase or Groq are not used
     # in any test environment instantiation

@@ -29,10 +29,13 @@ The project is divided into two main components:
    ```bash
    pip install -r requirements.txt
    ```
-4. Run the server:
+4. Run the server (development only):
    ```bash
    python main.py
    ```
+
+   > **Production:** Use `python -m backend.serve` instead.
+   > See [Production Containment](docs/operations/production-containment.md).
 
 ### Frontend
 
@@ -53,7 +56,7 @@ The project is divided into two main components:
 
 - **Interactive Chat**: Real-time messaging interface.
 - **Emotional Intelligence**: Tracks and responds to emotional context.
-- **Memory System**: Persistent memory for context-aware conversations.
+- **Memory System**: Persistent context for conversations (archival extraction disabled by default).
 - **Modern UI**: Clean, responsive design using Tailwind CSS.
 
 

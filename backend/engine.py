@@ -35,8 +35,9 @@ from .archival_memory import (
 logger = logging.getLogger(__name__)
 
 class ConversationEngine:
-    def __init__(self, clock=time.time):
+    def __init__(self, clock=time.time, archival_extraction_enabled: bool = False):
         self._clock = clock
+        self.archival_extraction_enabled = archival_extraction_enabled
         self.groq_manager = GroqClientManager()
         self.presentation = AffectiveEngine()  # read-only presentation helpers
         self.transition_config = TransitionConfig.defaults()  # immutable, stateless
@@ -47,6 +48,11 @@ class ConversationEngine:
         self.model_fast = "llama-3.1-8b-instant"
 
     async def run_archival_extraction(self, turn_ref: PersistedTurnRef):
+        # Early return when archival extraction is disabled.
+        # This guard is checked even if the method is called directly by mistake.
+        if not self.archival_extraction_enabled:
+            return
+
         # 1. Load user message content
         try:
             user_message = await asyncio.to_thread(
@@ -222,8 +228,9 @@ class ConversationEngine:
             # Raises StatePersistenceError on failure.
             await asyncio.to_thread(self.memory_manager.sync_state, user_id, new_state, relationship)
 
-            # Schedule background task only after save_turn and sync_state have successfully completed
-            if background_tasks:
+            # Schedule background task only after save_turn and sync_state have successfully completed.
+            # Only schedule when archival extraction is explicitly enabled.
+            if background_tasks and self.archival_extraction_enabled:
                 background_tasks.add_task(self.run_archival_extraction, turn_ref)
 
             # Return projected public format (typed DTO, no internal fields)

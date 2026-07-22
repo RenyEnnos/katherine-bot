@@ -49,3 +49,15 @@ O comentário inicial/corpo da PR deve conter:
 - Itens deliberadamente fora de escopo.
 
 Use Conventional Commits e títulos como `feat(emotion): ...`, `fix(auth): ...` ou `test(emotion): ...`.
+
+## Freeze de roadmap (Gate PROD-0)
+
+Até a aprovação do Gate PROD-0 (issue #264), as seguintes regras se aplicam:
+
+- Somente issues da recuperação #264 explicitamente marcadas como `status:ready`
+  podem ser implementadas.
+- Somente o mantenedor pode liberar uma issue para implementação.
+- As issues #251, #252, #253, #254, #255, #256, #257, #258, #259, #260, #261,
+  #262, #263, #226 e #241 **não podem** receber branch ou pull request.
+- Concluir a PR #266 não autoriza iniciar a issue #267 ou qualquer outra fora
+  da recuperação #264.

@@ -14,7 +14,7 @@ def test_imports():
         # Mock environment variables
         os.environ['GROQ_API_KEY'] = 'mock'
         os.environ['SUPABASE_URL'] = 'mock'
-        os.environ['SUPABASE_KEY'] = 'mock'
+        os.environ['SUPABASE_SERVICE_ROLE_KEY'] = 'mock'
 
         # Attempt to import main
         import backend.main

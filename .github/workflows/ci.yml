@@ -6,6 +6,113 @@ on:
       - main
 
 jobs:
+  database:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v3
+        with:
+          version: '2.109.1'
+
+      - name: Start Supabase
+        run: supabase start
+
+      - name: Verify Supabase is running (no secrets in logs)
+        run: |
+          # Health check that only confirms the local API is reachable,
+          # without printing anon/service-role keys or the JWT secret.
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:54321/rest/v1/ >/dev/null 2>&1; then
+              echo "Supabase API reachable on attempt $i"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Supabase API not reachable after start"
+          exit 1
+
+      - name: Reset database for pgTAP tests
+        run: |
+          set -euo pipefail
+          supabase db reset
+
+      - name: Run pgTAP tests
+        run: |
+          set -euo pipefail
+          supabase test db supabase/tests/database
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Backend Test Dependencies
+        run: |
+          python -m pip install -r backend/requirements.txt
+          python -m pip install -r backend/requirements-test.txt
+
+      - name: Extract Supabase local keys (no echo)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Validação sanitizada, sem imprimir o JSON.
+          supabase status -o json >/dev/null
+          echo "Supabase status verified (no secrets printed)"
+
+          env_out="$(supabase status -o env)"
+
+          anon_key="$(
+            awk -F= '$1 == "ANON_KEY" {
+              sub(/^"/, "", $2)
+              sub(/"$/, "", $2)
+              print $2
+            }' <<<"$env_out"
+          )"
+
+          service_key="$(
+            awk -F= '$1 == "SERVICE_ROLE_KEY" {
+              sub(/^"/, "", $2)
+              sub(/"$/, "", $2)
+              print $2
+            }' <<<"$env_out"
+          )"
+
+          if [[ -z "$anon_key" || -z "$service_key" ]]; then
+            echo "Failed to extract required Supabase credentials" >&2
+            exit 1
+          fi
+
+          echo "::add-mask::$anon_key"
+          echo "::add-mask::$service_key"
+
+          echo "SUPABASE_ANON_KEY=$anon_key" >> "$GITHUB_ENV"
+          echo "SUPABASE_SERVICE_ROLE_KEY=$service_key" >> "$GITHUB_ENV"
+
+      - name: Run Legacy Upgrade Test
+        env:
+          SUPABASE_URL: "http://127.0.0.1:54321"
+          PYTHONPATH: "."
+        run: |
+          python -m pytest -q -ra backend/tests/test_legacy_upgrade.py
+
+      - name: Reset database for authorization tests
+        run: |
+          supabase db reset
+
+      - name: Run Database Authorization Integration Tests
+        env:
+          SUPABASE_URL: "http://127.0.0.1:54321"
+          PYTHONPATH: "."
+        run: |
+          python -m pytest -q -ra backend/tests/test_database_authorization_integration.py
+
+      - name: Stop Supabase
+        if: always()
+        run: supabase stop
+
   backend:
     runs-on: ubuntu-latest
     steps:
@@ -37,13 +144,15 @@ jobs:
         run: |
           python -m compileall -q backend
 
-      - name: Run Tests
+      - name: Run Tests (excluding Supabase-dependent integration)
         env:
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
           PYTHONPATH: "."
         run: |
-          python -m pytest backend/tests
+          python -m pytest backend/tests \
+            --ignore=backend/tests/test_database_authorization_integration.py \
+            --ignore=backend/tests/test_legacy_upgrade.py
 
   frontend:
     runs-on: ubuntu-latest

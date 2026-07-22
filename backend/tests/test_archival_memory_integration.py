@@ -27,7 +27,7 @@ def mock_external_dependencies():
     # Setup environment variables immediately
     os.environ['GROQ_API_KEY'] = 'mock_key'
     os.environ['SUPABASE_URL'] = 'http://mock'
-    os.environ['SUPABASE_KEY'] = 'mock_key'
+    os.environ['SUPABASE_SERVICE_ROLE_KEY'] = 'mock_key'
 
     yield
 

@@ -175,6 +175,24 @@ class TestQueryScalarBool:
         assert _query_scalar_bool("SELECT false AS result", "result") is False
 
     @patch("backend.tests.test_legacy_upgrade.run_supabase_op")
+    def test_uses_supported_json_cli_contract(self, mock_run_op):
+        """Must call run_supabase_op with --agent=no --output json (not --output-format)."""
+        mock_run_op.return_value = _fake_result('[{"result": true}]')
+        _query_scalar_bool("SELECT true AS result", "result")
+        mock_run_op.assert_called_once_with(
+            "legacy_state_query",
+            [
+                "db",
+                "query",
+                "--agent=no",
+                "--output",
+                "json",
+                "SELECT true AS result",
+            ],
+            check=False,
+        )
+
+    @patch("backend.tests.test_legacy_upgrade.run_supabase_op")
     def test_invalid_json_sanitized(self, mock_run_op):
         """Invalid JSON output must raise sanitized error, not raw text."""
         mock_run_op.return_value = _fake_result("not valid json")
@@ -216,6 +234,24 @@ class TestQueryScalarInt:
         """Valid integer from JSON returns Python int."""
         mock_run_op.return_value = _fake_result('[{"count": 42}]')
         assert _query_scalar_int("SELECT 42 AS count", "count") == 42
+
+    @patch("backend.tests.test_legacy_upgrade.run_supabase_op")
+    def test_uses_supported_json_cli_contract(self, mock_run_op):
+        """Must call run_supabase_op with --agent=no --output json (not --output-format)."""
+        mock_run_op.return_value = _fake_result('[{"count": 42}]')
+        _query_scalar_int("SELECT 42 AS count", "count")
+        mock_run_op.assert_called_once_with(
+            "legacy_state_query",
+            [
+                "db",
+                "query",
+                "--agent=no",
+                "--output",
+                "json",
+                "SELECT 42 AS count",
+            ],
+            check=False,
+        )
 
     @patch("backend.tests.test_legacy_upgrade.run_supabase_op")
     def test_returns_zero(self, mock_run_op):

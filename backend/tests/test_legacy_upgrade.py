@@ -53,30 +53,31 @@ def _run_supabase(op_id: str, args: list[str], check: bool = True):
 
 
 def _run_fixture_file(filepath: str):
-    """Execute a multi-statement SQL fixture file via psql.
+    """Execute a multi-statement SQL fixture file via Docker exec on the Supabase DB container.
 
     ``supabase db query --file`` does not support multiple SQL statements.
-    This helper runs the file directly with psql on the local database,
-    using the default Supabase local credentials (postgres:postgres).
+    This helper runs the file inside the ``supabase_db_app`` container using
+    ``docker exec``, which avoids requiring ``psql`` to be installed on the
+    host.  The container is created by ``supabase start`` and always uses the
+    default credentials (postgres:postgres).
     """
+    with open(filepath, "r") as f:
+        sql = f.read()
     result = subprocess.run(
         [
-            "psql",
-            "-h", "127.0.0.1",
-            "-p", "54322",
-            "-U", "postgres",
-            "-d", "postgres",
-            "-f", filepath,
-            "-q",  # quiet mode
-            "-v", "ON_ERROR_STOP=1",  # fail on first SQL error
+            "docker", "exec", "-i", "supabase_db_app",
+            "psql", "-U", "postgres",
+            "-v", "ON_ERROR_STOP=1",
+            "-q",
+            "-f", "-",
         ],
+        input=sql,
         capture_output=True,
         text=True,
-        env={**os.environ, "PGPASSWORD": "postgres"},
     )
     if result.returncode != 0:
         raise AssertionError(
-            f"Fixture execution failed: {filepath} (psql exited {result.returncode})"
+            f"Fixture execution failed: {filepath} (exited {result.returncode})"
         )
 
 
@@ -93,7 +94,7 @@ def _parse_json_scalar(
     *,
     reject_bool: bool = False,
 ):
-    """Parse JSON scalar output from ``supabase db query --output-format json``.
+    """Parse JSON scalar output from ``supabase db query --output json``.
 
     Validates that the JSON structure is a list with exactly one dict containing
     exactly the *expected_key* and that the value matches *expected_type*.  On any
@@ -132,7 +133,7 @@ def _parse_json_scalar(
 def _query_scalar_bool(query: str, expected_key: str) -> bool:
     """Execute a SQL query returning a single boolean scalar via explicit JSON output.
 
-    Wraps query with ``--agent=no --output-format json`` to get deterministic
+    Wraps query with ``--agent=no --output json`` to get deterministic
     machine-readable output.  The query must alias its single result column to
     *expected_key*.
 
@@ -144,7 +145,7 @@ def _query_scalar_bool(query: str, expected_key: str) -> bool:
     """
     res = _run_supabase(
         "legacy_state_query",
-        ["db", "query", "--agent=no", "--output-format", "json", query],
+        ["db", "query", "--agent=no", "--output", "json", query],
     )
     return _parse_json_scalar(res.stdout, expected_key, bool, "boolean")
 
@@ -152,7 +153,7 @@ def _query_scalar_bool(query: str, expected_key: str) -> bool:
 def _query_scalar_int(query: str, expected_key: str) -> int:
     """Execute a SQL query returning a single integer scalar via explicit JSON output.
 
-    Wraps query with ``--agent=no --output-format json`` to get deterministic
+    Wraps query with ``--agent=no --output json`` to get deterministic
     machine-readable output.  The query must alias its single result column to
     *expected_key*.
 
@@ -164,7 +165,7 @@ def _query_scalar_int(query: str, expected_key: str) -> int:
     """
     res = _run_supabase(
         "legacy_state_query",
-        ["db", "query", "--agent=no", "--output-format", "json", query],
+        ["db", "query", "--agent=no", "--output", "json", query],
     )
     value = _parse_json_scalar(
         res.stdout, expected_key, int, "integer", reject_bool=True
@@ -359,6 +360,18 @@ def test_valid_legacy_upgrade(supabase_service_client):
                 "result",
             ), f"{role} should not have EXECUTE on match_memories"
 
+        # ---- anon / authenticated have no privileges on tables ----
+        for role in ["anon", "authenticated"]:
+            for tbl in TABLES:
+                assert not _query_scalar_bool(
+                    "SELECT has_table_privilege("
+                    f"'{role}', "
+                    f"'public.{tbl}', "
+                    "'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'"
+                    ") AS result",
+                    "result",
+                ), f"{role} should have no privileges on {tbl}"
+
         # ---- PUBLIC has no privileges (effective check via has_*_privilege) ----
         for tbl in TABLES:
             assert not _query_scalar_bool(
@@ -393,7 +406,7 @@ def test_valid_legacy_upgrade(supabase_service_client):
 
 
 @pytest.mark.database_integration
-def test_invalid_legacy_rejected(supabase_service_client):
+def test_invalid_legacy_rejected():
     _move_hardening_aside()
     try:
         _run_supabase("legacy_baseline_reset", ["db", "reset"])
@@ -420,9 +433,8 @@ def test_invalid_legacy_rejected(supabase_service_client):
             "Hardening migration was registered despite invalid data"
         )
 
-        # Verify all data preserved
-        svc = supabase_service_client
-
+        # Verify all data preserved via direct SQL (PostgREST not available
+        # because the failed migration never applied the service_role grants)
         assert _query_scalar_int(
             "SELECT count(*)::int AS count FROM public.profiles", "count"
         ) == 2, "Expected 2 profiles preserved"
@@ -431,30 +443,42 @@ def test_invalid_legacy_rejected(supabase_service_client):
         ) == 2, "Expected 2 chat logs preserved"
 
         # Valid data intact
-        profiles_res = svc.table("profiles").select("*").eq(
-            "user_id", "legacy_user_valid"
-        ).execute()
-        assert len(profiles_res.data) == 1, "Valid profile was affected"
+        assert _query_scalar_bool(
+            "SELECT EXISTS("
+            "SELECT 1 FROM public.profiles "
+            "WHERE user_id = 'legacy_user_valid'"
+            ") AS result",
+            "result",
+        ), "Valid profile was affected"
 
-        chat_res = svc.table("chat_logs").select("*").eq(
-            "user_id", "legacy_user_valid"
-        ).execute()
-        assert len(chat_res.data) == 1, "Valid chat log was affected"
-        assert chat_res.data[0]["content"] == "legacy message"
-        assert chat_res.data[0]["role"] == "user"
+        assert _query_scalar_bool(
+            "SELECT EXISTS("
+            "SELECT 1 FROM public.chat_logs "
+            "WHERE user_id = 'legacy_user_valid' "
+            "AND content = 'legacy message' "
+            "AND role = 'user'"
+            ") AS result",
+            "result",
+        ), "Valid chat log was affected"
 
         # Invalid data also preserved (not deleted, corrected, or truncated)
-        profiles_inv = svc.table("profiles").select("*").eq(
-            "user_id", "legacy_user_invalid"
-        ).execute()
-        assert len(profiles_inv.data) == 1, "Invalid profile was deleted"
+        assert _query_scalar_bool(
+            "SELECT EXISTS("
+            "SELECT 1 FROM public.profiles "
+            "WHERE user_id = 'legacy_user_invalid'"
+            ") AS result",
+            "result",
+        ), "Invalid profile was deleted"
 
-        chat_inv = svc.table("chat_logs").select("*").eq(
-            "user_id", "legacy_user_invalid"
-        ).execute()
-        assert len(chat_inv.data) == 1, "Invalid chat log was deleted"
-        assert chat_inv.data[0]["content"] == ""
-        assert chat_inv.data[0]["role"] == "user"
+        assert _query_scalar_bool(
+            "SELECT EXISTS("
+            "SELECT 1 FROM public.chat_logs "
+            "WHERE user_id = 'legacy_user_invalid' "
+            "AND content = '' "
+            "AND role = 'user'"
+            ") AS result",
+            "result",
+        ), "Invalid chat log was deleted or content changed"
 
     finally:
         _ensure_hardening_present()

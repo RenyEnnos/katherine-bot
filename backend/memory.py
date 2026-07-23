@@ -40,22 +40,30 @@ class TurnPersistenceError(Exception):
 
 # ─── Supabase client factory ─────────────────────────────────────────────────
 
-def _default_supabase_factory() -> Optional[Client]:
+def _default_supabase_factory(supabase_timeout: Optional[float] = None) -> Optional[Client]:
     """Create a Supabase client with timeout configuration, or return None.
 
     ``ClientOptions`` is imported lazily to avoid shadowing issues when the
     project root contains a ``supabase/`` directory (Supabase CLI config).
+
+    The timeout value should come from the validated ``TurnExecutionConfig``.
+    If ``None``, falls back to environment variable ``TURN_SUPABASE_TIMEOUT``
+    with a default of 5.0 seconds.
     """
     url: str = os.environ.get("SUPABASE_URL")
     key: str = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
     if not url or not key:
         return None
 
-    timeout_str = os.environ.get("TURN_SUPABASE_TIMEOUT", "5.0")
-    try:
-        timeout = float(timeout_str)
-    except (ValueError, TypeError):
-        timeout = 5.0
+    # Use the provided timeout, or parse from env, or default to 5.0
+    if supabase_timeout is not None:
+        timeout = supabase_timeout
+    else:
+        timeout_str = os.environ.get("TURN_SUPABASE_TIMEOUT", "5.0")
+        try:
+            timeout = float(timeout_str)
+        except (ValueError, TypeError):
+            timeout = 5.0
 
     try:
         from supabase.lib.client_options import ClientOptions
@@ -70,10 +78,20 @@ class MemoryManager:
         self,
         clock=time.time,
         supabase_factory: Optional[Callable[[], Optional[Client]]] = None,
+        supabase_timeout: Optional[float] = None,
     ):
         # 1. Initialize Supabase with timeout config
-        factory = supabase_factory or _default_supabase_factory
-        self.supabase: Optional[Client] = factory()
+        # The timeout comes from validated TurnExecutionConfig; if not provided,
+        # the factory will parse from env (with fallback to 5.0s default).
+        if supabase_factory is not None:
+            self.supabase: Optional[Client] = supabase_factory()
+        else:
+            # Use the config's supabase_timeout, or None (let factory handle it)
+            if supabase_timeout is not None:
+                factory = lambda: _default_supabase_factory(supabase_timeout)
+            else:
+                factory = lambda: _default_supabase_factory()
+            self.supabase: Optional[Client] = factory()
 
         # 2. Initialize Embeddings Model (Local)
         try:

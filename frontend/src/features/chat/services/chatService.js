@@ -1,4 +1,4 @@
-import api from '../../../shared/services/apiClient';
+import api from '../../../shared/services/apiClient.js';
 
 /**
  * Sanitised error classification for chat API responses.

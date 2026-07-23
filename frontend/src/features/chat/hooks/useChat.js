@@ -18,7 +18,27 @@ export const useChat = () => {
     const messagesEndRef = useRef(null);
     const inputRef = useRef(null);
     const abortControllerRef = useRef(null);
+    const timerIdRef = useRef(null);
 
+    const cleanupRequest = useCallback(() => {
+        if (timerIdRef.current !== null) {
+            clearTimeout(timerIdRef.current);
+            timerIdRef.current = null;
+        }
+        if (abortControllerRef.current !== null) {
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
+        }
+    }, []);
+
+    // Cleanup abort controller and timer on unmount
+    useEffect(() => {
+        return () => {
+            cleanupRequest();
+        };
+    }, [cleanupRequest]);
+
+    // Auto-spin fetchHistory (EFH)
     useEffect(() => {
         const fetchHistory = async () => {
             try {
@@ -29,7 +49,7 @@ export const useChat = () => {
                 }
             } catch (error) {
                 // History fetch failure is not critical — log sanitised
-                if (process.env.NODE_ENV !== 'test') {
+                if (typeof import.meta !== 'undefined' && import.meta.env?.MODE !== 'test') {
                     console.warn('Failed to fetch history');
                 }
             }
@@ -43,13 +63,6 @@ export const useChat = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages, isLoading]);
 
-    // Cleanup abort controller on unmount
-    useEffect(() => {
-        return () => {
-            abortControllerRef.current?.abort();
-        };
-    }, []);
-
     const handleSend = useCallback(async () => {
         if (!input.trim() || isLoading) return;
 
@@ -61,6 +74,9 @@ export const useChat = () => {
         setInput('');
         setIsLoading(true);
 
+        // Clear any stale controller/timer from previous request
+        cleanupRequest();
+
         // Create fresh AbortController for this request
         const controller = new AbortController();
         abortControllerRef.current = controller;
@@ -70,6 +86,7 @@ export const useChat = () => {
         const timerId = setTimeout(() => {
             controller.abort();
         }, timeoutMs);
+        timerIdRef.current = timerId;
 
         try {
             const data = await sendMessage(userMessageText, {
@@ -79,6 +96,7 @@ export const useChat = () => {
 
             // Clear timer on success
             clearTimeout(timerId);
+            timerIdRef.current = null;
 
             const botMessage = { role: 'assistant', content: data.response };
             setMessages(prev => [...prev, botMessage]);
@@ -89,6 +107,7 @@ export const useChat = () => {
         } catch (error) {
             // Clear timer on error/cancel
             clearTimeout(timerId);
+            timerIdRef.current = null;
 
             if (error instanceof ChatError) {
                 const errorMessage = {
@@ -107,10 +126,11 @@ export const useChat = () => {
         } finally {
             setIsLoading(false);
             abortControllerRef.current = null;
+            timerIdRef.current = null;
             // Focus back on input
             setTimeout(() => inputRef.current?.focus(), 100);
         }
-    }, [input, isLoading]);
+    }, [input, isLoading, cleanupRequest]);
 
     const clearHistory = useCallback(() => {
         setMessages([]);

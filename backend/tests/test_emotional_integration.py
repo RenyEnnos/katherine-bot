@@ -66,6 +66,7 @@ from backend.emotional_domain import (
 )
 from backend.emotion_presentation import EmotionStateResponse
 from backend.relationship import RelationshipStateV1, compute_bond_label
+from backend.turn_execution import TurnExecutionError, TurnErrorCode
 
 
 # ─── Fixed clock ─────────────────────────────────────────────────────────────
@@ -294,22 +295,21 @@ class TestRelationshipAdaptationSpy:
 
         asyncio.run(run())
 
-    def test_unknown_top_level_key_triggers_neutral_fallback(self):
+    def test_unknown_top_level_key_triggers_fallback_failure(self):
         """
         Cenário B — chave top-level desconhecida.
 
         * o parser utiliza fallback neutro;
-        * o relacionamento recebe transição neutra;
+        * o fallback na fronteira de orquestração é convertido em erro;
         * o marcador não chega ao relacionamento;
         * o marcador não aparece nos logs;
-        * o turno não falha (segue a política de fallback).
+        * o turno falha com ``provider_invalid_response``.
         """
         SENSITIVE_KEY = "SENSITIVE_EXTRA_KEY_92841"
 
         async def run():
             engine = _make_engine()
 
-            # Payload with a valid structure PLUS an unknown top-level key
             async def _mock_appraisal(**kwargs):
                 mock_resp = MagicMock()
                 mock_resp.choices = [MagicMock()]
@@ -323,36 +323,27 @@ class TestRelationshipAdaptationSpy:
                 return mock_resp
             engine.groq_manager.chat_completion_async = MagicMock(side_effect=_mock_appraisal)
 
-            # Capture logs
             logger = logging.getLogger("backend.engine")
             logger.setLevel(logging.INFO)
             stream = io.StringIO()
             handler = logging.StreamHandler(stream)
             logger.addHandler(handler)
             try:
-                resp, emotions = await engine.process_turn("user", "Hello")
+                with pytest.raises(TurnExecutionError) as exc_info:
+                    await engine.process_turn("user", "Hello")
+                assert exc_info.value.code == TurnErrorCode.provider_invalid_response
             finally:
                 logger.removeHandler(handler)
 
             log_text = stream.getvalue()
 
-            # Relationship received neutral transition (fallback)
-            args, _ = engine.memory_manager.sync_state.call_args
-            rel = args[2]
-            assert isinstance(rel, RelationshipStateV1)
-            # With neutral appraisal, metrics stay at defaults
-            assert rel.trust == 0.5
-            assert rel.affection == 0.3
-            # Sensitive key never reaches relationship
-            assert SENSITIVE_KEY not in str(rel)
+            # No persistence calls — appraisal failure blocked the turn
+            engine.memory_manager.sync_state.assert_not_called()
+            engine.memory_manager.save_turn.assert_not_called()
 
             # Log contains sanitised fallback event, not the marker
             assert "event=emotional_appraisal_fallback" in log_text
-            assert "code=unknown_top_level_key" in log_text
             assert SENSITIVE_KEY not in log_text
-
-            # Turn still succeeds (fallback policy)
-            assert resp is not None
 
         asyncio.run(run())
 
@@ -389,7 +380,8 @@ class TestRelationshipAdaptationSpy:
 
         asyncio.run(run())
 
-    def test_neutral_fallback_results_in_neutral_transition(self):
+    def test_empty_appraisal_fails_with_invalid_response(self):
+        """Empty appraisal dict triggers fallback in parser, which raises at orchestration boundary."""
         async def run():
             engine = _make_engine()
             async def _mock_empty_appraisal(**kwargs):
@@ -399,14 +391,13 @@ class TestRelationshipAdaptationSpy:
                 return mock_resp
             engine.groq_manager.chat_completion_async = MagicMock(side_effect=_mock_empty_appraisal)
 
-            await engine.process_turn("user", "Hello")
+            with pytest.raises(TurnExecutionError) as exc_info:
+                await engine.process_turn("user", "Hello")
+            assert exc_info.value.code == TurnErrorCode.provider_invalid_response
 
-            args, _ = engine.memory_manager.sync_state.call_args
-            rel = args[2]
-            assert isinstance(rel, RelationshipStateV1)
-            # With neutral appraisal, metrics stay at defaults
-            assert rel.trust == 0.5
-            assert rel.affection == 0.3
+            # No persistence — appraisal failure blocked the turn
+            engine.memory_manager.sync_state.assert_not_called()
+            engine.memory_manager.save_turn.assert_not_called()
 
         asyncio.run(run())
 
@@ -957,14 +948,14 @@ class TestSanitisedLogging:
                 return mock_resp
             engine.groq_manager.chat_completion_async = MagicMock(side_effect=_mock_bad_appraisal)
 
-            # Capture logs
             logger = logging.getLogger("backend.engine")
             logger.setLevel(logging.INFO)
             stream = io.StringIO()
             handler = logging.StreamHandler(stream)
             logger.addHandler(handler)
             try:
-                await engine.process_turn("user", self.SENSITIVE_PAYLOAD)
+                with pytest.raises(TurnExecutionError):
+                    await engine.process_turn("user", self.SENSITIVE_PAYLOAD)
             finally:
                 logger.removeHandler(handler)
 
@@ -978,7 +969,6 @@ class TestSanitisedLogging:
             assert self.SENSITIVE_PAYLOAD not in log_text
             assert self.SENSITIVE_KEY not in log_text
             assert self.SENSITIVE_PROMPT not in log_text
-            # The user_id ("user") is part of the process, but must not appear in sanitised logs
             assert "SENSITIVE_" not in log_text
 
         asyncio.run(run())
@@ -995,38 +985,26 @@ class TestSanitisedLogging:
             engine.memory_manager.sync_state = MagicMock()
             engine.memory_manager.save_turn = MagicMock()
 
-            # Patch _require_finite_float_in_range to raise a fake exception
-            # with a unique sensitive marker. This triggers the
-            # ``except Exception`` in parse_llm_appraisal, which catches
-            # and sanitises the failure (never re-raises).
-            # We patch at the backend.emotional_domain.appraisal_parser level
-            # because _require_finite_float_in_range is imported there.
             with patch(
                 "backend.emotional_domain.appraisal_parser._require_finite_float_in_range",
                 side_effect=Exception(self.SENSITIVE_EXCEPTION),
             ):
-                resp, emotions = await engine.process_turn("user", "Hello")
-
-            # The turn still succeeds via neutral fallback
-            assert resp is not None
+                with pytest.raises(TurnExecutionError):
+                    await engine.process_turn("user", "Hello")
 
         with caplog.at_level(logging.INFO):
             asyncio.run(run())
 
-        # Check caplog for sanitised output (after asyncio.run completes)
         caplog_text = caplog.text
-        # Sanitised event and code appear
         assert "event=emotional_appraisal_fallback" in caplog_text
         assert "unexpected_parser_failure" in caplog_text
-        # Exception marker must NOT appear
         assert self.SENSITIVE_EXCEPTION not in caplog_text
-        # No sensitive markers of any kind leak
         assert "SENSITIVE_" not in caplog_text
 
-    def test_neutral_fallback_is_used_when_perceive_fails(self):
+    def test_empty_appraisal_content_fails_with_invalid_response(self):
+        """None content from appraisal is treated as provider_invalid_response."""
         async def run():
             engine = _make_engine()
-            # Set up async mock to return None (triggers invalid JSON)
             async def _mock_none(**kwargs):
                 mock_resp = MagicMock()
                 mock_resp.choices = [MagicMock()]
@@ -1034,13 +1012,9 @@ class TestSanitisedLogging:
                 return mock_resp
             engine.groq_manager.chat_completion_async = MagicMock(side_effect=_mock_none)
 
-            resp, emotions = await engine.process_turn("user", "Hello")
-            # Should still succeed with neutral fallback
-            assert resp is not None
-            # Emotional state is EmotionStateResponse with neutral values
-            assert isinstance(emotions, EmotionStateResponse)
-            assert emotions.pad.pleasure == 0.0
-            assert emotions.timestamp == FIXED_CLOCK
+            with pytest.raises(TurnExecutionError) as exc_info:
+                await engine.process_turn("user", "Hello")
+            assert exc_info.value.code == TurnErrorCode.provider_invalid_response
 
         asyncio.run(run())
 

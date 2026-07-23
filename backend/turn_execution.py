@@ -57,6 +57,37 @@ class DeadlineExceeded(TurnExecutionError):
         super().__init__(TurnErrorCode.turn_timeout, "Turn deadline exceeded.")
 
 
+# ─── Groq call parameters ────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class GroqCallParams:
+    """Explicit typed parameters for provider calls.
+
+    These are derived from ``TurnExecutionConfig`` and passed explicitly
+    to ``GroqClientManager.chat_completion_async()``. No kwargs or
+    dict-based forwarding.
+    """
+    max_attempts: int = 2
+    connect_timeout: float = 3.0
+    provider_attempt_timeout: float = 15.0
+    base_backoff: float = 0.25
+    max_backoff: float = 0.75
+    max_jitter: float = 0.10
+
+
+def compute_effective_attempt_timeout(
+    config: GroqCallParams,
+    budget: TurnBudget,
+) -> float:
+    """Compute the effective timeout for a provider attempt.
+
+    Returns the minimum of:
+    * configured attempt timeout
+    * remaining budget before commit reserve
+    """
+    return min(config.provider_attempt_timeout, budget.remaining_before_reserve)
+
+
 # ─── Turn stage enum for observability ──────────────────────────────────────
 
 class TurnStage(str, Enum):
@@ -221,6 +252,14 @@ class TurnExecutionConfig:
         if self.commit_reserve >= self.total_deadline:
             raise ValueError("commit_reserve must be < total_deadline.")
 
+        # Invariant: base_backoff <= max_backoff
+        if self.base_backoff > self.max_backoff:
+            raise ValueError("base_backoff must be <= max_backoff.")
+
+        # Invariant: max_jitter in [0, 1]
+        if not (0.0 <= self.max_jitter <= 1.0):
+            raise ValueError("max_jitter must be in [0.0, 1.0].")
+
     @staticmethod
     def _assert_finite_positive(name: str, value: object) -> None:
         if isinstance(value, bool):
@@ -232,6 +271,17 @@ class TurnExecutionConfig:
             raise ValueError(f"{name} must be finite, got {f}.")
         if f <= 0:
             raise ValueError(f"{name} must be positive, got {f}.")
+
+    def to_groq_params(self) -> GroqCallParams:
+        """Derive ``GroqCallParams`` from this config."""
+        return GroqCallParams(
+            max_attempts=self.max_attempts,
+            connect_timeout=self.connect_timeout,
+            provider_attempt_timeout=self.provider_attempt_timeout,
+            base_backoff=self.base_backoff,
+            max_backoff=self.max_backoff,
+            max_jitter=self.max_jitter,
+        )
 
     @classmethod
     def defaults(cls) -> TurnExecutionConfig:
@@ -332,6 +382,8 @@ def compute_backoff(
 
     ``attempt`` is 0-indexed (first retry is attempt 0).
     Returns a value in [0, cap].
+
+    Values are validated: base > 0, cap > 0, base <= cap, jitter_fraction in [0,1].
     """
     if attempt < 0:
         return 0.0
@@ -339,3 +391,14 @@ def compute_backoff(
     delay = min(delay, cap)
     jitter = delay * jitter_fraction * random_source()
     return delay + jitter
+
+
+def compute_backoff_from_params(attempt: int, params: GroqCallParams, random_source: Callable[[], float] = _random.random) -> float:
+    """Compute backoff from a ``GroqCallParams`` object."""
+    return compute_backoff(
+        attempt,
+        base=params.base_backoff,
+        cap=params.max_backoff,
+        jitter_fraction=params.max_jitter,
+        random_source=random_source,
+    )

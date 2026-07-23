@@ -306,8 +306,8 @@ def test_http_chat_load_failure_sanitization(client_app, mock_supabase, caplog):
             headers={"Authorization": "Bearer some_token"}
         )
 
-    assert response.status_code == 500
-    assert response.json()["detail"]["code"] == "internal_error"
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "persistence_unavailable"
     assert "SENSITIVE_DB_LOAD_ERROR" not in response.text
     assert "SENSITIVE_DB_LOAD_ERROR" not in caplog.text
     assert "user123" not in response.text
@@ -344,8 +344,8 @@ def test_http_chat_persistence_failure_sanitization(client_app, mock_supabase, c
             headers={"Authorization": "Bearer some_token"}
         )
 
-    assert response.status_code == 500
-    assert response.json()["detail"]["code"] == "internal_error"
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "persistence_unavailable"
     assert "SENSITIVE_DB_SYNC_ERROR" not in response.text
     assert "SENSITIVE_DB_SYNC_ERROR" not in caplog.text
     assert "user123" not in response.text

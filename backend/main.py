@@ -13,7 +13,7 @@ import uvicorn
 import os
 from dotenv import load_dotenv
 from .engine import ConversationEngine
-from .memory import MAX_MESSAGE_LENGTH
+from .memory import MAX_MESSAGE_LENGTH, StatePersistenceError
 from .emotion_presentation import EmotionStateResponse
 from .turn_execution import (
     TurnExecutionConfig,
@@ -22,7 +22,6 @@ from .turn_execution import (
     DeadlineExceeded,
 )
 from .groq_manager import GroqPoolExhaustedError, GroqRequestError
-from .memory import StatePersistenceError
 
 load_dotenv()
 
@@ -153,9 +152,18 @@ def _map_turn_error(exc: Exception) -> HTTPException:
         )
 
     if isinstance(exc, GroqPoolExhaustedError):
+        # Map the failure code if available
+        from .groq_manager import provider_failure_to_turn_code
+        code = provider_failure_to_turn_code(exc.failure_code) if exc.failure_code else TurnErrorCode.provider_unavailable
+        if code == TurnErrorCode.upstream_rate_limited:
+            status = 429
+        elif code == TurnErrorCode.provider_unavailable:
+            status = 503
+        else:
+            status = 500
         return HTTPException(
-            status_code=503,
-            detail={"code": TurnErrorCode.provider_unavailable.value, "message": "All provider keys exhausted."},
+            status_code=status,
+            detail={"code": code.value, "message": "Provider unavailable."},
         )
 
     if isinstance(exc, GroqRequestError):

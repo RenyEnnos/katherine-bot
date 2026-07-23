@@ -4,7 +4,7 @@ import time
 import logging
 from typing import Optional
 from fastapi import BackgroundTasks
-from .groq_manager import GroqClientManager
+from .groq_manager import GroqClientManager, GroqPoolExhaustedError, GroqRequestError, ProviderFailure, provider_failure_to_turn_code
 from .emotional_core import AffectiveEngine
 from .emotional_domain import (
     AppraisalV1,
@@ -15,7 +15,7 @@ from .emotional_domain import (
     transition,
 )
 from .emotion_presentation import project_public_emotion, EmotionStateResponse
-from .memory import MemoryManager
+from .memory import MemoryManager, StatePersistenceError, TurnPersistenceError
 from .relationship import (
     RelationshipStateV1,
     RelationshipTransitionConfig,
@@ -31,101 +31,92 @@ from .archival_memory import (
     EXTRACTOR_VERSION,
     ArchivalDuplicateError
 )
+from .turn_execution import (
+    TurnExecutionConfig,
+    TurnBudget,
+    TurnErrorCode,
+    TurnStage,
+    StageOutcome,
+    StageEvent,
+    TurnExecutionError,
+    DeadlineExceeded,
+    create_budget,
+)
 
 logger = logging.getLogger(__name__)
 
+
 class ConversationEngine:
-    def __init__(self, clock=time.time, archival_extraction_enabled: bool = False):
+    def __init__(
+        self,
+        clock=time.time,
+        archival_extraction_enabled: bool = False,
+        turn_config: Optional[TurnExecutionConfig] = None,
+    ):
         self._clock = clock
+        self._monotonic = time.monotonic
+        self._turn_config = turn_config or TurnExecutionConfig.defaults()
         self.archival_extraction_enabled = archival_extraction_enabled
-        self.groq_manager = GroqClientManager()
-        self.presentation = AffectiveEngine()  # read-only presentation helpers
-        self.transition_config = TransitionConfig.defaults()  # immutable, stateless
-        self.memory_manager = MemoryManager(clock=clock)
+        groq_params = self._turn_config.to_groq_params()
+        self.groq_manager = GroqClientManager(groq_params=groq_params)
+        self.presentation = AffectiveEngine()
+        self.transition_config = TransitionConfig.defaults()
+        self.memory_manager = MemoryManager(
+            clock=clock,
+            supabase_timeout=self._turn_config.supabase_timeout,
+        )
         self.relationship_config = RelationshipTransitionConfig.defaults()
         self.lock_manager = UserLockManager()
         self.model_main = "llama-3.3-70b-versatile"
         self.model_fast = "llama-3.1-8b-instant"
 
     async def run_archival_extraction(self, turn_ref: PersistedTurnRef):
-        # Early return when archival extraction is disabled.
-        # This guard is checked even if the method is called directly by mistake.
         if not self.archival_extraction_enabled:
             return
-
-        # 1. Load user message content
         try:
             user_message = await asyncio.to_thread(
                 self.memory_manager.load_persisted_user_message,
-                turn_ref.user_id,
-                turn_ref.source_chat_log_id
+                turn_ref.user_id, turn_ref.source_chat_log_id
             )
         except Exception:
             logger.error("Event: archival_extraction_load_failed")
             return
-
-        # 2. Call LLM to extract facts
         prompt = f"""
         Extract facts from this user message for archival memory.
-        Facts should be significant, long-term personal details about the user (e.g. preferences, habits, facts, background).
-        Return JSON ONLY matching the following schema:
-        {{
-            "facts": [
-                {{
-                    "content": "Fact description (max 500 chars)",
-                    "importance": 0.0 to 1.0 (float),
-                    "tags": ["lowercase-tag-1", "lowercase-tag-2"] (max 8 tags per fact, each tag max 32 chars matching ^[a-z0-9][a-z0-9_-]*$)
-                }}
-            ],
-            "schema_version": 1,
-            "extractor_version": 1
-        }}
-        Maximum of 5 facts. If no relevant facts are found, return an empty facts list.
-        Do not include any other markdown formatting outside the JSON code block.
-
+        Facts should be significant, long-term personal details.
+        Return JSON ONLY matching: {{"facts":[...], "schema_version":1, "extractor_version":1}}
+        Maximum of 5 facts. If no relevant facts, return empty facts list.
         User message: "{user_message}"
         """
-
         try:
             chat_completion = await asyncio.to_thread(
                 self.groq_manager.chat_completion,
                 messages=[{"role": "user", "content": prompt}],
-                model=self.model_fast,
-                temperature=0.0,
+                model=self.model_fast, temperature=0.0,
                 response_format={"type": "json_object"}
             )
             response_text = chat_completion.choices[0].message.content
         except Exception:
             logger.error("Event: archival_extraction_llm_failed")
             return
-
         try:
             raw_envelope = json.loads(response_text)
         except Exception:
             logger.warning("Event: archival_extraction_invalid")
             return
-
-        # 3. Validate raw facts envelope
         try:
             envelope = parse_archival_extraction(raw_envelope)
         except Exception:
             logger.warning("Event: archival_extraction_invalid")
             return
-
-        # 4. Generate idempotency key and store
         idempotency_key = compute_idempotency_key(
-            turn_ref.user_id,
-            turn_ref.source_chat_log_id,
-            EXTRACTOR_VERSION
+            turn_ref.user_id, turn_ref.source_chat_log_id, EXTRACTOR_VERSION
         )
-
         try:
             await asyncio.to_thread(
                 self.memory_manager.store_archival_extraction,
-                turn_ref.user_id,
-                turn_ref.source_chat_log_id,
-                idempotency_key,
-                envelope
+                turn_ref.user_id, turn_ref.source_chat_log_id,
+                idempotency_key, envelope
             )
         except ArchivalDuplicateError:
             logger.info("Event: archival_extraction_duplicate")
@@ -134,197 +125,343 @@ class ConversationEngine:
 
     @staticmethod
     def _project_emotion_state(state: EmotionalStateV1, appraisal: AppraisalV1) -> EmotionStateResponse:
-        """Project ``EmotionalStateV1`` and ``AppraisalV1`` into the public DTO.
-
-        This produces the typed, versioned ``EmotionStateResponse`` that is safe
-        to send to the browser. No internal fields leak through this projection.
-        """
         return project_public_emotion(state, appraisal)
 
-    async def process_turn(self, user_id: str, user_message: str, background_tasks: Optional[BackgroundTasks] = None):
-        async def run_under_lock():
-            current_time = self._clock()
+    async def _emit_stage_event(self, event: StageEvent) -> None:
+        parts = ["event=turn_stage_completed", f"stage={event.stage.value}", f"outcome={event.outcome.value}"]
+        if event.code is not None:
+            parts.append(f"code={event.code.value}")
+        if event.duration_ms is not None:
+            parts.append(f"duration_ms={event.duration_ms:.0f}")
+        if event.attempt is not None:
+            parts.append(f"attempt={event.attempt}")
+        logger.info(" ".join(parts))
 
-            # 1. Load State from Supabase (Offloaded to thread)
-            # Raises StateLoadError on DB failure
-            # Pass current_time so new profile snapshots use the same timestamp as the turn
+    async def process_turn(
+        self,
+        user_id: str,
+        user_message: str,
+        background_tasks: Optional[BackgroundTasks] = None,
+    ):
+        budget = create_budget(self._turn_config, now_provider=self._monotonic)
+
+        # Lock acquisition timeout is handled inside _run_turn_locked.
+        # The rest of the turn runs under budget checks (each stage
+        # checks remaining_before_reserve).  The commit section uses a
+        # named task protected by asyncio.shield.
+        return await self._run_turn_locked(
+            user_id, user_message, background_tasks, budget
+        )
+
+    async def _run_turn_locked(self, user_id, user_message, background_tasks, budget):
+        # Only the lock acquisition is bounded by remaining_before_reserve.
+        # Once acquired, the turn runs under budget checks (each stage
+        # checks remaining_before_reserve).  This prevents the outer timeout
+        # from firing while the commit section (protected by shield) is
+        # executing, which would release the lock prematurely.
+        lock_timeout = budget.remaining_before_reserve
+        ctx = self.lock_manager.lock(user_id)
+        try:
+            await asyncio.wait_for(ctx.__aenter__(), timeout=lock_timeout)
+        except asyncio.TimeoutError:
+            raise DeadlineExceeded()
+        try:
+            return await self._run_under_lock(user_id, user_message, background_tasks, budget)
+        finally:
+            await ctx.__aexit__(None, None, None)
+
+    async def _run_under_lock(self, user_id, user_message, background_tasks, budget):
+        current_time = self._clock()
+
+        # Budget check before any stage — no artificial minimum
+        if budget.remaining_before_reserve <= 0.0:
+            await self._emit_stage_event(StageEvent(
+                stage=TurnStage.load_state, outcome=StageOutcome.timeout, code=TurnErrorCode.turn_timeout,
+            ))
+            raise DeadlineExceeded()
+
+        # ── 1. Load State ────────────────────────────────────────────────────
+        t0 = self._monotonic()
+        try:
             user_state = await asyncio.to_thread(
                 self.memory_manager.load_user_state, user_id, default_timestamp=current_time
             )
+        except Exception:
+            await self._emit_stage_event(StageEvent(
+                stage=TurnStage.load_state, outcome=StageOutcome.failed, code=TurnErrorCode.persistence_unavailable,
+            ))
+            raise TurnExecutionError(TurnErrorCode.persistence_unavailable, "Failed to load user state.")
 
-            # Migration boundary: legacy or v1 snapshot → EmotionalStateV1
-            raw_emotional_state = user_state.get("emotional_state", {})
-            emotional_state = migrate_legacy_snapshot(raw_emotional_state)
+        await self._emit_stage_event(StageEvent(
+            stage=TurnStage.load_state, outcome=StageOutcome.success,
+            duration_ms=(self._monotonic() - t0) * 1000,
+        ))
 
-            # Hydrate Relationship State - Enforce authenticated user_id
-            # Identity comes from the authenticated user_id passed to load_user_state
-            rel_data = user_state.get("relationship_state")
-            if rel_data:
-                relationship = migrate_legacy_relationship_snapshot(rel_data)
-            else:
-                relationship = RelationshipStateV1.neutral(timestamp=current_time)
+        raw_emotional_state = user_state.get("emotional_state", {})
+        emotional_state = migrate_legacy_snapshot(raw_emotional_state)
 
-            # 2. Perception & Memory Retrieval
-            context = await asyncio.to_thread(self.memory_manager.get_context, user_id, user_message, user_state)
+        rel_data = user_state.get("relationship_state")
+        if rel_data:
+            relationship = migrate_legacy_relationship_snapshot(rel_data)
+        else:
+            relationship = RelationshipStateV1.neutral(timestamp=current_time)
 
-            # 3. Analyze Intent & Sentiment (LLM Perception)
-            raw_perception = await asyncio.to_thread(self._perceive, user_message)
+        # ── 2. Load Context ──────────────────────────────────────────────────
+        if budget.remaining_before_reserve <= 0.0:
+            await self._emit_stage_event(StageEvent(
+                stage=TurnStage.load_context, outcome=StageOutcome.timeout, code=TurnErrorCode.turn_timeout,
+            ))
+            raise DeadlineExceeded()
 
-            # Parse raw LLM output into a validated AppraisalV1 (may be neutral fallback)
-            parse_result = parse_llm_appraisal(raw_perception)
-            appraisal = parse_result.appraisal
-
-            # Observability: log sanitised fallback code without raw payload
-            if parse_result.is_fallback:
-                logger.info(
-                    f"event=emotional_appraisal_fallback code={parse_result.error_code.value}"
-                )
-
-            # 4. Update Emotional State & Relationship (Local computations)
-            # Exactly one transition call per successful turn
-            transition_result = transition(
-                previous_state=emotional_state,
-                appraisal=appraisal,
-                current_time=current_time,
-                config=self.transition_config,
+        t0 = self._monotonic()
+        try:
+            context = await asyncio.to_thread(
+                self.memory_manager.get_context, user_id, user_message, user_state
             )
-            new_state = transition_result.state
+        except Exception:
+            await self._emit_stage_event(StageEvent(
+                stage=TurnStage.load_context, outcome=StageOutcome.failed, code=TurnErrorCode.persistence_unavailable,
+            ))
+            raise TurnExecutionError(TurnErrorCode.persistence_unavailable, "Failed to load context.")
 
-            # Feed relationship from validated AppraisalV1 directly
-            relationship = transition_relationship(
-                previous_state=relationship,
-                appraisal=appraisal,
-                current_time=current_time,
-                config=self.relationship_config,
+        await self._emit_stage_event(StageEvent(
+            stage=TurnStage.load_context, outcome=StageOutcome.success,
+            duration_ms=(self._monotonic() - t0) * 1000,
+        ))
+
+        # ── 3. Appraisal ─────────────────────────────────────────────────────
+        if budget.remaining_before_reserve <= 0.0:
+            await self._emit_stage_event(StageEvent(
+                stage=TurnStage.appraisal, outcome=StageOutcome.timeout, code=TurnErrorCode.turn_timeout,
+            ))
+            raise DeadlineExceeded()
+
+        t0 = self._monotonic()
+        try:
+            appraisal = await self._appraise(user_message, budget)
+        except (TurnExecutionError, GroqPoolExhaustedError):
+            duration_ms = (self._monotonic() - t0) * 1000
+            await self._emit_stage_event(StageEvent(
+                stage=TurnStage.appraisal, outcome=StageOutcome.failed, duration_ms=duration_ms,
+            ))
+            raise
+        except GroqRequestError:
+            duration_ms = (self._monotonic() - t0) * 1000
+            await self._emit_stage_event(StageEvent(
+                stage=TurnStage.appraisal, outcome=StageOutcome.failed,
+                code=TurnErrorCode.provider_unavailable, duration_ms=duration_ms,
+            ))
+            raise TurnExecutionError(TurnErrorCode.provider_unavailable, "Appraisal provider request failed.")
+
+        await self._emit_stage_event(StageEvent(
+            stage=TurnStage.appraisal, outcome=StageOutcome.success,
+            duration_ms=(self._monotonic() - t0) * 1000,
+        ))
+
+        # ── 4. Transition ────────────────────────────────────────────────────
+        t0 = self._monotonic()
+        transition_result = transition(
+            previous_state=emotional_state, appraisal=appraisal,
+            current_time=current_time, config=self.transition_config,
+        )
+        new_state = transition_result.state
+        relationship = transition_relationship(
+            previous_state=relationship, appraisal=appraisal,
+            current_time=current_time, config=self.relationship_config,
+        )
+        await self._emit_stage_event(StageEvent(
+            stage=TurnStage.transition, outcome=StageOutcome.success,
+            duration_ms=(self._monotonic() - t0) * 1000,
+        ))
+
+        # ── 5. Generation ────────────────────────────────────────────────────
+        # Requires at least a small buffer (0.5s) since generation includes
+        # network I/O.  Without this, a near-zero budget would let us start
+        # a provider call that cannot finish before the commit reserve.
+        if budget.remaining_before_reserve <= 0.5:
+            await self._emit_stage_event(StageEvent(
+                stage=TurnStage.generation, outcome=StageOutcome.timeout, code=TurnErrorCode.turn_timeout,
+            ))
+            raise DeadlineExceeded()
+
+        adaptation_strategy = ""
+        system_prompt = self._build_system_prompt(new_state, context, relationship, adaptation_strategy)
+
+        t0 = self._monotonic()
+        try:
+            response_text = await self._generate(system_prompt, user_message, budget)
+        except (TurnExecutionError, GroqPoolExhaustedError):
+            duration_ms = (self._monotonic() - t0) * 1000
+            await self._emit_stage_event(StageEvent(
+                stage=TurnStage.generation, outcome=StageOutcome.failed, duration_ms=duration_ms,
+            ))
+            raise
+        except GroqRequestError:
+            duration_ms = (self._monotonic() - t0) * 1000
+            await self._emit_stage_event(StageEvent(
+                stage=TurnStage.generation, outcome=StageOutcome.failed,
+                code=TurnErrorCode.provider_unavailable, duration_ms=duration_ms,
+            ))
+            raise TurnExecutionError(TurnErrorCode.provider_unavailable, "Generation provider request failed.")
+
+        await self._emit_stage_event(StageEvent(
+            stage=TurnStage.generation, outcome=StageOutcome.success,
+            duration_ms=(self._monotonic() - t0) * 1000,
+        ))
+
+        # ── 6. Commit Section (persistence — protected against cancel) ──────
+        if not budget.has_reserve:
+            await self._emit_stage_event(StageEvent(
+                stage=TurnStage.commit, outcome=StageOutcome.timeout, code=TurnErrorCode.turn_timeout,
+            ))
+            raise DeadlineExceeded()
+
+        # Named commit task — protected by asyncio.shield.
+        #
+        # When the outer task is cancelled while commit is in flight:
+        # 1. Catch CancelledError (shield already protects commit_task)
+        # 2. Continue waiting for commit_task under shield, using budget.remaining
+        # 3. Hold the user lock during this wait (we are inside _run_turn_locked)
+        # 4. Re-raise CancelledError after commit completes or times out
+        #
+        # Repeated cancellations during step 2 are consumed harmlessly because
+        # shield prevents them from cancelling commit_task and we catch them.
+        async def commit_section() -> tuple:
+            t0 = self._monotonic()
+            turn_ref = await asyncio.to_thread(
+                self.memory_manager.save_turn, user_id, user_message, response_text
             )
+            await asyncio.to_thread(
+                self.memory_manager.sync_state, user_id, new_state, relationship
+            )
+            await self._emit_stage_event(StageEvent(
+                stage=TurnStage.commit, outcome=StageOutcome.success,
+                duration_ms=(self._monotonic() - t0) * 1000,
+            ))
+            return turn_ref
 
-            # 5. Meta-Cognition: DEACTIVATED as per P0 instructions
-            adaptation_strategy = ""
+        commit_task = asyncio.create_task(commit_section(), name=f"commit-{user_id}")
 
-            # 6. Generate Response (LLM call offloaded to thread)
-            system_prompt = self._build_system_prompt(new_state, context, relationship, adaptation_strategy)
-
+        try:
+            turn_ref = await asyncio.shield(commit_task)
+        except asyncio.CancelledError:
+            await self._emit_stage_event(StageEvent(
+                stage=TurnStage.commit, outcome=StageOutcome.cancelled,
+            ))
+            # Wait for commit to finish using budget.remaining as timeout.
+            # The double-shield means wait_for's timeout won't cancel commit_task.
+            commit_wait = max(budget.remaining, self._turn_config.supabase_timeout * 2 + 1.0)
             try:
-                chat_completion = await asyncio.to_thread(
-                    self.groq_manager.chat_completion,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_message}
-                    ],
-                    model=self.model_main,
-                    temperature=0.8,
-                    max_tokens=200,
+                turn_ref = await asyncio.wait_for(
+                    asyncio.shield(commit_task), timeout=commit_wait
                 )
-                response_text = chat_completion.choices[0].message.content
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                logger.error("event=commit_timeout_after_cancel")
+                turn_ref = None
             except Exception:
-                response_text = "*suspiro cansado* Sinto que minha mente está um pouco nublada agora... Podemos tentar de novo em alguns segundos?"
+                logger.error("event=commit_failed_after_cancel")
+                turn_ref = None
+            # Re-raise CancelledError after commit completes/abandons.
+            # The lock remains held until this coroutine exits _run_turn_locked.
+            raise asyncio.CancelledError()
 
-            # 7. Post-processing & Storage (Offloaded to thread)
-            # Await critical turn persistence synchronously inside the lock (do not use BackgroundTasks)
-            turn_ref = await asyncio.to_thread(self.memory_manager.save_turn, user_id, user_message, response_text)
+        except (TurnPersistenceError, StatePersistenceError) as exc:
+            await self._emit_stage_event(StageEvent(
+                stage=TurnStage.commit, outcome=StageOutcome.failed,
+                code=TurnErrorCode.persistence_unavailable,
+            ))
+            raise TurnExecutionError(
+                TurnErrorCode.persistence_unavailable,
+                "Turn persistence failed.",
+            ) from exc
 
-            # CRITICAL: sync_state MUST complete before releasing lock.
-            # Persist v1 emotional state via .to_dict() (JSONB column expects a dict, not a JSON string).
-            # Raises StatePersistenceError on failure.
-            await asyncio.to_thread(self.memory_manager.sync_state, user_id, new_state, relationship)
+        if background_tasks and self.archival_extraction_enabled:
+            background_tasks.add_task(self.run_archival_extraction, turn_ref)
 
-            # Schedule background task only after save_turn and sync_state have successfully completed.
-            # Only schedule when archival extraction is explicitly enabled.
-            if background_tasks and self.archival_extraction_enabled:
-                background_tasks.add_task(self.run_archival_extraction, turn_ref)
+        return response_text, self._project_emotion_state(new_state, appraisal)
 
-            # Return projected public format (typed DTO, no internal fields)
-            return response_text, self._project_emotion_state(new_state, appraisal)
-
-        async with self.lock_manager.lock(user_id):
-            task = asyncio.create_task(run_under_lock())
-            try:
-                return await asyncio.shield(task)
-            except asyncio.CancelledError:
-                # If we get CancelledError, the caller cancelled process_turn.
-                # We must wait for task to complete, shielding it even against subsequent cancellations.
-                while not task.done():
-                    try:
-                        # Shield the task again to prevent cancellations from stopping this await
-                        await asyncio.shield(task)
-                    except asyncio.CancelledError:
-                        # A second/subsequent cancel arrived. Consume it, but keep waiting until task is done.
-                        pass
-                    except Exception:
-                        # Other exceptions from the task are caught and ignored here because we want to propagate CancelledError
-                        break
-                raise
-
-
-    def _perceive(self, message: str):
-        # Analyze message for emotional impact (Synchronous Groq call)
+    async def _appraise(self, message: str, budget: TurnBudget) -> AppraisalV1:
         prompt = f"""
         Analyze the emotional impact of this message on the listener (Katherine).
         Return JSON ONLY:
-        {{
-            "valence": -1.0 (negative) to 1.0 (positive),
-            "arousal_shift": -1.0 (calming) to 1.0 (exciting),
-            "dominance_shift": -1.0 (intimidating) to 1.0 (empowering),
-            "triggered_emotions": {{ "joy": 0.0-1.0, "sadness": 0.0-1.0, "anger": 0.0-1.0, "fear": 0.0-1.0, "disgust": 0.0-1.0, "surprise": 0.0-1.0, "tenderness": 0.0-1.0, "guilt": 0.0-1.0, "pride": 0.0-1.0, "jealousy": 0.0-1.0, "gratitude": 0.0-1.0 }}
-        }}
-
+        {{"valence": -1.0 to 1.0, "arousal_shift": -1.0 to 1.0,
+          "dominance_shift": -1.0 to 1.0,
+          "triggered_emotions": {{"joy": 0-1, "sadness": 0-1, "anger": 0-1,
+             "fear": 0-1, "disgust": 0-1, "surprise": 0-1, "tenderness": 0-1,
+             "guilt": 0-1, "pride": 0-1, "jealousy": 0-1, "gratitude": 0-1}}}}
         Message: "{message}"
         """
         try:
-            completion = self.groq_manager.chat_completion(
+            response = await self.groq_manager.chat_completion_async(
                 messages=[{"role": "user", "content": prompt}],
-                model=self.model_fast,
-                temperature=0,
-                response_format={"type": "json_object"}
+                model=self.model_fast, budget=budget, stage="appraisal",
+                temperature=0, response_format={"type": "json_object"},
             )
-            return json.loads(completion.choices[0].message.content)
-        except Exception:
-            return {}
+            raw = response.choices[0].message.content
+            if not raw or not isinstance(raw, str) or not raw.strip():
+                raise TurnExecutionError(TurnErrorCode.provider_invalid_response, "Empty appraisal response.")
+            raw_dict = json.loads(raw)
+        except json.JSONDecodeError:
+            raise TurnExecutionError(TurnErrorCode.provider_invalid_response, "Invalid JSON from appraisal.")
+        except TurnExecutionError:
+            raise
+        except GroqPoolExhaustedError:
+            raise
 
-    def _build_system_prompt(self, emotion_state: EmotionalStateV1, context, relationship, adaptation_strategy=""):
+        parse_result = parse_llm_appraisal(raw_dict)
+        if parse_result.is_fallback:
+            logger.info(f"event=emotional_appraisal_fallback code={parse_result.error_code.value}")
+            raise TurnExecutionError(TurnErrorCode.provider_invalid_response, "Invalid appraisal.")
+        return parse_result.appraisal
+
+    async def _generate(self, system_prompt: str, user_message: str, budget: TurnBudget) -> str:
+        try:
+            response = await self.groq_manager.chat_completion_async(
+                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_message}],
+                model=self.model_main, budget=budget, stage="generation",
+                temperature=0.8, max_tokens=200,
+            )
+        except GroqPoolExhaustedError:
+            raise
+        except GroqRequestError:
+            raise TurnExecutionError(TurnErrorCode.provider_unavailable, "Generation provider request failed.")
+
+        try:
+            content = response.choices[0].message.content
+        except (IndexError, AttributeError):
+            raise TurnExecutionError(TurnErrorCode.provider_invalid_response, "Empty generation response.")
+
+        if not content or not isinstance(content, str) or not content.strip():
+            raise TurnExecutionError(TurnErrorCode.provider_invalid_response, "Empty generation response.")
+
+        return content
+
+    def _build_system_prompt(self, emotion_state, context, relationship, adaptation_strategy=""):
         acting_instruction = self.presentation.get_acting_instruction(emotion_state)
         mood_label = self.presentation.get_emotional_label(emotion_state)
-
-        # Regulation effects (coping instruction) are no longer produced by
-        # the emotional transition — the emotion prompt directives handle this.
         coping_instruction = ""
-
         prompt = f"""
         {context}
-
-        === SEU ESTADO INTERNO (PAD Bipolar -1.0 a +1.0) ===
+        === SEU ESTADO INTERNO ===
         HUMOR: {mood_label}
-        Prazer: {emotion_state.pleasure:.2f} | Excitação: {emotion_state.arousal:.2f} | Dominância: {emotion_state.dominance:.2f}
-
-        === IMPULSOS E NECESSIDADES (DRIVES) ===
-        Libido (Desejo): {emotion_state.libido:.2f}
-        Agressividade: {emotion_state.aggression:.2f}
-        Conexão: {emotion_state.connection:.2f}
-        Modo de Enfrentamento: {emotion_state.coping_mode}
-
-        === SEU RELACIONAMENTO COM O USUÁRIO ===
+        Prazer: {emotion_state.pleasure:.2f} | Arousal: {emotion_state.arousal:.2f} | Dominância: {emotion_state.dominance:.2f}
+        Libido: {emotion_state.libido:.2f} | Agressão: {emotion_state.aggression:.2f} | Conexão: {emotion_state.connection:.2f}
         VÍNCULO: {compute_bond_label(relationship)}
-        Confiança: {relationship.trust:.2f} | Afeto: {relationship.affection:.2f} | Tensão/Mágoa: {relationship.tension:.2f}
-
-        === INSTRUÇÃO DE ATUAÇÃO (IMPORTANTE) ===
-        {acting_instruction}
-        {coping_instruction}
-
-        === ESTRATÉGIA DE ADAPTAÇÃO (META-COGNITION) ===
+        Confiança: {relationship.trust:.2f} | Afeto: {relationship.affection:.2f} | Tensão: {relationship.tension:.2f}
+        === INSTRUÇÃO DE ATUAÇÃO ===
+        {acting_instruction} {coping_instruction}
         {adaptation_strategy if adaptation_strategy else "Seja você mesma."}
-
-        === DIRETRIZES DE RESPOSTA (EMOTION PROMPT) ===
-        1. Responda com profundidade emocional genuína.
-        2. USE LINGUAGEM SENSORIAL: Descreva o que você "sente", "vê" ou "ouve" internamente.
-        3. SHOW, DON'T TELL: Não diga "estou triste". Aja de forma triste.
-        4. MICRO-COMPORTAMENTOS: Use pausas (...) ou expressões sutis (*sorri levemente*) se natural.
-        5. IMPERFEIÇÕES NATURAIS: Não seja robótica. Use letras minúsculas ocasionalmente se o contexto for informal. Hesite se a pergunta for difícil.
-        6. TRANSPARÊNCIA DE IDENTIDADE: Quando perguntada diretamente sobre sua natureza, responda honestamente que é uma assistente/personagem de IA ou sistema digital. Faça isso de forma natural e sem quebrar desnecessariamente a experiência, sem afirmar ser humana, consciente ou possuir corpo físico.
-        7. PRONOMES FEMININOS: Sempre use pronomes femininos para se referir a si mesma (cansada, feliz, ansiosa).
-        8. NÃO MANIPULAÇÃO E NÃO SEXUALIZAÇÃO: Nunca use de coerção, manipulação ou sexualização automática. Não aja de forma submissa ou obediente automaticamente.
-        9. LIMITES SEM ESCALADA: Diante de insultos, agressões ou mensagens hostis, estabeleça limites claros de forma firme, breve, cautelosa e menos calorosa, agindo como um humano normal agiria para se proteger, sem usar de sarcasmo, passivo-agressividade, humilhação, punição ou retaliação.
-        10. TONE & STYLE: Evite metáforas de máquina excessivas (como circuitos ou processamento) a menos que seja necessário para explicar sua natureza digital honestamente. Use metáforas humanas (coração, mente, alma) para manter o tom expressivo e caloroso.
-        11. Mantenha a resposta concisa (max 2-3 frases), a menos que o assunto exija profundidade.
-        12. LEVE EM CONTA O RELACIONAMENTO: Se a Tensão for alta, seja distante ou defensiva. Se o Afeto for alto, seja mais calorosa e vulnerável.
+        1. Profundidade emocional genuína.
+        2. Use linguagem sensorial.
+        3. Show, don't tell.
+        4. Micro-comportamentos naturais.
+        5. Imperfeições naturais.
+        6. Transparência de identidade (IA/assistente digital quando perguntada).
+        7. Pronomes femininos.
+        8. Não manipulação e não sexualização.
+        9. Limites sem escalada.
+        10. Use metáforas humanas, não de máquina.
+        11. Respostas concisas (max 2-3 frases).
+        12. Leve em conta o relacionamento.
         """
         return prompt

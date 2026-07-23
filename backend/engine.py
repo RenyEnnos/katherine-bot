@@ -33,7 +33,6 @@ from .archival_memory import (
 )
 from .turn_execution import (
     TurnExecutionConfig,
-    GroqCallParams,
     TurnBudget,
     TurnErrorCode,
     TurnStage,
@@ -57,9 +56,9 @@ class ConversationEngine:
         self._clock = clock
         self._monotonic = time.monotonic
         self._turn_config = turn_config or TurnExecutionConfig.defaults()
-        self._groq_params: GroqCallParams = self._turn_config.to_groq_params()
         self.archival_extraction_enabled = archival_extraction_enabled
-        self.groq_manager = GroqClientManager()
+        groq_params = self._turn_config.to_groq_params()
+        self.groq_manager = GroqClientManager(groq_params=groq_params)
         self.presentation = AffectiveEngine()
         self.transition_config = TransitionConfig.defaults()
         self.memory_manager = MemoryManager(
@@ -146,31 +145,36 @@ class ConversationEngine:
     ):
         budget = create_budget(self._turn_config, now_provider=self._monotonic)
 
-        # ── Lock acquisition bounded by deadline ─────────────────────────────
-        lock_acquire_timeout = budget.remaining_before_reserve
-        if lock_acquire_timeout <= 0.5:
-            lock_acquire_timeout = 0.5
-
-        try:
-            return await asyncio.wait_for(
-                self._run_turn_locked(user_id, user_message, background_tasks, budget),
-                timeout=lock_acquire_timeout,
-            )
-        except asyncio.TimeoutError:
-            await self._emit_stage_event(StageEvent(
-                stage=TurnStage.load_state, outcome=StageOutcome.timeout, code=TurnErrorCode.turn_timeout,
-            ))
-            raise DeadlineExceeded()
+        # Lock acquisition timeout is handled inside _run_turn_locked.
+        # The rest of the turn runs under budget checks (each stage
+        # checks remaining_before_reserve).  The commit section uses a
+        # named task protected by asyncio.shield.
+        return await self._run_turn_locked(
+            user_id, user_message, background_tasks, budget
+        )
 
     async def _run_turn_locked(self, user_id, user_message, background_tasks, budget):
-        async with self.lock_manager.lock(user_id):
+        # Only the lock acquisition is bounded by remaining_before_reserve.
+        # Once acquired, the turn runs under budget checks (each stage
+        # checks remaining_before_reserve).  This prevents the outer timeout
+        # from firing while the commit section (protected by shield) is
+        # executing, which would release the lock prematurely.
+        lock_timeout = budget.remaining_before_reserve
+        ctx = self.lock_manager.lock(user_id)
+        try:
+            await asyncio.wait_for(ctx.__aenter__(), timeout=lock_timeout)
+        except asyncio.TimeoutError:
+            raise DeadlineExceeded()
+        try:
             return await self._run_under_lock(user_id, user_message, background_tasks, budget)
+        finally:
+            await ctx.__aexit__(None, None, None)
 
     async def _run_under_lock(self, user_id, user_message, background_tasks, budget):
         current_time = self._clock()
 
-        # Budget check before any stage
-        if budget.remaining_before_reserve <= 0.5:
+        # Budget check before any stage — no artificial minimum
+        if budget.remaining_before_reserve <= 0.0:
             await self._emit_stage_event(StageEvent(
                 stage=TurnStage.load_state, outcome=StageOutcome.timeout, code=TurnErrorCode.turn_timeout,
             ))
@@ -203,7 +207,7 @@ class ConversationEngine:
             relationship = RelationshipStateV1.neutral(timestamp=current_time)
 
         # ── 2. Load Context ──────────────────────────────────────────────────
-        if budget.remaining_before_reserve <= 0.5:
+        if budget.remaining_before_reserve <= 0.0:
             await self._emit_stage_event(StageEvent(
                 stage=TurnStage.load_context, outcome=StageOutcome.timeout, code=TurnErrorCode.turn_timeout,
             ))
@@ -226,7 +230,7 @@ class ConversationEngine:
         ))
 
         # ── 3. Appraisal ─────────────────────────────────────────────────────
-        if budget.remaining_before_reserve <= 0.5:
+        if budget.remaining_before_reserve <= 0.0:
             await self._emit_stage_event(StageEvent(
                 stage=TurnStage.appraisal, outcome=StageOutcome.timeout, code=TurnErrorCode.turn_timeout,
             ))
@@ -271,7 +275,10 @@ class ConversationEngine:
         ))
 
         # ── 5. Generation ────────────────────────────────────────────────────
-        if budget.remaining_before_reserve <= 1.0:
+        # Requires at least a small buffer (0.5s) since generation includes
+        # network I/O.  Without this, a near-zero budget would let us start
+        # a provider call that cannot finish before the commit reserve.
+        if budget.remaining_before_reserve <= 0.5:
             await self._emit_stage_event(StageEvent(
                 stage=TurnStage.generation, outcome=StageOutcome.timeout, code=TurnErrorCode.turn_timeout,
             ))
@@ -309,11 +316,16 @@ class ConversationEngine:
             ))
             raise DeadlineExceeded()
 
-        # Named commit task — when outer task is cancelled we:
-        # 1. Catch CancelledError
-        # 2. Wait for commit to complete (with timeout)
-        # 3. Hold lock during this wait
-        # 4. Re-raise CancelledError after commit completes
+        # Named commit task — protected by asyncio.shield.
+        #
+        # When the outer task is cancelled while commit is in flight:
+        # 1. Catch CancelledError (shield already protects commit_task)
+        # 2. Continue waiting for commit_task under shield, using budget.remaining
+        # 3. Hold the user lock during this wait (we are inside _run_turn_locked)
+        # 4. Re-raise CancelledError after commit completes or times out
+        #
+        # Repeated cancellations during step 2 are consumed harmlessly because
+        # shield prevents them from cancelling commit_task and we catch them.
         async def commit_section() -> tuple:
             t0 = self._monotonic()
             turn_ref = await asyncio.to_thread(
@@ -336,16 +348,23 @@ class ConversationEngine:
             await self._emit_stage_event(StageEvent(
                 stage=TurnStage.commit, outcome=StageOutcome.cancelled,
             ))
-            commit_timeout = self._turn_config.supabase_timeout * 2 + 2.0
+            # Wait for commit to finish using budget.remaining as timeout.
+            # The double-shield means wait_for's timeout won't cancel commit_task.
+            commit_wait = max(budget.remaining, self._turn_config.supabase_timeout * 2 + 1.0)
             try:
-                turn_ref = await asyncio.wait_for(commit_task, timeout=commit_timeout)
-            except asyncio.TimeoutError:
+                turn_ref = await asyncio.wait_for(
+                    asyncio.shield(commit_task), timeout=commit_wait
+                )
+            except (asyncio.TimeoutError, asyncio.CancelledError):
                 logger.error("event=commit_timeout_after_cancel")
                 turn_ref = None
             except Exception:
                 logger.error("event=commit_failed_after_cancel")
                 turn_ref = None
-            raise  # Re-raise CancelledError after commit completes
+            # Re-raise CancelledError after commit completes/abandons.
+            # The lock remains held until this coroutine exits _run_turn_locked.
+            raise asyncio.CancelledError()
+
         except (TurnPersistenceError, StatePersistenceError) as exc:
             await self._emit_stage_event(StageEvent(
                 stage=TurnStage.commit, outcome=StageOutcome.failed,

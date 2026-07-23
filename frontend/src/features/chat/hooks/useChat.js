@@ -9,6 +9,10 @@ import { validateEmotionState } from '../../../shared/utils/formatters';
  *
  * Each send creates a fresh AbortController. The timer is cleaned up on
  * success, error, cancellation, and unmount.
+ *
+ * A monotonically increasing request token prevents ownership races:
+ * a stale `finally` block cannot clear the controller/timer of a newer
+ * request or change `isLoading` of a request that already completed.
  */
 export const useChat = () => {
     const [messages, setMessages] = useState([]);
@@ -19,6 +23,7 @@ export const useChat = () => {
     const inputRef = useRef(null);
     const abortControllerRef = useRef(null);
     const timerIdRef = useRef(null);
+    const requestTokenRef = useRef(0);
 
     const cleanupRequest = useCallback(() => {
         if (timerIdRef.current !== null) {
@@ -77,6 +82,9 @@ export const useChat = () => {
         // Clear any stale controller/timer from previous request
         cleanupRequest();
 
+        // Claim ownership of this request with a monotonically increasing token
+        const token = ++requestTokenRef.current;
+
         // Create fresh AbortController for this request
         const controller = new AbortController();
         abortControllerRef.current = controller;
@@ -94,6 +102,9 @@ export const useChat = () => {
                 timeout: timeoutMs,
             });
 
+            // Guard: only the owning request may update state
+            if (token !== requestTokenRef.current) return;
+
             // Clear timer on success
             clearTimeout(timerId);
             timerIdRef.current = null;
@@ -105,6 +116,9 @@ export const useChat = () => {
             const validated = validateEmotionState(data.emotion_state);
             setEmotionState(validated);
         } catch (error) {
+            // Guard: only the owning request may show error state
+            if (token !== requestTokenRef.current) return;
+
             // Clear timer on error/cancel
             clearTimeout(timerId);
             timerIdRef.current = null;
@@ -124,11 +138,14 @@ export const useChat = () => {
                 setMessages(prev => [...prev, errorMessage]);
             }
         } finally {
-            setIsLoading(false);
-            abortControllerRef.current = null;
-            timerIdRef.current = null;
-            // Focus back on input
-            setTimeout(() => inputRef.current?.focus(), 100);
+            // Guard: only the owning request may clear refs and loading state
+            if (token === requestTokenRef.current) {
+                setIsLoading(false);
+                abortControllerRef.current = null;
+                timerIdRef.current = null;
+                // Focus back on input
+                setTimeout(() => inputRef.current?.focus(), 100);
+            }
         }
     }, [input, isLoading, cleanupRequest]);
 

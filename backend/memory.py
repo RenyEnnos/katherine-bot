@@ -44,26 +44,16 @@ def _default_supabase_factory(supabase_timeout: Optional[float] = None) -> Optio
     """Create a Supabase client with timeout configuration, or return None.
 
     ``ClientOptions`` is imported lazily to avoid shadowing issues when the
-    project root contains a ``supabase/`` directory (Supabase CLI config).
-
-    The timeout value should come from the validated ``TurnExecutionConfig``.
-    If ``None``, falls back to environment variable ``TURN_SUPABASE_TIMEOUT``
-    with a default of 5.0 seconds.
-    """
+    project root contains a ``supabase/`` directory (Supabase CLI config).    The timeout value should come from the validated ``TurnExecutionConfig``.
+    If ``None``, defaults to 5.0 seconds."""
     url: str = os.environ.get("SUPABASE_URL")
     key: str = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
     if not url or not key:
         return None
 
-    # Use the provided timeout, or parse from env, or default to 5.0
-    if supabase_timeout is not None:
-        timeout = supabase_timeout
-    else:
-        timeout_str = os.environ.get("TURN_SUPABASE_TIMEOUT", "5.0")
-        try:
-            timeout = float(timeout_str)
-        except (ValueError, TypeError):
-            timeout = 5.0
+    # Use the provided timeout (must come from validated TurnExecutionConfig).
+    # If None, default to 5.0 — no env-var re-parsing here.
+    timeout = supabase_timeout if supabase_timeout is not None else 5.0
 
     try:
         from supabase.lib.client_options import ClientOptions

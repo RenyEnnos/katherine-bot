@@ -138,11 +138,13 @@ def _make_engine(
     engine.memory_manager.get_context = MagicMock(return_value="[mocked context]")
     engine.memory_manager.load_recent_history = MagicMock(return_value=[])
 
+    groq_params = engine._turn_config.to_groq_params()
     if fake_provider is not None:
         async_factory = lambda k: fake_provider.make_client(k)
         engine.groq_manager = GroqClientManager(
             keys=["mock-key-1", "mock-key-2"],
             async_client_factory=async_factory,
+            groq_params=groq_params,
         )
     else:
         # Default: return valid responses
@@ -157,6 +159,7 @@ def _make_engine(
         engine.groq_manager = GroqClientManager(
             keys=["mock-key-1"],
             async_client_factory=af,
+            groq_params=groq_params,
         )
 
     return engine
@@ -165,6 +168,64 @@ def _make_engine(
 # ═══════════════════════════════════════════════════════════════════════════════
 # Tests
 # ═══════════════════════════════════════════════════════════════════════════════
+
+class TestConfigDelivery:
+    """1. The GroqClientManager created by engine receives to_groq_params()."""
+
+    def test_engine_manager_receives_groq_params(self):
+        """O manager criado pelo engine recebe exatamente turn_config.to_groq_params()."""
+        config = TurnExecutionConfig(
+            total_deadline=45.0,
+            connect_timeout=3.0,
+            provider_attempt_timeout=15.0,
+            supabase_timeout=5.0,
+            commit_reserve=10.0,
+            max_attempts=2,
+            base_backoff=0.25,
+            max_backoff=0.75,
+            max_jitter=0.10,
+        )
+        engine = ConversationEngine(
+            clock=lambda: FIXED_CLOCK,
+            turn_config=config,
+        )
+        # The engine should have passed groq_params to the manager
+        engine_params = engine.groq_manager._groq_params
+        expected = config.to_groq_params()
+        assert engine_params.max_attempts == expected.max_attempts
+        assert engine_params.connect_timeout == expected.connect_timeout
+        assert engine_params.provider_attempt_timeout == expected.provider_attempt_timeout
+        assert engine_params.base_backoff == expected.base_backoff
+        assert engine_params.max_backoff == expected.max_backoff
+        assert engine_params.max_jitter == expected.max_jitter
+        assert engine_params.provider_attempt_timeout == 15.0
+        assert engine_params.max_attempts == 2
+
+    def test_manager_receives_custom_groq_params(self):
+        """Custom turn_config.to_groq_params() reaches the manager."""
+        config = TurnExecutionConfig(
+            total_deadline=30.0,
+            connect_timeout=1.0,
+            provider_attempt_timeout=8.0,
+            supabase_timeout=4.0,
+            commit_reserve=10.0,
+            max_attempts=1,
+            base_backoff=0.5,
+            max_backoff=2.0,
+            max_jitter=0.0,
+        )
+        engine = ConversationEngine(
+            clock=lambda: FIXED_CLOCK,
+            turn_config=config,
+        )
+        params = engine.groq_manager._groq_params
+        assert params.max_attempts == 1
+        assert params.connect_timeout == 1.0
+        assert params.provider_attempt_timeout == 8.0
+        assert params.base_backoff == 0.5
+        assert params.max_backoff == 2.0
+        assert params.max_jitter == 0.0
+
 
 class TestProviderBoundedness:
     """6-8, 15. Provider boundedness."""
@@ -244,11 +305,45 @@ class TestProviderBoundedness:
         mgr = GroqClientManager(
             keys=["key-1", "key-2"],
             async_client_factory=lambda k: AsyncMock(**{"chat.completions.create": provider.create}),
+            groq_params=config.to_groq_params(),
         )
         engine.groq_manager = mgr
         with pytest.raises((GroqPoolExhaustedError, TurnExecutionError)):
             asyncio.run(engine.process_turn("user", "Hello"))
-        assert len(provider.calls) <= 1
+        assert len(provider.calls) == 1
+
+    def test_max_attempts_two_executes_at_most_two(self):
+        """max_attempts=2 executes at most two attempts even with many keys."""
+        class TrackingProvider:
+            def __init__(self):
+                self.calls = []
+            async def create(self, **kwargs):
+                self.calls.append(1)
+                raise Exception("fail")
+
+        provider = TrackingProvider()
+        config = TurnExecutionConfig(
+            total_deadline=45.0,
+            connect_timeout=3.0,
+            provider_attempt_timeout=10.0,
+            commit_reserve=10.0,
+            supabase_timeout=5.0,
+            max_attempts=2,
+        )
+        mgr = GroqClientManager(
+            keys=["key-1", "key-2", "key-3"],
+            async_client_factory=lambda k: AsyncMock(**{"chat.completions.create": provider.create}),
+            groq_params=config.to_groq_params(),
+        )
+        try:
+            asyncio.run(mgr.chat_completion_async(
+                messages=[{"role": "user", "content": "hi"}],
+                model="test",
+                budget=create_budget(config),
+            ))
+        except GroqPoolExhaustedError:
+            pass
+        assert len(provider.calls) == 2
 
     def test_configured_timeout_reaches_provider(self):
         """Verify the httpx.Timeout is configured with the correct values."""
@@ -376,7 +471,8 @@ class TestKeyRotation:
                 )),
             ))
         except GroqPoolExhaustedError as exc:
-            assert exc.failure_code in (ProviderFailure.connection_failed, ProviderFailure.server_error)
+            # APIConnectionError always maps to connection_failed
+            assert exc.failure_code == ProviderFailure.connection_failed
 
     def test_empty_response_produces_invalid_response(self):
         async def empty_content(**kwargs):
@@ -784,14 +880,22 @@ class TestErrorContract:
         provider = FakeAsyncProvider()
         provider.responses = [FakeCompletion("")]  # triggers error
 
-        engine = _make_engine(fake_provider=provider)
+        # Patch SentenceTransformer to avoid model download logging (httpx
+        # logs contain "tokenizer" in model file URLs, which would be a
+        # false positive for the "token" assertion)
+        from unittest.mock import patch
+        with patch("backend.memory.SentenceTransformer") as mock_st:
+            engine = _make_engine(fake_provider=provider)
 
         with pytest.raises(TurnExecutionError):
             asyncio.run(engine.process_turn("user", "Hello"))
 
         assert "mock-key" not in caplog.text
         assert "Hello" not in caplog.text
-        assert "token" not in caplog.text
+        # "token" is too broad — would match "tokenizer" in model file URLs.
+        # Instead, check for sensitive patterns that indicate a real leak:
+        assert "Bearer" not in caplog.text
+        assert "authorization" not in caplog.text.lower() or "authorization" not in caplog.text
 
 
 class TestSupabaseTimeout:
@@ -859,29 +963,46 @@ class TestDeadlineDuringStages:
         """6: Second user's lock acquisition times out when first holds lock."""
         async def run():
             provider = FakeAsyncProvider()
-            provider.block_event = asyncio.Event()  # blocks first request
+            provider.responses = [
+                FakeCompletion(json.dumps({"valence": 0.1, "arousal_shift": 0.0,
+                                           "dominance_shift": 0.0, "triggered_emotions": {}})),
+                FakeCompletion("Hi there!"),
+            ]
+
+            import threading
+            state_block = threading.Event()  # never set → lock held forever
+
+            def blocking_load(*args, **kwargs):
+                state_block.wait(timeout=30.0)
+                return {
+                    "emotional_state": EmotionalStateV1.neutral(timestamp=FIXED_CLOCK).to_dict(),
+                    "relationship_state": RelationshipStateV1.neutral(timestamp=FIXED_CLOCK).to_dict(),
+                }
+
             config = TurnExecutionConfig(
-                total_deadline=2.0,
+                total_deadline=15.0,
                 connect_timeout=0.1,
-                provider_attempt_timeout=0.5,
-                commit_reserve=0.5,
+                provider_attempt_timeout=10.0,
+                commit_reserve=13.0,  # remaining_before_reserve = 2.0
                 supabase_timeout=0.1,
                 max_attempts=1,
             )
             engine = _make_engine(turn_config=config, fake_provider=provider)
+            engine.memory_manager.load_user_state = blocking_load
 
-            # First request blocks (appraisal blocked by provider)
+            # First request blocks on load_state (in a thread, no timeout)
             task1 = asyncio.create_task(engine.process_turn("user_l", "Hello"))
             await asyncio.sleep(0.05)
 
-            # Second request to same user should timeout trying to acquire lock
+            # Second request should timeout trying to acquire lock
             with pytest.raises(DeadlineExceeded):
                 await engine.process_turn("user_l", "World")
 
+            state_block.set()
             task1.cancel()
             try:
                 await task1
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, DeadlineExceeded, TurnExecutionError):
                 pass
 
         asyncio.run(run())

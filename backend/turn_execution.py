@@ -216,7 +216,7 @@ class TurnExecutionConfig:
         self._assert_finite_positive("commit_reserve", self.commit_reserve)
         self._assert_finite_positive("base_backoff", self.base_backoff)
         self._assert_finite_positive("max_backoff", self.max_backoff)
-        self._assert_finite_positive("max_jitter", self.max_jitter)
+        self._assert_finite_nonnegative("max_jitter", self.max_jitter)
 
         # max_attempts must be int, not bool
         if isinstance(self.max_attempts, bool) or not isinstance(self.max_attempts, int):
@@ -271,6 +271,19 @@ class TurnExecutionConfig:
             raise ValueError(f"{name} must be finite, got {f}.")
         if f <= 0:
             raise ValueError(f"{name} must be positive, got {f}.")
+
+    @staticmethod
+    def _assert_finite_nonnegative(name: str, value: object) -> None:
+        """Like _assert_finite_positive but allows zero (for jitter)."""
+        if isinstance(value, bool):
+            raise ValueError(f"{name} must be a finite non-negative number, got bool.")
+        if not isinstance(value, (int, float)):
+            raise ValueError(f"{name} must be a finite non-negative number, got {type(value).__name__}.")
+        f = float(value)
+        if not math.isfinite(f):
+            raise ValueError(f"{name} must be finite, got {f}.")
+        if f < 0:
+            raise ValueError(f"{name} must be non-negative, got {f}.")
 
     def to_groq_params(self) -> GroqCallParams:
         """Derive ``GroqCallParams`` from this config."""

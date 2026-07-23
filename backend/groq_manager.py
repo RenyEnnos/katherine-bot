@@ -33,7 +33,7 @@ class GroqConfigurationError(Exception):
     pass
 
 class GroqPoolExhaustedError(Exception):
-    """Raised when all configured Groq API keys are currently in cooldown or deactivated.
+    """Raised when all configured Groq API keys are exhausted.
 
     ``code`` carries the ``ProviderFailure`` that caused the final exhaustion,
     so the orchestrator can return a precise HTTP status code.
@@ -44,7 +44,6 @@ class GroqPoolExhaustedError(Exception):
 
     @property
     def failure_code(self) -> Optional["ProviderFailure"]:
-        # Avoid circular import at class definition time
         return self._code
 
 
@@ -67,6 +66,7 @@ class ProviderFailure(str, Enum):
     connection_failed = "connection_failed"
     server_error = "server_error"
     invalid_response = "invalid_response"
+    timeout = "timeout"            # APITimeoutError or effective-timeout expiry
     cancelled = "cancelled"
 
 
@@ -80,7 +80,9 @@ def classify_provider_error(exc: BaseException) -> ProviderFailure:
         return ProviderFailure.rate_limited
     if isinstance(exc, AuthenticationError):
         return ProviderFailure.auth_failed
-    if isinstance(exc, (APIConnectionError, APITimeoutError)):
+    if isinstance(exc, APITimeoutError):
+        return ProviderFailure.timeout
+    if isinstance(exc, APIConnectionError):
         return ProviderFailure.connection_failed
     if isinstance(exc, APIStatusError):
         if exc.status_code == 401:
@@ -91,6 +93,12 @@ def classify_provider_error(exc: BaseException) -> ProviderFailure:
         return ProviderFailure.invalid_response
     if isinstance(exc, asyncio.CancelledError):
         return ProviderFailure.cancelled
+    if isinstance(exc, asyncio.TimeoutError):
+        return ProviderFailure.timeout
+    if isinstance(exc, TurnExecutionError):
+        if exc.code == TurnErrorCode.turn_timeout:
+            return ProviderFailure.timeout
+        return ProviderFailure.invalid_response
     return ProviderFailure.invalid_response
 
 
@@ -101,6 +109,7 @@ def provider_failure_to_turn_code(failure: ProviderFailure) -> TurnErrorCode:
         ProviderFailure.auth_failed: TurnErrorCode.provider_invalid_request,
         ProviderFailure.connection_failed: TurnErrorCode.provider_unavailable,
         ProviderFailure.server_error: TurnErrorCode.provider_unavailable,
+        ProviderFailure.timeout: TurnErrorCode.turn_timeout,
         ProviderFailure.invalid_response: TurnErrorCode.provider_invalid_response,
         ProviderFailure.cancelled: TurnErrorCode.internal_error,  # propagated, not converted
     }
@@ -172,17 +181,23 @@ class GroqClientManager:
 
     def _acquire_next_key(self, tried_keys: Set[str]) -> str:
         with self._lock:
-            # Check if there are any active keys left in the entire pool
-            active_keys = [k for k in self._keys if k not in self._deactivated]
-            if not active_keys:
-                logger.warning("event=groq_pool_unavailable")
-                raise GroqPoolExhaustedError("All keys are deactivated.")
-
             now = self._time_provider()
             # Clean up expired cooldowns
             for k in list(self._cooldowns.keys()):
                 if now >= self._cooldowns[k]:
                     del self._cooldowns[k]
+
+            # Distinguish pool states for structured error reporting
+            all_deactivated = all(k in self._deactivated for k in self._keys)
+            all_in_cooldown = (
+                not all_deactivated
+                and all(k in self._cooldowns for k in self._keys if k not in self._deactivated)
+            )
+            all_tried = (
+                not all_deactivated
+                and not all_in_cooldown
+                and all(k in tried_keys for k in self._keys if k not in self._deactivated and k not in self._cooldowns)
+            )
 
             # Find the next eligible key starting from self._index
             for i in range(len(self._keys)):
@@ -200,9 +215,20 @@ class GroqClientManager:
                 self._index = (idx + 1) % len(self._keys)
                 return k
 
-            # If we scanned all keys and found none eligible
+            # All keys exhausted — raise with the correct failure code
+            if all_deactivated:
+                logger.warning("event=groq_pool_unavailable reason=deactivated")
+                raise GroqPoolExhaustedError("All keys deactivated.", code=ProviderFailure.auth_failed)
+            if all_in_cooldown:
+                logger.warning("event=groq_pool_unavailable reason=cooldown")
+                raise GroqPoolExhaustedError("All keys in cooldown.", code=ProviderFailure.rate_limited)
+            if all_tried:
+                logger.warning("event=groq_pool_unavailable reason=exhausted")
+                raise GroqPoolExhaustedError("All keys tried, none succeeded.", code=ProviderFailure.connection_failed)
+
+            # Fallback — should not be reached, but be safe
             logger.warning("event=groq_pool_unavailable")
-            raise GroqPoolExhaustedError("No eligible Groq keys available.")
+            raise GroqPoolExhaustedError("No eligible Groq keys available.", code=ProviderFailure.connection_failed)
 
     def _mark_key_rate_limited(self, key: str):
         with self._lock:
@@ -276,14 +302,17 @@ class GroqClientManager:
         * Uses ``AsyncGroq`` with ``max_retries=0`` (SDK retries disabled).
         * Each key is tried at most once per logical call.
         * Total attempts: ``min(max_attempts, eligible_key_count)``.
-        * Timeout per attempt uses ``compute_effective_attempt_timeout()``.
+        * Timeout per attempt uses ``compute_effective_attempt_timeout()``
+          wrapped via ``asyncio.wait_for``.
         * Backoff uses the configured ``GroqCallParams``.
         * 401 structured errors deactivate the key idempotently and try another.
         * 429 marks cooldown and tries the next eligible key.
         * Connection/5xx errors try the next eligible key.
+        * ``asyncio.CancelledError`` is propagated immediately.
+        * ``APITimeoutError`` or ``asyncio.TimeoutError`` from wait_for
+          produces ``ProviderFailure.timeout`` → ``TurnErrorCode.turn_timeout``.
         * When all eligible keys exhausted, raises ``GroqPoolExhaustedError``
           with the specific ``ProviderFailure.code``.
-        * ``asyncio.CancelledError`` is propagated immediately.
 
         Args:
             messages: Chat messages for the completion.
@@ -299,6 +328,7 @@ class GroqClientManager:
 
         Raises:
             GroqPoolExhaustedError: All eligible keys exhausted (with .failure_code).
+            TurnExecutionError: Budget exhaustion before attempt.
             asyncio.CancelledError: Operation was cancelled.
         """
         params = self._groq_params
@@ -337,14 +367,30 @@ class GroqClientManager:
                     if k not in ("max_attempts", "attempt_timeout", "stage",
                                  "base_backoff", "max_backoff", "max_jitter")
                 }
-                result = await client.chat.completions.create(
-                    messages=messages,
-                    model=model,
-                    **sanitised_kwargs,
+                # Wrap the actual provider call with asyncio.wait_for using
+                # the effective timeout so the coroutine is cancelled when the
+                # budget is exhausted.  This is the primary timeout mechanism;
+                # the httpx client-level timeout is a secondary safety net.
+                result = await asyncio.wait_for(
+                    client.chat.completions.create(
+                        messages=messages,
+                        model=model,
+                        **sanitised_kwargs,
+                    ),
+                    timeout=effective_timeout,
                 )
                 return result
             except asyncio.CancelledError:
                 raise
+            except asyncio.TimeoutError:
+                # Effective-timeout expiry — map to timeout failure.
+                # The httpx read timeout may also fire independently, but we
+                # treat both as the same classification here.
+                last_failure = ProviderFailure.timeout
+                tried_keys.add(api_key)
+            except APITimeoutError:
+                last_failure = ProviderFailure.timeout
+                tried_keys.add(api_key)
             except RateLimitError:
                 self._mark_key_rate_limited(api_key)
                 last_failure = ProviderFailure.rate_limited
@@ -353,7 +399,7 @@ class GroqClientManager:
                 self._deactivate_key(api_key)
                 last_failure = ProviderFailure.auth_failed
                 tried_keys.add(api_key)
-            except (APIConnectionError, APITimeoutError):
+            except APIConnectionError:
                 last_failure = ProviderFailure.connection_failed
                 tried_keys.add(api_key)
             except APIStatusError as e:
@@ -367,19 +413,26 @@ class GroqClientManager:
                 else:
                     # Non-retryable 4xx
                     raise GroqRequestError("Falha ao executar requisição Groq.")
+            except TurnExecutionError:
+                raise
             except Exception:
                 raise GroqRequestError("Falha ao executar requisição Groq.")
 
-            # If we have more attempts and this wasn't a terminal failure, compute backoff
+            # If we have more attempts and this wasn't a terminal failure,
+            # compute backoff and sleep (if budget allows)
             if attempt < max_attempts - 1:
                 remaining_eff = compute_effective_attempt_timeout(params, budget)
                 backoff = compute_backoff_from_params(attempt, params)
                 if backoff < remaining_eff:
                     await asyncio.sleep(backoff)
 
-        # All attempts exhausted — raise with the specific failure code
+        # All attempts exhausted — the GroqPoolExhaustedError from
+        # _acquire_next_key already carries the correct ProviderFailure code.
+        # If we reach here (shouldn't normally), raise based on last_failure.
         if last_failure == ProviderFailure.rate_limited:
             raise GroqPoolExhaustedError("All keys rate limited.", code=last_failure)
+        if last_failure == ProviderFailure.timeout:
+            raise GroqPoolExhaustedError("All attempts timed out.", code=last_failure)
         raise GroqPoolExhaustedError(
             "Provider unavailable after all attempts.",
             code=last_failure or ProviderFailure.connection_failed,

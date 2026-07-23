@@ -4,6 +4,7 @@ from datetime import datetime, UTC
 from supabase import create_client, Client
 from sentence_transformers import SentenceTransformer
 import time
+from typing import Optional, Callable
 from .relationship import RelationshipStateV1
 from .emotional_domain import EmotionalStateV1
 from .archival_memory import PersistedTurnRef, ArchivalExtractionEnvelope, ArchivalDuplicateError
@@ -36,18 +37,43 @@ class TurnPersistenceError(Exception):
         self.message = message
         super().__init__(self.message)
 
+
+# ─── Supabase client factory ─────────────────────────────────────────────────
+
+def _default_supabase_factory() -> Optional[Client]:
+    """Create a Supabase client with timeout configuration, or return None.
+
+    ``ClientOptions`` is imported lazily to avoid shadowing issues when the
+    project root contains a ``supabase/`` directory (Supabase CLI config).
+    """
+    url: str = os.environ.get("SUPABASE_URL")
+    key: str = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not key:
+        return None
+
+    timeout_str = os.environ.get("TURN_SUPABASE_TIMEOUT", "5.0")
+    try:
+        timeout = float(timeout_str)
+    except (ValueError, TypeError):
+        timeout = 5.0
+
+    try:
+        from supabase.lib.client_options import ClientOptions
+        options = ClientOptions(postgrest_client_timeout=timeout)
+        return create_client(url, key, options=options)
+    except Exception:
+        return None
+
+
 class MemoryManager:
-    def __init__(self, clock=time.time):
-        # 1. Initialize Supabase
-        url: str = os.environ.get("SUPABASE_URL")
-        key: str = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-        if not url or not key:
-            self.supabase: Client = None
-        else:
-            try:
-                self.supabase: Client = create_client(url, key)
-            except Exception:
-                self.supabase = None
+    def __init__(
+        self,
+        clock=time.time,
+        supabase_factory: Optional[Callable[[], Optional[Client]]] = None,
+    ):
+        # 1. Initialize Supabase with timeout config
+        factory = supabase_factory or _default_supabase_factory
+        self.supabase: Optional[Client] = factory()
 
         # 2. Initialize Embeddings Model (Local)
         try:

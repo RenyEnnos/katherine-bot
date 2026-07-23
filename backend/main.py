@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
@@ -14,6 +15,14 @@ from dotenv import load_dotenv
 from .engine import ConversationEngine
 from .memory import MAX_MESSAGE_LENGTH
 from .emotion_presentation import EmotionStateResponse
+from .turn_execution import (
+    TurnExecutionConfig,
+    TurnExecutionError,
+    TurnErrorCode,
+    DeadlineExceeded,
+)
+from .groq_manager import GroqPoolExhaustedError, GroqRequestError
+from .memory import StatePersistenceError
 
 load_dotenv()
 
@@ -43,9 +52,13 @@ _archival_extraction_enabled = parse_archival_extraction_flag(
     os.environ.get("ARCHIVAL_EXTRACTION_ENABLED")
 )
 
+# Parse turn execution config from environment
+_turn_config = TurnExecutionConfig.from_env()
+
 # Initialize Engine with containment-aware configuration
 engine = ConversationEngine(
     archival_extraction_enabled=_archival_extraction_enabled,
+    turn_config=_turn_config,
 )
 
 
@@ -90,6 +103,80 @@ class ChatResponse(BaseModel):
     response: str
     emotion_state: EmotionStateResponse
 
+
+# ─── Error mapping ───────────────────────────────────────────────────────────
+
+def _map_turn_error(exc: Exception) -> HTTPException:
+    """Map domain exceptions to stable HTTP error responses.
+
+    Never exposes: model name, provider details, exception text, prompt,
+    infrastructure details, stack trace, or user content.
+    Uses ``detail.code`` for structured error responses.
+    """
+    if isinstance(exc, DeadlineExceeded):
+        return HTTPException(
+            status_code=504,
+            detail={"code": TurnErrorCode.turn_timeout.value, "message": "Turn deadline exceeded."},
+        )
+
+    if isinstance(exc, TurnExecutionError):
+        code = exc.code
+        if code == TurnErrorCode.turn_timeout:
+            return HTTPException(
+                status_code=504,
+                detail={"code": code.value, "message": "Turn deadline exceeded."},
+            )
+        if code == TurnErrorCode.upstream_rate_limited:
+            return HTTPException(
+                status_code=429,
+                detail={"code": code.value, "message": "Upstream rate limited."},
+            )
+        if code in (TurnErrorCode.provider_unavailable, TurnErrorCode.provider_invalid_request):
+            return HTTPException(
+                status_code=503,
+                detail={"code": code.value, "message": "Service temporarily unavailable."},
+            )
+        if code == TurnErrorCode.provider_invalid_response:
+            return HTTPException(
+                status_code=500,
+                detail={"code": code.value, "message": "Invalid response from provider."},
+            )
+        if code == TurnErrorCode.persistence_unavailable:
+            return HTTPException(
+                status_code=503,
+                detail={"code": code.value, "message": "Persistence service unavailable."},
+            )
+        # Fallback
+        return HTTPException(
+            status_code=500,
+            detail={"code": TurnErrorCode.internal_error.value, "message": "Internal server error."},
+        )
+
+    if isinstance(exc, GroqPoolExhaustedError):
+        return HTTPException(
+            status_code=503,
+            detail={"code": TurnErrorCode.provider_unavailable.value, "message": "All provider keys exhausted."},
+        )
+
+    if isinstance(exc, GroqRequestError):
+        return HTTPException(
+            status_code=503,
+            detail={"code": TurnErrorCode.provider_unavailable.value, "message": "Provider request failed."},
+        )
+
+    if isinstance(exc, StatePersistenceError):
+        return HTTPException(
+            status_code=503,
+            detail={"code": TurnErrorCode.persistence_unavailable.value, "message": "Persistence service unavailable."},
+        )
+
+    # Unknown/unexpected — sanitize to generic 500
+    return HTTPException(
+        status_code=500,
+        detail={"code": TurnErrorCode.internal_error.value, "message": "Internal server error."},
+    )
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(
     input_data: ChatInput,
@@ -98,12 +185,23 @@ async def chat_endpoint(
 ):
     try:
         user_id = current_user.id
-        response_text, current_emotion = await engine.process_turn(user_id, input_data.message, background_tasks)
+        response_text, current_emotion = await engine.process_turn(
+            user_id, input_data.message, background_tasks
+        )
         return ChatResponse(response=response_text, emotion_state=current_emotion)
+    except asyncio.CancelledError:
+        # CancelledError must NOT be converted to HTTP 500 — propagate
+        raise
+    except (DeadlineExceeded, TurnExecutionError, GroqPoolExhaustedError,
+            GroqRequestError, StatePersistenceError) as exc:
+        raise _map_turn_error(exc)
     except Exception:
         # Sanitize logging: avoid logging raw exceptions that might contain secrets or tracebacks
         logger.error("Event: Chat Turn Failure")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+        raise HTTPException(
+            status_code=500,
+            detail={"code": TurnErrorCode.internal_error.value, "message": "Internal server error."},
+        )
 
 @app.get("/health")
 def health_check():

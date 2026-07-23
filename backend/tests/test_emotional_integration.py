@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
 from unittest.mock import MagicMock, patch
 
@@ -107,14 +108,32 @@ def _make_engine(clock=FIXED_CLOCK, archival_extraction_enabled=False):
     engine.memory_manager.save_turn = MagicMock()
     engine.memory_manager.get_context = MagicMock(return_value="[mocked context]")
     engine.memory_manager.load_recent_history = MagicMock(return_value=[])
-    m = MagicMock()
-    m.choices = [MagicMock()]
-    m.choices[0].message.content = "Hi"
-    engine.groq_manager.chat_completion = MagicMock(return_value=m)
-    engine._perceive = MagicMock(return_value={
-        "valence": 0.2, "arousal_shift": 0.1, "dominance_shift": 0.0,
-        "triggered_emotions": {"joy": 0.5},
-    })
+    
+    # Mock sync completion for archival extraction
+    sync_m = MagicMock()
+    sync_m.choices = [MagicMock()]
+    sync_m.choices[0].message.content = "Hi"
+    engine.groq_manager.chat_completion = MagicMock(return_value=sync_m)
+    
+    # Mock async completion for appraisal (returns valid JSON)
+    async def _mock_async_completion(**kwargs):
+        async_m = MagicMock()
+        async_m.choices = [MagicMock()]
+        async_m.choices[0].message.content = json.dumps({
+            "valence": 0.2, "arousal_shift": 0.1, "dominance_shift": 0.0,
+            "triggered_emotions": {"joy": 0.5},
+        })
+        return async_m
+    
+    # Mock async completion for generation (returns valid text)
+    async def _mock_generation(**kwargs):
+        gen_m = MagicMock()
+        gen_m.choices = [MagicMock()]
+        gen_m.choices[0].message.content = "Hi there!"
+        return gen_m
+    
+    engine.groq_manager.chat_completion_async = MagicMock(side_effect=_mock_async_completion)
+    
     return engine
 
 
@@ -248,15 +267,20 @@ class TestRelationshipAdaptationSpy:
             # The relationship manager is replaced by the pure transition function.
             # We verify that the relationship is updated via transition_relationship
             # by checking the returned state through sync_state.
-            engine._perceive = MagicMock(return_value={
-                "valence": 0.5,
-                "arousal_shift": 0.2,
-                "dominance_shift": 0.1,
-                "triggered_emotions": {
-                    "joy": 0.8,
-                    "tenderness": 0.6,
-                },
-            })
+            async def _mock_appraisal(**kwargs):
+                mock_resp = MagicMock()
+                mock_resp.choices = [MagicMock()]
+                mock_resp.choices[0].message.content = json.dumps({
+                    "valence": 0.5,
+                    "arousal_shift": 0.2,
+                    "dominance_shift": 0.1,
+                    "triggered_emotions": {
+                        "joy": 0.8,
+                        "tenderness": 0.6,
+                    },
+                })
+                return mock_resp
+            engine.groq_manager.chat_completion_async = MagicMock(side_effect=_mock_appraisal)
 
             await engine.process_turn("user", "Hello")
 
@@ -286,13 +310,18 @@ class TestRelationshipAdaptationSpy:
             engine = _make_engine()
 
             # Payload with a valid structure PLUS an unknown top-level key
-            engine._perceive = MagicMock(return_value={
-                "valence": 0.5,
-                "arousal_shift": 0.2,
-                "dominance_shift": 0.1,
-                "triggered_emotions": {"joy": 0.8},
-                SENSITIVE_KEY: "should_not_leak",
-            })
+            async def _mock_appraisal(**kwargs):
+                mock_resp = MagicMock()
+                mock_resp.choices = [MagicMock()]
+                mock_resp.choices[0].message.content = json.dumps({
+                    "valence": 0.5,
+                    "arousal_shift": 0.2,
+                    "dominance_shift": 0.1,
+                    "triggered_emotions": {"joy": 0.8},
+                    SENSITIVE_KEY: "should_not_leak",
+                })
+                return mock_resp
+            engine.groq_manager.chat_completion_async = MagicMock(side_effect=_mock_appraisal)
 
             # Capture logs
             logger = logging.getLogger("backend.engine")
@@ -332,15 +361,20 @@ class TestRelationshipAdaptationSpy:
         async def run():
             engine = _make_engine()
             # Payload with known emotion joy=0.8 and unknown emotion_92841=0.9
-            engine._perceive = MagicMock(return_value={
-                "valence": 0.2,
-                "arousal_shift": 0.1,
-                "dominance_shift": 0.0,
-                "triggered_emotions": {
-                    "joy": 0.8,
-                    "unknown_emotion_92841": 0.9,
-                },
-            })
+            async def _mock_appraisal(**kwargs):
+                mock_resp = MagicMock()
+                mock_resp.choices = [MagicMock()]
+                mock_resp.choices[0].message.content = json.dumps({
+                    "valence": 0.2,
+                    "arousal_shift": 0.1,
+                    "dominance_shift": 0.0,
+                    "triggered_emotions": {
+                        "joy": 0.8,
+                        "unknown_emotion_92841": 0.9,
+                    },
+                })
+                return mock_resp
+            engine.groq_manager.chat_completion_async = MagicMock(side_effect=_mock_appraisal)
 
             await engine.process_turn("user", "Hello")
 
@@ -358,8 +392,12 @@ class TestRelationshipAdaptationSpy:
     def test_neutral_fallback_results_in_neutral_transition(self):
         async def run():
             engine = _make_engine()
-            # _perceive returns empty dict (triggers fallback)
-            engine._perceive = MagicMock(return_value={})
+            async def _mock_empty_appraisal(**kwargs):
+                mock_resp = MagicMock()
+                mock_resp.choices = [MagicMock()]
+                mock_resp.choices[0].message.content = json.dumps({})
+                return mock_resp
+            engine.groq_manager.chat_completion_async = MagicMock(side_effect=_mock_empty_appraisal)
 
             await engine.process_turn("user", "Hello")
 
@@ -416,8 +454,7 @@ class TestFailClosedThroughProcessTurn:
 
             # Install spies on all downstream methods
             engine.memory_manager.get_context = MagicMock()
-            engine._perceive = MagicMock()
-            engine.groq_manager.chat_completion = MagicMock()
+            engine.groq_manager.chat_completion_async = MagicMock()
             engine.memory_manager.save_turn = MagicMock()
             engine.memory_manager.sync_state = MagicMock()
 
@@ -426,10 +463,9 @@ class TestFailClosedThroughProcessTurn:
             with pytest.raises(EmotionalDomainError):
                 await engine.process_turn("user", "Msg", background_tasks=bg_tasks)
 
-            # Zero downstream calls: no context, no perceive, no LLM, no persist
+            # Zero downstream calls: no context, no async LLM, no persist
             engine.memory_manager.get_context.assert_not_called()
-            engine._perceive.assert_not_called()
-            engine.groq_manager.chat_completion.assert_not_called()
+            engine.groq_manager.chat_completion_async.assert_not_called()
             engine.memory_manager.save_turn.assert_not_called()
             engine.memory_manager.sync_state.assert_not_called()
             # transition_relationship is called inside process_turn, but
@@ -451,8 +487,7 @@ class TestFailClosedThroughProcessTurn:
                     "last_update": FIXED_CLOCK,
                 },
             })
-            engine._perceive = MagicMock()
-            engine.groq_manager.chat_completion = MagicMock()
+            engine.groq_manager.chat_completion_async = MagicMock()
             engine.memory_manager.save_turn = MagicMock()
             engine.memory_manager.sync_state = MagicMock()
             bg_tasks = MagicMock()
@@ -460,8 +495,7 @@ class TestFailClosedThroughProcessTurn:
             with pytest.raises(EmotionalDomainError):
                 await engine.process_turn("user", "Msg", background_tasks=bg_tasks)
 
-            engine._perceive.assert_not_called()
-            engine.groq_manager.chat_completion.assert_not_called()
+            engine.groq_manager.chat_completion_async.assert_not_called()
             engine.memory_manager.save_turn.assert_not_called()
             engine.memory_manager.sync_state.assert_not_called()
             bg_tasks.add_task.assert_not_called()
@@ -479,8 +513,7 @@ class TestFailClosedThroughProcessTurn:
                     "last_update": FIXED_CLOCK,
                 },
             })
-            engine._perceive = MagicMock()
-            engine.groq_manager.chat_completion = MagicMock()
+            engine.groq_manager.chat_completion_async = MagicMock()
             engine.memory_manager.save_turn = MagicMock()
             engine.memory_manager.sync_state = MagicMock()
             bg_tasks = MagicMock()
@@ -488,8 +521,7 @@ class TestFailClosedThroughProcessTurn:
             with pytest.raises(EmotionalDomainError):
                 await engine.process_turn("user", "Msg", background_tasks=bg_tasks)
 
-            engine._perceive.assert_not_called()
-            engine.groq_manager.chat_completion.assert_not_called()
+            engine.groq_manager.chat_completion_async.assert_not_called()
             engine.memory_manager.save_turn.assert_not_called()
             engine.memory_manager.sync_state.assert_not_called()
             bg_tasks.add_task.assert_not_called()
@@ -503,8 +535,7 @@ class TestFailClosedThroughProcessTurn:
             engine.memory_manager.load_user_state = MagicMock(return_value={
                 "emotional_state": {"schema_version": 99},
             })
-            engine._perceive = MagicMock()
-            engine.groq_manager.chat_completion = MagicMock()
+            engine.groq_manager.chat_completion_async = MagicMock()
             engine.memory_manager.save_turn = MagicMock()
             engine.memory_manager.sync_state = MagicMock()
 
@@ -801,14 +832,23 @@ class TestNewProfileFirstTurn:
             engine.memory_manager.get_context = MagicMock(return_value="[ctx]")
             engine.memory_manager.sync_state = MagicMock()
             engine.memory_manager.save_turn = MagicMock()
-            llm_response = MagicMock()
-            llm_response.choices = [MagicMock()]
-            llm_response.choices[0].message.content = "Hello!"
-            engine.groq_manager.chat_completion = MagicMock(return_value=llm_response)
-            engine._perceive = MagicMock(return_value={
-                "valence": 0.2, "arousal_shift": 0.1, "dominance_shift": 0.0,
-                "triggered_emotions": {"joy": 0.3},
-            })
+            
+            async def _mock_appraisal_new(**kwargs):
+                mock_resp = MagicMock()
+                mock_resp.choices = [MagicMock()]
+                mock_resp.choices[0].message.content = json.dumps({
+                    "valence": 0.2, "arousal_shift": 0.1, "dominance_shift": 0.0,
+                    "triggered_emotions": {"joy": 0.3},
+                })
+                return mock_resp
+            
+            async def _mock_generation_new(**kwargs):
+                mock_resp = MagicMock()
+                mock_resp.choices = [MagicMock()]
+                mock_resp.choices[0].message.content = "Hello!"
+                return mock_resp
+            
+            engine.groq_manager.chat_completion_async = MagicMock(side_effect=_mock_appraisal_new)
 
             # ── Imports for real transition functions / spies             ──
             from backend.emotional_domain import transition as real_e_transition
@@ -904,19 +944,18 @@ class TestSanitisedLogging:
             engine.memory_manager.sync_state = MagicMock()
             engine.memory_manager.save_turn = MagicMock()
             engine.memory_manager.get_context = MagicMock(return_value="[mocked context]")
-            m = MagicMock()
-            m.choices = [MagicMock()]
-            m.choices[0].message.content = self.SENSITIVE_PROMPT
-            engine.groq_manager.chat_completion = MagicMock(return_value=m)
-
-            # _perceive returns a dict with sensitive payload in values and keys
-            engine._perceive = MagicMock(return_value={
-                "valence": self.SENSITIVE_PAYLOAD,  # invalid → triggers fallback
-                "arousal_shift": 0.0,
-                "dominance_shift": 0.0,
-                self.SENSITIVE_KEY: "should_not_leak",
-                "triggered_emotions": {"joy": 0.5},
-            })
+            async def _mock_bad_appraisal(**kwargs):
+                mock_resp = MagicMock()
+                mock_resp.choices = [MagicMock()]
+                mock_resp.choices[0].message.content = json.dumps({
+                    "valence": self.SENSITIVE_PAYLOAD,
+                    "arousal_shift": 0.0,
+                    "dominance_shift": 0.0,
+                    self.SENSITIVE_KEY: "should_not_leak",
+                    "triggered_emotions": {"joy": 0.5},
+                })
+                return mock_resp
+            engine.groq_manager.chat_completion_async = MagicMock(side_effect=_mock_bad_appraisal)
 
             # Capture logs
             logger = logging.getLogger("backend.engine")
@@ -987,9 +1026,13 @@ class TestSanitisedLogging:
     def test_neutral_fallback_is_used_when_perceive_fails(self):
         async def run():
             engine = _make_engine()
-            # _perceive returns None (not a dict) → parse_llm_appraisal returns
-            # neutral fallback via invalid_structure code
-            engine._perceive = MagicMock(return_value=None)
+            # Set up async mock to return None (triggers invalid JSON)
+            async def _mock_none(**kwargs):
+                mock_resp = MagicMock()
+                mock_resp.choices = [MagicMock()]
+                mock_resp.choices[0].message.content = None
+                return mock_resp
+            engine.groq_manager.chat_completion_async = MagicMock(side_effect=_mock_none)
 
             resp, emotions = await engine.process_turn("user", "Hello")
             # Should still succeed with neutral fallback
@@ -1125,8 +1168,7 @@ class TestLegacyFlowNotUsed:
             engine = ConversationEngine(clock=lambda: FIXED_CLOCK)
             engine.memory_manager.supabase = MagicMock()
             engine.memory_manager.supabase.table.return_value.select.return_value.eq.return_value.execute.side_effect = Exception("DB down")
-            engine._perceive = MagicMock()
-            engine.groq_manager.chat_completion = MagicMock()
+            engine.groq_manager.chat_completion_async = MagicMock()
 
             with pytest.raises(StateLoadError):
                 await engine.process_turn("user", "Msg")

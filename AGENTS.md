@@ -6,10 +6,11 @@ Este arquivo define as regras obrigatórias para agentes de código, incluindo J
 
 - O mantenedor/auditor define arquitetura, prioridade, escopo e critérios de aceite.
 - O agente implementa somente a tarefa recebida e entrega a mudança por pull request.
-- Sempre crie uma branch nova a partir da `main` atualizada e abra a PR contra `main`.
+- Por padrão, crie uma branch nova a partir da `main` atualizada e abra a PR contra `main`.
+- Exceção de manutenção: quando o mantenedor/auditor autorizar explicitamente uma correção em uma PR existente e identificar a PR e a branch, continue exatamente nessa branch/PR. Não crie nova branch/PR, não mude de issue e não amplie o escopo. Esta exceção nunca pode ser inferida pelo agente.
 - Nunca crie PR empilhada sobre a branch de outra PR. Se uma dependência ainda não foi mesclada, declare o bloqueio no comentário inicial e não implemente sobre ela.
 - Uma tarefa gera no máximo uma PR. Não recrie automaticamente uma PR fechada e não duplique trabalho existente.
-- O Jules não deve depender de comentários posteriores, threads ou pedidos de alteração na PR. Correções após a abertura serão enviadas como uma nova tarefa explícita pelo mantenedor.
+- O Jules não deve depender de comentários posteriores, threads ou pedidos de alteração na PR. Correções após a abertura serão enviadas como uma nova tarefa explícita pelo mantenedor; essa tarefa pode autorizar a continuação da mesma PR conforme a exceção acima.
 
 ## Escopo
 

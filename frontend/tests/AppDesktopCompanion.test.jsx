@@ -101,7 +101,7 @@ describe('AppDesktop companion integration', () => {
             emotionState: validEmotionState,
             isLoading: true,
         }));
-        expect(screen.getByRole('status')).toHaveTextContent('Katherine está digitando...');
+        expect(screen.getByRole('status')).toHaveTextContent('Preparando resposta…');
         expect(screen.getByRole('textbox', { name: /sua mensagem/i })).toBeDisabled();
     });
 

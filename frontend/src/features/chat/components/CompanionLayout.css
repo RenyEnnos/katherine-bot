@@ -48,6 +48,17 @@
     background: rgba(17, 24, 39, 0.46);
 }
 
+/* The presence arc and readable status replace perpetual loading motion.
+   Keep the shared web chat's behavior unchanged. */
+.companion-layout .animate-spin,
+.companion-layout .animate-pulse {
+    animation: none;
+}
+
+.companion-layout [role='status'] {
+    color: var(--companion-muted);
+}
+
 .companion-layout__history {
     display: flex;
     flex: 1 1 auto;

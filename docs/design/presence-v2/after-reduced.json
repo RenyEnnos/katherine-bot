@@ -1,0 +1,166 @@
+{
+  "provider": "scripted offline fixture",
+  "captures": [
+    {
+      "name": "idle-1280",
+      "viewport": [
+        1280,
+        800
+      ],
+      "face": {
+        "x": 218.703125,
+        "y": 259.203125,
+        "width": 345.59375,
+        "height": 345.59375
+      },
+      "arc": true,
+      "arcDisplay": "block",
+      "activity": "idle",
+      "arcOpacity": "0",
+      "arcStroke": "2.073562px",
+      "arcTransition": "0s",
+      "reducedMotion": true,
+      "inputVisible": true,
+      "horizontalOverflow": false,
+      "bridge": "desktop v2",
+      "runningAnimations": 0
+    },
+    {
+      "name": "idle-800",
+      "viewport": [
+        800,
+        800
+      ],
+      "face": {
+        "x": 127.5,
+        "y": 336,
+        "width": 192,
+        "height": 192
+      },
+      "arc": true,
+      "arcDisplay": "block",
+      "activity": "idle",
+      "arcOpacity": "0",
+      "arcStroke": "1.5px",
+      "arcTransition": "0s",
+      "reducedMotion": true,
+      "inputVisible": true,
+      "horizontalOverflow": false,
+      "bridge": "desktop v2",
+      "runningAnimations": 0
+    },
+    {
+      "name": "thinking-1280",
+      "viewport": [
+        1280,
+        800
+      ],
+      "face": {
+        "x": 218.703125,
+        "y": 259.203125,
+        "width": 345.59375,
+        "height": 345.59375
+      },
+      "arc": true,
+      "arcDisplay": "block",
+      "activity": "busy",
+      "arcOpacity": "1",
+      "arcStroke": "2.073562px",
+      "arcTransition": "0s",
+      "reducedMotion": true,
+      "inputVisible": true,
+      "horizontalOverflow": false,
+      "bridge": "desktop v2",
+      "runningAnimations": 0
+    },
+    {
+      "name": "thinking-800",
+      "viewport": [
+        800,
+        800
+      ],
+      "face": {
+        "x": 127.5,
+        "y": 336,
+        "width": 192,
+        "height": 192
+      },
+      "arc": true,
+      "arcDisplay": "block",
+      "activity": "busy",
+      "arcOpacity": "1",
+      "arcStroke": "1.5px",
+      "arcTransition": "0s",
+      "reducedMotion": true,
+      "inputVisible": true,
+      "horizontalOverflow": false,
+      "bridge": "desktop v2",
+      "runningAnimations": 0
+    },
+    {
+      "name": "response-800",
+      "viewport": [
+        800,
+        800
+      ],
+      "face": {
+        "x": 127.5,
+        "y": 336,
+        "width": 192,
+        "height": 192
+      },
+      "arc": true,
+      "arcDisplay": "block",
+      "activity": "idle",
+      "arcOpacity": "0",
+      "arcStroke": "1.5px",
+      "arcTransition": "0s",
+      "reducedMotion": true,
+      "inputVisible": true,
+      "horizontalOverflow": false,
+      "bridge": "desktop v2",
+      "runningAnimations": 0
+    }
+  ],
+  "opticalProbes": [
+    {
+      "width": 32,
+      "display": "none",
+      "eyes": 2,
+      "stroke": "1.5px"
+    },
+    {
+      "width": 48,
+      "display": "block",
+      "eyes": 2,
+      "stroke": "1.5px"
+    },
+    {
+      "width": 64,
+      "display": "block",
+      "eyes": 2,
+      "stroke": "1.5px"
+    },
+    {
+      "width": 96,
+      "display": "block",
+      "eyes": 2,
+      "stroke": "1.5px"
+    },
+    {
+      "width": 128,
+      "display": "block",
+      "eyes": 2,
+      "stroke": "1.5px"
+    },
+    {
+      "width": 256,
+      "display": "block",
+      "eyes": 2,
+      "stroke": "1.536px"
+    }
+  ],
+  "settledFaceMutationsOverOneSecond": 0,
+  "finalText": "Katherine – SoulMate\ndesktop v2\n\n\nOlá, Katherine.\n\nA presença pode permanecer tranquila enquanto você trabalha.\n\n\nKatherine pode cometer erros. Considere verificar informações importantes.\nDetalhes do estado\nPrivacidade local\n",
+  "failures": []
+}

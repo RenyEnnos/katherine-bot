@@ -3,12 +3,16 @@
     --face-ink: #f3f4f6;
     --face-ring: rgba(148, 163, 184, 0.35);
     --face-pupil: #111827;
+    --presence-signal: #a7b0be;
+    position: relative;
     display: grid;
     place-items: center;
     width: clamp(7rem, 14vw, 10rem);
     aspect-ratio: 1;
     flex: 0 0 auto;
-    contain: layout paint;
+    /* The signal lives just outside the original face, without resizing it. */
+    contain: layout;
+    container: katherine-presence / inline-size;
     pointer-events: none;
     user-select: none;
 }
@@ -17,6 +21,39 @@
     display: block;
     width: 100% !important;
     height: 100% !important;
+}
+
+/* Same coordinates as bfce's 100-unit face. Radius 54 leaves an 8-unit
+   gap from its radius-46 disc. The short arc never indicates progress. */
+.katherine-face__activity {
+    position: absolute;
+    inset: -8%;
+    width: 116%;
+    height: 116%;
+    overflow: visible;
+    fill: none;
+    stroke: var(--presence-signal);
+    stroke-width: 2px;
+    stroke-width: clamp(1.5px, 0.6cqi, 2.5px);
+    stroke-linecap: round;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 140ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.katherine-face__activity path {
+    vector-effect: non-scaling-stroke;
+}
+
+.katherine-face[data-activity='busy'] > .katherine-face__activity {
+    opacity: 1;
+}
+
+/* Optical disclosure depends on the face's actual size, not the viewport. */
+@container katherine-presence (max-width: 47px) {
+    .katherine-face__activity {
+        display: none;
+    }
 }
 
 .katherine-face--header {

@@ -17,6 +17,7 @@ const KatherineFace = ({ emotionState, isLoading, className = '' }) => {
         <div
             className={`katherine-face ${className}`.trim()}
             data-testid="katherine-face"
+            data-activity={isLoading === true ? 'busy' : 'idle'}
             aria-hidden="true"
         >
             <Face
@@ -29,6 +30,15 @@ const KatherineFace = ({ emotionState, isLoading, className = '' }) => {
                 idle={false}
                 className="katherine-face__vendor"
             />
+            <svg
+                className="katherine-face__activity"
+                data-testid="katherine-activity-arc"
+                viewBox="-58 -58 116 116"
+                aria-hidden="true"
+                focusable="false"
+            >
+                <path d="M 13.976 -52.160 A 54 54 0 0 1 48.941 -22.821" />
+            </svg>
         </div>
     );
 };

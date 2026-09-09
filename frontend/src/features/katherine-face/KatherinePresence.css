@@ -1,0 +1,118 @@
+.katherine-presence {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    background: transparent !important;
+    user-select: none;
+}
+
+.katherine-presence__drag-handle {
+    display: grid;
+    place-items: center;
+    width: 100%;
+    height: 100%;
+    cursor: grab;
+    -webkit-app-region: drag;
+}
+
+.katherine-presence__drag-handle:active {
+    cursor: grabbing;
+}
+
+.katherine-face--presence {
+    width: clamp(7.5rem, 80vw, 9.5rem);
+    height: clamp(7.5rem, 80vw, 9.5rem);
+    pointer-events: none;
+}
+
+/* Ephemeral Controls Overlay */
+.katherine-presence__controls {
+    position: absolute;
+    top: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.25rem 0.4rem;
+    background: rgba(17, 24, 39, 0.82);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 9999px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+    opacity: 0;
+    pointer-events: none;
+    transform: scale(0.95) translateY(-4px);
+    transition: opacity 160ms cubic-bezier(0.23, 1, 0.32, 1),
+                transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+    -webkit-app-region: no-drag;
+    z-index: 50;
+}
+
+/* Hover & Focus Disclosure */
+@media (hover: hover) and (pointer: fine) {
+    .katherine-presence:hover .katherine-presence__controls {
+        opacity: 1;
+        pointer-events: auto;
+        transform: scale(1) translateY(0);
+    }
+}
+
+.katherine-presence:focus-within .katherine-presence__controls {
+    opacity: 1;
+    pointer-events: auto;
+    transform: scale(1) translateY(0);
+}
+
+/* Ephemeral Control Buttons */
+.katherine-presence__btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.85rem;
+    height: 1.85rem;
+    padding: 0;
+    border: none;
+    border-radius: 9999px;
+    background: transparent;
+    color: #d1d5db;
+    cursor: pointer;
+    transition: background-color 120ms ease, color 120ms ease, transform 120ms ease-out;
+    -webkit-app-region: no-drag;
+}
+
+.katherine-presence__btn:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: #ffffff;
+}
+
+.katherine-presence__btn:active {
+    transform: scale(0.94);
+}
+
+.katherine-presence__btn:focus-visible {
+    outline: 2px solid #93c5fd;
+    outline-offset: 2px;
+}
+
+.katherine-presence__btn--active {
+    background: rgba(59, 130, 246, 0.25);
+    color: #60a5fa;
+}
+
+.katherine-presence__btn--danger:hover {
+    background: rgba(239, 68, 68, 0.25);
+    color: #f87171;
+}
+
+/* Accessibility: Reduced Motion */
+@media (prefers-reduced-motion: reduce) {
+    .katherine-presence__controls,
+    .katherine-presence__btn {
+        animation: none !important;
+        transition-duration: 0ms !important;
+        transform: none !important;
+    }
+}

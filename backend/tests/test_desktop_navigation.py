@@ -123,7 +123,7 @@ class TestBridgeFailsClosedOutsideLocalBuild:
         url = build.index_html.as_uri()
         # The loaded handler committed this local page as trusted.
         wrapper = self._bridge_for(build, url, trusted=True)
-        assert wrapper.health() == {"ok": True, "api_version": 2}
+        assert wrapper.health() == {"ok": True, "api_version": 3}
 
     def test_local_url_before_commit_is_refused(self, tmp_path: Path) -> None:
         # Trust is only granted after the loaded handler commits the
@@ -321,7 +321,7 @@ class TestLoadedHandlerRevertsNavigation:
         local_uri = (dist / "desktop.html").as_uri()
         _, recorded = self._run_with_stubbed_webview(monkeypatch, tmp_path, local_uri)
         js_api = recorded["create_window_kwargs"]["js_api"]
-        assert js_api.health() == {"ok": True, "api_version": 2}
+        assert js_api.health() == {"ok": True, "api_version": 3}
 
     def test_js_api_health_remote_via_wrapper(self, monkeypatch, tmp_path: Path) -> None:
         self._run_with_stubbed_webview(monkeypatch, tmp_path, "https://example.com/")
@@ -425,7 +425,7 @@ class TestRevertToSameEntryUrl:
         # Only after the new local load completes (loaded event → new
         # commit) may the bridge serve again — same URL, new state.
         machine.on_loaded()
-        assert bridge.health() == {"ok": True, "api_version": 2}
+        assert bridge.health() == {"ok": True, "api_version": 3}
 
     def test_bridge_reopens_only_after_new_local_load_completes(
         self, tmp_path: Path
@@ -457,7 +457,7 @@ class TestRevertToSameEntryUrl:
         # 3) New local load completes: the loaded event re-commits and
         #    the bridge serves again.
         machine.on_loaded()
-        assert bridge.health() == {"ok": True, "api_version": 2}
+        assert bridge.health() == {"ok": True, "api_version": 3}
 
     def test_revert_navigates_to_the_entry_url(self, tmp_path: Path) -> None:
         # The revert load goes back to the same entry_html the shell
@@ -669,11 +669,20 @@ class TestCompanionOpsFailClosed:
         ("delete_memories", ()),
         ("reset_emotional_state", ()),
         ("reset_relationship_state", ()),
+        ("set_presence_mode", (True,)),
+        ("set_always_on_top", (True,)),
+        ("window_state", ()),
+        ("close_window", ()),
     ]
 
     def _wrapper_for(self, build: ResolvedBuild, url: str | None):
         trust = BuildTrust(build)
-        return LocalBuildBridge(make_js_api(runtime=_NoopRuntime()), build, lambda: url, trust)
+        return LocalBuildBridge(
+            make_js_api(runtime=_NoopRuntime(), window_controller=_NoopWindowController()),
+            build,
+            lambda: url,
+            trust,
+        )
 
     def test_every_op_refuses_remote_url(self, tmp_path: Path) -> None:
         import json
@@ -698,7 +707,10 @@ class TestCompanionOpsFailClosed:
         trust.commit_if_local(local)
         trust.revoke()  # the non-local load report dropped the trust
         wrapper = LocalBuildBridge(
-            make_js_api(runtime=_NoopRuntime()), build, lambda: local, trust
+            make_js_api(runtime=_NoopRuntime(), window_controller=_NoopWindowController()),
+            build,
+            lambda: local,
+            trust,
         )
         for op, args in self._OPS:
             assert getattr(wrapper, op)(*args)["code"] == ERROR_BRIDGE_UNAVAILABLE, op
@@ -710,7 +722,10 @@ class TestCompanionOpsFailClosed:
         local = build.index_html.as_uri()
         trust.commit_if_local(local)
         wrapper = LocalBuildBridge(
-            make_js_api(runtime=_NoopRuntime()), build, lambda: local, trust
+            make_js_api(runtime=_NoopRuntime(), window_controller=_NoopWindowController()),
+            build,
+            lambda: local,
+            trust,
         )
         for op, args in self._OPS:
             result = getattr(wrapper, op)(*args)
@@ -729,7 +744,9 @@ class TestCompanionOpsFailClosed:
             raise RuntimeError("boom")
 
         wrapper = LocalBuildBridge(
-            make_js_api(runtime=_NoopRuntime()), build, _raising
+            make_js_api(runtime=_NoopRuntime(), window_controller=_NoopWindowController()),
+            build,
+            _raising,
         )
         for op, args in self._OPS:
             assert getattr(wrapper, op)(*args)["code"] == ERROR_BRIDGE_UNAVAILABLE, op
@@ -756,5 +773,27 @@ class _NoopRuntime:
     def reset_emotional_state(self) -> dict:
         return {"success": True, "result": {"status": "applied"}}
 
-    def reset_relationship_state(self) -> dict:
+    def reset_relationship_state(self, *args: Any) -> dict:
         return {"success": True, "result": {"status": "applied"}}
+
+
+class _NoopWindowController:
+    """Window controller double whose every method returns an ok payload."""
+
+    def set_presence_mode(self, enabled: bool) -> dict:
+        return {
+            "ok": True,
+            "mode": "presence" if enabled else "companion",
+            "on_top": enabled,
+            "width": 200 if enabled else 1280,
+            "height": 200 if enabled else 800,
+        }
+
+    def set_always_on_top(self, enabled: bool) -> dict:
+        return {"ok": True, "on_top": enabled}
+
+    def window_state(self) -> dict:
+        return {"ok": True, "mode": "companion", "on_top": False, "width": 1280, "height": 800}
+
+    def close_window(self) -> dict:
+        return {"ok": True}

@@ -192,6 +192,35 @@ class TestRuntimeLifecycleWiring:
         bridge = kwargs["js_api"]
         assert bridge._bridge._api._runtime is runtime
 
+    def test_create_window_sets_transparent_and_min_size(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        # #342: create_window must set transparent=True for native GTK RGBA visual
+        # and min_size=(120, 120) to permit shrinking down to floating presence dimensions.
+        _make_dist(tmp_path)
+        recorded = _stub_webview(monkeypatch)
+
+        class FakeRuntime:
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr(
+            desktop_app_module, "_build_runtime", lambda: FakeRuntime()
+        )
+
+        exit_code = desktop_app_module.run_desktop_shell(frontend_root=tmp_path)
+        assert exit_code == 0
+        kwargs = recorded["create_window_calls"][0]
+        assert kwargs["transparent"] is True
+        assert kwargs["min_size"] == (120, 120)
+        assert kwargs["width"] == 1280
+        assert kwargs["height"] == 800
+        assert kwargs["title"] == "Katherine"
+        bridge = kwargs["js_api"]
+        wc = bridge._bridge._api._window_controller
+        assert wc is not None
+        assert wc._window is not None
+
     def test_startup_storage_failure_is_sanitized_no_window(
         self, monkeypatch, tmp_path: Path, capsys
     ) -> None:

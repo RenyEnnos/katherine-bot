@@ -1,4 +1,5 @@
 import React from 'react';
+import { Minimize2 } from 'lucide-react';
 import ChatHeader from './ChatHeader';
 import ChatInput from './ChatInput';
 import EmotionPanel from './EmotionPanel';
@@ -27,13 +28,33 @@ export default function CompanionLayout({
     clearScreen,
     transport,
     auxiliarySlot = null,
+    onEnterPresence = null,
 }) {
     const hasAuxiliarySlot = Boolean(auxiliarySlot);
     const hasDesktopPrivacy = isDesktopTransport(transport);
 
     return (
         <div className="companion-layout" data-testid="companion-layout">
-            <ChatHeader clearScreen={clearScreen} />
+            {onEnterPresence ? (
+                <div className="companion-layout__header" data-testid="companion-header-bar">
+                    <ChatHeader clearScreen={clearScreen} />
+                    <div className="companion-layout__header-actions">
+                        <button
+                            type="button"
+                            onClick={onEnterPresence}
+                            className="companion-layout__presence-toggle"
+                            data-testid="companion-enter-presence-btn"
+                            title="Modo presença flutuante (Minimizar)"
+                            aria-label="Modo presença flutuante"
+                        >
+                            <Minimize2 size={20} aria-hidden="true" />
+                        </button>
+                    </div>
+                </div>
+            ) : (
+                <ChatHeader clearScreen={clearScreen} />
+            )}
+
 
             <main
                 className={`companion-layout__body${hasAuxiliarySlot ? ' companion-layout__body--with-auxiliary' : ''}`}

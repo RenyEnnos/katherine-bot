@@ -268,6 +268,202 @@ class BuildTrust:
         return current_url == committed and is_local_build_url(current_url, self._build)
 
 
+def _dispatch_main_loop(action: Callable[[], Any]) -> None:
+    """Schedule an action on the GUI main loop via GLib.idle_add if available."""
+    try:
+        from gi.repository import GLib  # type: ignore[import-not-found]
+
+        def _callback() -> bool:
+            try:
+                action()
+            except Exception:  # noqa: BLE001
+                pass
+            return False
+
+        GLib.idle_add(_callback)
+    except (ImportError, AttributeError):
+        try:
+            action()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+class WindowController:
+    """Thread-safe controller for desktop window lifecycle and mode transitions (#342).
+
+    Dispatches native GTK operations (set_decorated, resize, move, on_top, destroy)
+    safely onto the GUI main loop via GLib.idle_add while maintaining atomic state
+    tracking for mode, geometry, and always-on-top status across worker threads.
+    """
+
+    def __init__(self, window: Any = None) -> None:
+        import threading
+
+        self._lock = threading.Lock()
+        self._window = window
+        self._mode = "companion"
+        self._on_top = False
+        self._width = _WINDOW_SIZE[0]
+        self._height = _WINDOW_SIZE[1]
+        self._saved_geometry: tuple[int | None, int | None, int, int] = (
+            None,
+            None,
+            _WINDOW_SIZE[0],
+            _WINDOW_SIZE[1],
+        )
+
+    def set_window(self, window: Any) -> None:
+        """Bind the pywebview window instance after creation."""
+        with self._lock:
+            self._window = window
+
+    def set_presence_mode(self, enabled: bool) -> dict[str, Any]:
+        """Transition between companion and floating presence modes."""
+        with self._lock:
+            if self._window is None:
+                return {
+                    "ok": False,
+                    "code": "window_unavailable",
+                    "message": "The window is not available.",
+                }
+            window = self._window
+
+            if enabled:
+                curr_x: int | None = None
+                curr_y: int | None = None
+                curr_w: int | None = None
+                curr_h: int | None = None
+
+                native = getattr(window, "native", None)
+                if native is not None:
+                    try:
+                        if hasattr(native, "get_position"):
+                            curr_x, curr_y = native.get_position()
+                        if hasattr(native, "get_size"):
+                            curr_w, curr_h = native.get_size()
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                if curr_x is None:
+                    curr_x = getattr(window, "x", None)
+                if curr_y is None:
+                    curr_y = getattr(window, "y", None)
+                if curr_w is None and hasattr(window, "width") and isinstance(window.width, int):
+                    curr_w = window.width
+                if curr_h is None and hasattr(window, "height") and isinstance(window.height, int):
+                    curr_h = window.height
+
+                if self._mode == "companion":
+                    self._saved_geometry = (
+                        curr_x,
+                        curr_y,
+                        curr_w or self._width or _WINDOW_SIZE[0],
+                        curr_h or self._height or _WINDOW_SIZE[1],
+                    )
+
+                def _apply_presence() -> None:
+                    nat = getattr(window, "native", None)
+                    if nat is not None and hasattr(nat, "set_decorated"):
+                        nat.set_decorated(False)
+                    if hasattr(window, "resize"):
+                        window.resize(200, 200)
+                    if hasattr(window, "on_top"):
+                        window.on_top = True
+
+                _dispatch_main_loop(_apply_presence)
+
+                self._mode = "presence"
+                self._on_top = True
+                self._width = 200
+                self._height = 200
+
+                return {
+                    "ok": True,
+                    "mode": "presence",
+                    "on_top": True,
+                    "width": 200,
+                    "height": 200,
+                }
+            else:
+                saved_x, saved_y, saved_w, saved_h = self._saved_geometry
+                target_w = saved_w or _WINDOW_SIZE[0]
+                target_h = saved_h or _WINDOW_SIZE[1]
+
+                def _apply_companion() -> None:
+                    nat = getattr(window, "native", None)
+                    if nat is not None and hasattr(nat, "set_decorated"):
+                        nat.set_decorated(True)
+                    if hasattr(window, "resize"):
+                        window.resize(target_w, target_h)
+                    if saved_x is not None and saved_y is not None and hasattr(window, "move"):
+                        window.move(saved_x, saved_y)
+                    if hasattr(window, "on_top"):
+                        window.on_top = False
+
+                _dispatch_main_loop(_apply_companion)
+
+                self._mode = "companion"
+                self._on_top = False
+                self._width = target_w
+                self._height = target_h
+
+                return {
+                    "ok": True,
+                    "mode": "companion",
+                    "on_top": False,
+                    "width": target_w,
+                    "height": target_h,
+                }
+
+    def set_always_on_top(self, enabled: bool) -> dict[str, Any]:
+        """Toggle always-on-top layering for the window."""
+        with self._lock:
+            if self._window is None:
+                return {
+                    "ok": False,
+                    "code": "window_unavailable",
+                    "message": "The window is not available.",
+                }
+            window = self._window
+
+            def _apply_on_top() -> None:
+                if hasattr(window, "on_top"):
+                    window.on_top = enabled
+
+            _dispatch_main_loop(_apply_on_top)
+            self._on_top = enabled
+            return {"ok": True, "on_top": enabled}
+
+    def window_state(self) -> dict[str, Any]:
+        """Return current window state snapshot."""
+        with self._lock:
+            return {
+                "ok": True,
+                "mode": self._mode,
+                "on_top": self._on_top,
+                "width": self._width,
+                "height": self._height,
+            }
+
+    def close_window(self) -> dict[str, Any]:
+        """Request window destruction and clean shell shutdown."""
+        with self._lock:
+            if self._window is None:
+                return {
+                    "ok": False,
+                    "code": "window_unavailable",
+                    "message": "The window is not available.",
+                }
+            window = self._window
+
+            def _apply_close() -> None:
+                if hasattr(window, "destroy"):
+                    window.destroy()
+
+            _dispatch_main_loop(_apply_close)
+            return {"ok": True}
+
+
 class LocalBuildBridge:
     """``js_api`` facade that fails closed outside the local build (#334).
 
@@ -353,6 +549,22 @@ class LocalBuildBridge:
     def reset_relationship_state(self, *args: Any) -> dict[str, Any]:
         """Privacy: reset relationship state, local-build-only; never raises."""
         return self._serve("reset_relationship_state", args)
+
+    def set_presence_mode(self, *args: Any) -> dict[str, Any]:
+        """Window presence mode, local-build-only; never raises."""
+        return self._serve("set_presence_mode", args)
+
+    def set_always_on_top(self, *args: Any) -> dict[str, Any]:
+        """Window always on top, local-build-only; never raises."""
+        return self._serve("set_always_on_top", args)
+
+    def window_state(self, *args: Any) -> dict[str, Any]:
+        """Window state query, local-build-only; never raises."""
+        return self._serve("window_state", args)
+
+    def close_window(self, *args: Any) -> dict[str, Any]:
+        """Window close, local-build-only; never raises."""
+        return self._serve("close_window", args)
 
 
 class NavigationPolicy:
@@ -491,7 +703,9 @@ def run_desktop_shell(
             return None
         return _get_url_safely(window_holder[0].get_current_url)
 
-    js_api = LocalBuildBridge(make_js_api(runtime=runtime), build, _current_url, trust)
+    window_controller = WindowController()
+    bridge_facade = make_js_api(runtime=runtime, window_controller=window_controller)
+    js_api = LocalBuildBridge(bridge_facade, build, _current_url, trust)
 
     window = webview.create_window(
         title=_WINDOW_TITLE,
@@ -499,8 +713,11 @@ def run_desktop_shell(
         js_api=js_api,
         width=_WINDOW_SIZE[0],
         height=_WINDOW_SIZE[1],
+        transparent=True,
+        min_size=(120, 120),
     )
     window_holder.append(window)
+    window_controller.set_window(window)
 
     # Policy layer 1: on every completed load, commit local pages as
     # trusted and revert non-local navigation back to the build. A

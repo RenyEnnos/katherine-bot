@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import sys
 from pathlib import Path
 
 import backend.desktop.api as desktop_api_module
@@ -35,7 +36,7 @@ from backend.desktop.api import (
     DesktopApiError,
     make_js_api,
 )
-from backend.desktop.app import LocalBuildBridge, is_local_build_url
+from backend.desktop.app import LocalBuildBridge, WindowController, is_local_build_url
 from backend.desktop.build_resolver import ResolvedBuild
 
 
@@ -146,6 +147,10 @@ class TestRealBoundarySanitization:
             "delete_memories",
             "reset_emotional_state",
             "reset_relationship_state",
+            "set_presence_mode",
+            "set_always_on_top",
+            "window_state",
+            "close_window",
         )
 
     def test_api_exposes_no_generic_objects(self) -> None:
@@ -228,6 +233,10 @@ class TestCompanionAllowlist:
             "delete_memories",
             "reset_emotional_state",
             "reset_relationship_state",
+            "set_presence_mode",
+            "set_always_on_top",
+            "window_state",
+            "close_window",
         )
 
     def test_facade_exposes_exactly_the_allowlist(self) -> None:
@@ -403,3 +412,254 @@ class TestCompanionSanitization:
         serialized = json.dumps(bridge.load_history(object()))
         assert "object" not in serialized.lower() or "object_at" not in serialized
         assert "Traceback" not in serialized
+
+
+# =========================================================================
+# #342 extension: window lifecycle & floating presence mode surface
+# =========================================================================
+
+
+class _MockNative:
+    def __init__(self, x: int = 100, y: int = 150, w: int = 1280, h: int = 800) -> None:
+        self.decorated = True
+        self.position = (x, y)
+        self.size = (w, h)
+
+    def set_decorated(self, val: bool) -> None:
+        self.decorated = val
+
+    def get_position(self) -> tuple[int, int]:
+        return self.position
+
+    def get_size(self) -> tuple[int, int]:
+        return self.size
+
+
+class _MockWindow:
+    def __init__(self) -> None:
+        self.native = _MockNative()
+        self.on_top = False
+        self.resized: tuple[int, int] | None = None
+        self.moved: tuple[int, int] | None = None
+        self.destroyed = False
+
+    def resize(self, w: int, h: int) -> None:
+        self.resized = (w, h)
+        self.native.size = (w, h)
+
+    def move(self, x: int, y: int) -> None:
+        self.moved = (x, y)
+        self.native.position = (x, y)
+
+    def destroy(self) -> None:
+        self.destroyed = True
+
+
+class _StubWindowController:
+    """Deterministic window controller double for bridge testing."""
+
+    def __init__(self) -> None:
+        self.calls: list[Any] = []
+        self.mode = "companion"
+        self.on_top = False
+
+    def set_presence_mode(self, enabled: bool) -> dict:
+        self.calls.append(("set_presence_mode", enabled))
+        self.mode = "presence" if enabled else "companion"
+        self.on_top = enabled
+        return {
+            "ok": True,
+            "mode": self.mode,
+            "on_top": self.on_top,
+            "width": 200 if enabled else 1280,
+            "height": 200 if enabled else 800,
+        }
+
+    def set_always_on_top(self, enabled: bool) -> dict:
+        self.calls.append(("set_always_on_top", enabled))
+        self.on_top = enabled
+        return {"ok": True, "on_top": enabled}
+
+    def window_state(self) -> dict:
+        self.calls.append("window_state")
+        return {
+            "ok": True,
+            "mode": self.mode,
+            "on_top": self.on_top,
+            "width": 200 if self.mode == "presence" else 1280,
+            "height": 200 if self.mode == "presence" else 800,
+        }
+
+    def close_window(self) -> dict:
+        self.calls.append("close_window")
+        return {"ok": True}
+
+
+class TestWindowControllerDirect:
+    """Direct tests for WindowController native mutations and thread-safe state."""
+
+    def test_window_controller_initial_state(self) -> None:
+        win = _MockWindow()
+        wc = WindowController(window=win)
+        state = wc.window_state()
+        assert state == {
+            "ok": True,
+            "mode": "companion",
+            "on_top": False,
+            "width": 1280,
+            "height": 800,
+        }
+
+    def test_presence_mode_roundtrip(self) -> None:
+        win = _MockWindow()
+        wc = WindowController(window=win)
+
+        # 1. Switch to presence
+        enter_res = wc.set_presence_mode(True)
+        assert enter_res == {
+            "ok": True,
+            "mode": "presence",
+            "on_top": True,
+            "width": 200,
+            "height": 200,
+        }
+        assert win.native.decorated is False
+        assert win.resized == (200, 200)
+        assert win.on_top is True
+        assert wc.window_state()["mode"] == "presence"
+
+        # 2. Switch back to companion (restores saved geometry)
+        exit_res = wc.set_presence_mode(False)
+        assert exit_res == {
+            "ok": True,
+            "mode": "companion",
+            "on_top": False,
+            "width": 1280,
+            "height": 800,
+        }
+        assert win.native.decorated is True
+        assert win.resized == (1280, 800)
+        assert win.moved == (100, 150)
+        assert win.on_top is False
+        assert wc.window_state()["mode"] == "companion"
+
+    def test_set_always_on_top(self) -> None:
+        win = _MockWindow()
+        wc = WindowController(window=win)
+        res = wc.set_always_on_top(True)
+        assert res == {"ok": True, "on_top": True}
+        assert win.on_top is True
+        assert wc.window_state()["on_top"] is True
+
+        res_off = wc.set_always_on_top(False)
+        assert res_off == {"ok": True, "on_top": False}
+        assert win.on_top is False
+
+    def test_close_window(self) -> None:
+        win = _MockWindow()
+        wc = WindowController(window=win)
+        assert wc.close_window() == {"ok": True}
+        assert win.destroyed is True
+
+    def test_controller_without_window_fails_closed(self) -> None:
+        wc = WindowController(window=None)
+        assert wc.set_presence_mode(True)["ok"] is False
+        assert wc.set_presence_mode(True)["code"] == "window_unavailable"
+        assert wc.set_always_on_top(True)["code"] == "window_unavailable"
+        assert wc.close_window()["code"] == "window_unavailable"
+        # window_state returns local snapshot safely
+        assert wc.window_state()["ok"] is True
+
+    def test_glib_idle_add_dispatch_when_available(self, monkeypatch) -> None:
+        idle_calls: list[Any] = []
+
+        class FakeGLib:
+            @staticmethod
+            def idle_add(cb: Any) -> Any:
+                idle_calls.append(cb)
+                return cb()
+
+        import types
+
+        fake_gi_repo = types.ModuleType("gi.repository")
+        fake_gi_repo.GLib = FakeGLib  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "gi.repository", fake_gi_repo)
+
+        win = _MockWindow()
+        wc = WindowController(window=win)
+        wc.set_presence_mode(True)
+        assert len(idle_calls) == 1
+        assert win.native.decorated is False
+
+
+class TestWindowBridgeContract:
+    """Bridge facade behavior and argument validation for window operations."""
+
+    def test_window_operations_through_bridge(self) -> None:
+        wc = _StubWindowController()
+        bridge = make_js_api(window_controller=wc)
+
+        enter = bridge.set_presence_mode(True)
+        assert enter["ok"] is True
+        assert enter["mode"] == "presence"
+        assert ("set_presence_mode", True) in wc.calls
+
+        pin = bridge.set_always_on_top(True)
+        assert pin["ok"] is True
+        assert pin["on_top"] is True
+        assert ("set_always_on_top", True) in wc.calls
+
+        state = bridge.window_state()
+        assert state["ok"] is True
+        assert state["mode"] == "presence"
+
+        close = bridge.close_window()
+        assert close["ok"] is True
+        assert "close_window" in wc.calls
+
+    def test_set_presence_mode_validates_argument(self) -> None:
+        wc = _StubWindowController()
+        bridge = make_js_api(window_controller=wc)
+
+        # Non-boolean inputs must be rejected
+        for bad in ("true", 1, 0, None, [True], {"enabled": True}):
+            res = bridge.set_presence_mode(bad)
+            assert res["ok"] is False
+            assert res["code"] == "invalid_input"
+
+        # Wrong arity
+        assert bridge.set_presence_mode()["ok"] is False
+        assert bridge.set_presence_mode(True, False)["ok"] is False
+
+    def test_set_always_on_top_validates_argument(self) -> None:
+        wc = _StubWindowController()
+        bridge = make_js_api(window_controller=wc)
+
+        for bad in ("true", 1, 0, None):
+            res = bridge.set_always_on_top(bad)
+            assert res["ok"] is False
+            assert res["code"] == "invalid_input"
+
+        assert bridge.set_always_on_top()["ok"] is False
+        assert bridge.set_always_on_top(True, False)["ok"] is False
+
+    def test_nullary_window_methods_reject_arguments(self) -> None:
+        wc = _StubWindowController()
+        bridge = make_js_api(window_controller=wc)
+
+        assert bridge.window_state("unexpected")["ok"] is False
+        assert bridge.window_state("unexpected")["code"] == "invalid_input"
+        assert bridge.close_window("unexpected")["ok"] is False
+        assert bridge.close_window("unexpected")["code"] == "invalid_input"
+
+    def test_missing_window_controller_fails_closed(self) -> None:
+        bridge = make_js_api(window_controller=None)
+        for name in ("set_presence_mode", "set_always_on_top"):
+            res = getattr(bridge, name)(True)
+            assert res["ok"] is False
+            assert res["code"] == "window_unavailable"
+
+        for name in ("window_state", "close_window"):
+            res = getattr(bridge, name)()
+            assert res["ok"] is False
+            assert res["code"] == "window_unavailable"

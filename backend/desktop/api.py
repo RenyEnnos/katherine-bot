@@ -43,15 +43,20 @@ DESKTOP_API_METHODS: tuple[str, ...] = (
     "delete_memories",
     "reset_emotional_state",
     "reset_relationship_state",
+    "set_presence_mode",
+    "set_always_on_top",
+    "window_state",
+    "close_window",
 )
 
 #: Version of the desktop bridge contract. The frontend can feature-check
 #: against this single integer instead of sniffing for methods.
-DESKTOP_API_VERSION = 2
+DESKTOP_API_VERSION = 3
 
 #: Public error codes. Structured, stable, safe to show in the UI.
 _ERROR_INVALID_INPUT = "invalid_input"
 _ERROR_INTERNAL = "internal_error"
+_ERROR_WINDOW_UNAVAILABLE = "window_unavailable"
 
 #: Messages are deliberately generic and free of internal detail (and
 #: never contain the offending input).
@@ -59,6 +64,7 @@ _MSG_UNKNOWN_METHOD = "Unknown method."
 _MSG_INTERNAL = "The desktop bridge failed to complete the request."
 _MSG_UNEXPECTED_RESPONSE = "Unexpected bridge response."
 _MSG_NO_RUNTIME = "The desktop runtime is not available."
+_MSG_NO_WINDOW = "The window controller is not available."
 
 #: History window bounds (validated here before reaching the runtime).
 _HISTORY_LIMIT_MIN = 1
@@ -98,6 +104,10 @@ class DesktopApiError(Exception):
 # ---------------------------------------------------------------------------
 # Input validation (pure, total, never raises)
 # ---------------------------------------------------------------------------
+
+
+def _is_bool(value: Any) -> bool:
+    return isinstance(value, bool)
 
 
 def _is_int(value: Any) -> bool:
@@ -151,10 +161,16 @@ class DesktopApi:
     never imports the runtime module (import purity) and never touches
     anything beyond these methods. ``None`` fails every companion call
     closed with a sanitized ``internal_error`` payload.
+
+    ``window_controller`` coordinates native GTK window lifecycle and
+    mode transitions (#342). Injected as an object implementing the window
+    lifecycle methods. ``None`` fails window operations closed with a
+    sanitized ``window_unavailable`` payload.
     """
 
-    def __init__(self, runtime: Any = None) -> None:
+    def __init__(self, runtime: Any = None, window_controller: Any = None) -> None:
         self._runtime = runtime
+        self._window_controller = window_controller
 
     # -- #334: round-trip probe -------------------------------------------
 
@@ -258,6 +274,58 @@ class DesktopApi:
         """Reset the relationship state to neutral (transactional)."""
         return self._privacy_op("reset_relationship_state", args)
 
+    # -- #342: window lifecycle operations ---------------------------------
+
+    def set_presence_mode(self, *args: Any) -> dict[str, Any]:
+        """Transition between companion and floating presence modes."""
+        if len(args) != 1 or not _is_bool(args[0]):
+            raise DesktopApiError(
+                _ERROR_INVALID_INPUT,
+                "set_presence_mode() takes exactly one boolean argument.",
+            )
+        controller = self._require_window_controller()
+        result = controller.set_presence_mode(args[0])
+        if not isinstance(result, dict):
+            raise DesktopApiError(_ERROR_INTERNAL, _MSG_UNEXPECTED_RESPONSE)
+        return dict(result)
+
+    def set_always_on_top(self, *args: Any) -> dict[str, Any]:
+        """Toggle always-on-top window layering."""
+        if len(args) != 1 or not _is_bool(args[0]):
+            raise DesktopApiError(
+                _ERROR_INVALID_INPUT,
+                "set_always_on_top() takes exactly one boolean argument.",
+            )
+        controller = self._require_window_controller()
+        result = controller.set_always_on_top(args[0])
+        if not isinstance(result, dict):
+            raise DesktopApiError(_ERROR_INTERNAL, _MSG_UNEXPECTED_RESPONSE)
+        return dict(result)
+
+    def window_state(self, *args: Any) -> dict[str, Any]:
+        """Query current window state (mode, on_top, geometry)."""
+        if args:
+            raise DesktopApiError(
+                _ERROR_INVALID_INPUT, "window_state() takes no arguments."
+            )
+        controller = self._require_window_controller()
+        result = controller.window_state()
+        if not isinstance(result, dict):
+            raise DesktopApiError(_ERROR_INTERNAL, _MSG_UNEXPECTED_RESPONSE)
+        return dict(result)
+
+    def close_window(self, *args: Any) -> dict[str, Any]:
+        """Request clean window closure and application shutdown."""
+        if args:
+            raise DesktopApiError(
+                _ERROR_INVALID_INPUT, "close_window() takes no arguments."
+            )
+        controller = self._require_window_controller()
+        result = controller.close_window()
+        if not isinstance(result, dict):
+            raise DesktopApiError(_ERROR_INTERNAL, _MSG_UNEXPECTED_RESPONSE)
+        return dict(result)
+
     # -- internals ----------------------------------------------------------
 
     def _privacy_op(self, name: str, args: tuple[Any, ...]) -> dict[str, Any]:
@@ -283,6 +351,12 @@ class DesktopApi:
             raise DesktopApiError(_ERROR_INTERNAL, _MSG_NO_RUNTIME)
         return runtime
 
+    def _require_window_controller(self) -> Any:
+        controller = self._window_controller
+        if controller is None:
+            raise DesktopApiError(_ERROR_WINDOW_UNAVAILABLE, _MSG_NO_WINDOW)
+        return controller
+
 
 # ---------------------------------------------------------------------------
 # The facade actually handed to pywebview
@@ -290,7 +364,7 @@ class DesktopApi:
 
 
 class DesktopBridge:
-    """The object actually delivered to pywebview's ``js_api`` (#334, #336).
+    """The object actually delivered to pywebview's ``js_api`` (#334, #336, #342).
 
     Hard boundary guarantees:
 
@@ -305,13 +379,19 @@ class DesktopBridge:
       input returns data, never an exception.
     """
 
-    def __init__(self, api: DesktopApi | None = None, *, runtime: Any = None) -> None:
-        # ``runtime`` is a convenience injection used by make_js_api; the
-        # canonical construction path is DesktopApi(runtime=...).
+    def __init__(
+        self,
+        api: DesktopApi | None = None,
+        *,
+        runtime: Any = None,
+        window_controller: Any = None,
+    ) -> None:
+        # ``runtime`` and ``window_controller`` are convenience injections
+        # used by make_js_api; canonical path is DesktopApi(runtime=..., window_controller=...).
         if api is None:
-            api = DesktopApi(runtime=runtime)
-        elif runtime is not None:
-            raise ValueError("pass api or runtime, not both")
+            api = DesktopApi(runtime=runtime, window_controller=window_controller)
+        elif runtime is not None or window_controller is not None:
+            raise ValueError("pass api or runtime/window_controller, not both")
         self._api = api
         self._handlers: dict[str, Any] = {
             "health": self._api.health,
@@ -322,6 +402,10 @@ class DesktopBridge:
             "delete_memories": self._api.delete_memories,
             "reset_emotional_state": self._api.reset_emotional_state,
             "reset_relationship_state": self._api.reset_relationship_state,
+            "set_presence_mode": self._api.set_presence_mode,
+            "set_always_on_top": self._api.set_always_on_top,
+            "window_state": self._api.window_state,
+            "close_window": self._api.close_window,
         }
         # Sanity: the allowlist and the bound surface must match exactly,
         # at construction time (fail fast in dev/test, never in JS).
@@ -362,6 +446,22 @@ class DesktopBridge:
         """Sanitized wrapper; never raises."""
         return self._invoke("reset_relationship_state", args)
 
+    def set_presence_mode(self, *args: Any) -> dict[str, Any]:
+        """Sanitized wrapper; never raises."""
+        return self._invoke("set_presence_mode", args)
+
+    def set_always_on_top(self, *args: Any) -> dict[str, Any]:
+        """Sanitized wrapper; never raises."""
+        return self._invoke("set_always_on_top", args)
+
+    def window_state(self, *args: Any) -> dict[str, Any]:
+        """Sanitized wrapper; never raises."""
+        return self._invoke("window_state", args)
+
+    def close_window(self, *args: Any) -> dict[str, Any]:
+        """Sanitized wrapper; never raises."""
+        return self._invoke("close_window", args)
+
     # -- boundary internals (never exposed: underscore-prefixed) ---------
 
     def _invoke(self, method: str, args: tuple[Any, ...]) -> dict[str, Any]:
@@ -379,13 +479,13 @@ class DesktopBridge:
         return result
 
 
-def make_js_api(runtime: Any = None) -> DesktopBridge:
-    """Build the sanitized bridge object to pass as ``js_api=`` (#334, #336).
+def make_js_api(runtime: Any = None, window_controller: Any = None) -> DesktopBridge:
+    """Build the sanitized bridge object to pass as ``js_api=`` (#334, #336, #342).
 
-    ``runtime`` is the local companion runtime. This is the single
-    construction path used by the shell entrypoint; tests assert that
-    ``run_desktop_shell`` hands exactly this kind of object to pywebview,
-    so the sanitized facade is the *real* boundary (not an auxiliary
-    helper disconnected from the exposed path).
+    ``runtime`` is the local companion runtime.
+    ``window_controller`` coordinates native window mutations.
+    This is the single construction path used by the shell entrypoint;
+    tests assert that ``run_desktop_shell`` hands exactly this kind of
+    object to pywebview, so the sanitized facade is the *real* boundary.
     """
-    return DesktopBridge(DesktopApi(runtime=runtime))
+    return DesktopBridge(DesktopApi(runtime=runtime, window_controller=window_controller))

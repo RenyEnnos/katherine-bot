@@ -1,0 +1,102 @@
+{
+  "provider": "scripted offline fixture",
+  "captures": [
+    {
+      "name": "idle-1280",
+      "viewport": [
+        1280,
+        800
+      ],
+      "face": {
+        "x": 218.703125,
+        "y": 259.203125,
+        "width": 345.59375,
+        "height": 345.59375
+      },
+      "arc": false,
+      "arcDisplay": null,
+      "inputVisible": true,
+      "horizontalOverflow": false,
+      "bridge": "desktop v2",
+      "runningAnimations": 0
+    },
+    {
+      "name": "idle-800",
+      "viewport": [
+        800,
+        800
+      ],
+      "face": {
+        "x": 127.5,
+        "y": 336,
+        "width": 192,
+        "height": 192
+      },
+      "arc": false,
+      "arcDisplay": null,
+      "inputVisible": true,
+      "horizontalOverflow": false,
+      "bridge": "desktop v2",
+      "runningAnimations": 0
+    },
+    {
+      "name": "thinking-1280",
+      "viewport": [
+        1280,
+        800
+      ],
+      "face": {
+        "x": 218.703125,
+        "y": 259.203125,
+        "width": 345.59375,
+        "height": 345.59375
+      },
+      "arc": false,
+      "arcDisplay": null,
+      "inputVisible": true,
+      "horizontalOverflow": false,
+      "bridge": "desktop v2",
+      "runningAnimations": 3
+    },
+    {
+      "name": "thinking-800",
+      "viewport": [
+        800,
+        800
+      ],
+      "face": {
+        "x": 127.5,
+        "y": 336,
+        "width": 192,
+        "height": 192
+      },
+      "arc": false,
+      "arcDisplay": null,
+      "inputVisible": true,
+      "horizontalOverflow": false,
+      "bridge": "desktop v2",
+      "runningAnimations": 3
+    },
+    {
+      "name": "response-800",
+      "viewport": [
+        800,
+        800
+      ],
+      "face": {
+        "x": 127.5,
+        "y": 336,
+        "width": 192,
+        "height": 192
+      },
+      "arc": false,
+      "arcDisplay": null,
+      "inputVisible": true,
+      "horizontalOverflow": false,
+      "bridge": "desktop v2",
+      "runningAnimations": 0
+    }
+  ],
+  "finalText": "Katherine – SoulMate\ndesktop v2\n\n\nOlá, Katherine.\n\nA presença pode permanecer tranquila enquanto você trabalha.\n\n\nKatherine pode cometer erros. Considere verificar informações importantes.\nDetalhes do estado\nPrivacidade local\n",
+  "failures": []
+}

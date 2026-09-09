@@ -96,7 +96,7 @@ describe('CompanionLayout', () => {
     it('keeps loading visible in the conversation rail and passes it to the face', () => {
         render(<CompanionLayout {...makeChatModel({ isLoading: true })} />);
 
-        expect(screen.getByRole('status')).toHaveTextContent('Katherine está digitando...');
+        expect(screen.getByRole('status')).toHaveTextContent('Preparando resposta…');
         expect(faceProps.current).toEqual(expect.objectContaining({ isLoading: true }));
         expect(screen.getByRole('textbox', { name: /sua mensagem/i })).toBeDisabled();
     });
@@ -134,6 +134,12 @@ describe('CompanionLayout', () => {
             expect(within(privacyDetails).getByRole('button', { name: label })).toBeInTheDocument();
         }
         expect(transport.runPrivacyOp).not.toHaveBeenCalled();
+    });
+
+    it('announces preparation rather than claiming typing while a turn is pending', () => {
+        render(<CompanionLayout {...makeChatModel()} isLoading />);
+        expect(screen.getByRole('status')).toHaveTextContent('Preparando resposta');
+        expect(screen.queryByText(/está digitando/)).toBeNull();
     });
 
     it('renders an auxiliary slot only when a future surface explicitly supplies it', () => {

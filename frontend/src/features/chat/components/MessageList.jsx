@@ -2,7 +2,7 @@ import React from 'react';
 import { Loader2 } from 'lucide-react';
 import MessageBubble from './MessageBubble';
 
-const MessageList = ({ messages, isLoading, messagesEndRef }) => {
+const MessageList = ({ messages, isLoading, messagesEndRef, loadingLabel = 'Katherine está digitando...' }) => {
     return (
         <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6 scroll-smooth">
             {messages.length === 0 && (
@@ -32,7 +32,7 @@ const MessageList = ({ messages, isLoading, messagesEndRef }) => {
                     aria-live="polite"
                 >
                     <Loader2 size={16} className="animate-spin" />
-                    Katherine está digitando...
+                    {loadingLabel}
                 </div>
             )}
             <div ref={messagesEndRef} />

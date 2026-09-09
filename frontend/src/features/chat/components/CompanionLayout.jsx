@@ -64,6 +64,7 @@ export default function CompanionLayout({
                             messages={messages}
                             isLoading={isLoading}
                             messagesEndRef={messagesEndRef}
+                            loadingLabel="Preparando resposta…"
                         />
                     </div>
 

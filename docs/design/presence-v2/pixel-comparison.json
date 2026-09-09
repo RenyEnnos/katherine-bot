@@ -1,0 +1,42 @@
+[
+  {
+    "scene": "idle-1280",
+    "provider": "unconfigured real runtime",
+    "changedPixelsBoundingBox": null,
+    "idleIdentical": true
+  },
+  {
+    "scene": "thinking-1280",
+    "changedPixelsBoundingBox": [
+      438,
+      171,
+      1246,
+      681
+    ],
+    "idleIdentical": null,
+    "eyesInteriorCrop": [
+      280,
+      340,
+      500,
+      490
+    ],
+    "eyesInteriorIdentical": false
+  },
+  {
+    "scene": "thinking-800",
+    "changedPixelsBoundingBox": [
+      249,
+      171,
+      766,
+      664
+    ],
+    "idleIdentical": null,
+    "eyesInteriorCrop": [
+      158,
+      382,
+      285,
+      477
+    ],
+    "eyesInteriorIdentical": true
+  }
+]

@@ -37,6 +37,8 @@
 
 .companion-layout .katherine-face--companion {
     width: clamp(12rem, 27vw, 24rem);
+    max-width: 100%;
+    max-height: 100%;
 }
 
 .companion-layout__conversation {
@@ -142,19 +144,21 @@
 @media (max-width: 68rem) {
     .companion-layout__body {
         /* Keep the conversation rail below half the viewport until stacking. */
-        grid-template-columns: minmax(0, 1.25fr) minmax(18rem, 22rem);
+        grid-template-columns: minmax(0, 1.25fr) minmax(min(18rem, 38%), min(22rem, 44%));
     }
 
     .companion-layout__body--with-auxiliary {
-        grid-template-columns: minmax(0, 1fr) minmax(19rem, 26rem) minmax(15rem, 18rem);
+        grid-template-columns: minmax(0, 1fr) minmax(min(19rem, 38%), min(26rem, 44%)) minmax(15rem, 18rem);
     }
 
     .companion-layout__presence {
-        padding: 2rem;
+        padding: clamp(1.25rem, 3vw, 2rem);
     }
 
     .companion-layout .katherine-face--companion {
         width: clamp(11rem, 24vw, 18rem);
+        max-width: 100%;
+        max-height: 100%;
     }
 }
 

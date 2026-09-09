@@ -18,6 +18,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--output', required=True, type=Path)
 parser.add_argument('--scripted', action='store_true')
 parser.add_argument('--verify-v2', action='store_true')
+parser.add_argument('--verify-scaling', action='store_true')
 parser.add_argument('--reduced-motion', action='store_true')
 args = parser.parse_args()
 args.output.mkdir(parents=True, exist_ok=True)
@@ -144,6 +145,95 @@ def optical_probes(window):
     results['settledFaceMutationsOverOneSecond'] = mutations
 
 
+def verify_scaling_matrix(window):
+    from gi.repository import GLib
+    from webview.platforms.gtk import BrowserView
+    bv = BrowserView.instances.get(window.uid)
+    scenarios = [
+        ('scale-1440x900-100', 1440, 900, 1.0),
+        ('scale-1024x768-100', 1024, 768, 1.0),
+        ('scale-800x600-100', 800, 600, 1.0),
+        ('scale-800x600-125', 800, 600, 1.25),
+        ('scale-800x600-150', 800, 600, 1.50),
+    ]
+    results['scalingMatrix'] = []
+    for name, w, h, zoom in scenarios:
+        window.resize(w, h)
+        wait_for(window, f'innerWidth === {w}')
+        time.sleep(0.4)
+        if bv:
+            def apply():
+                settings = bv.webview.get_settings()
+                settings.props.zoom_text_only = True
+                bv.webview.set_zoom_level(zoom)
+                return False
+            GLib.idle_add(apply)
+            time.sleep(0.8)
+
+        capture(window, f'{name}-closed')
+
+        geo = window.evaluate_js("""(() => {
+            const face = document.querySelector('[data-testid="katherine-face"]');
+            const fRect = face ? face.getBoundingClientRect() : null;
+            const presence = document.querySelector('[data-testid="companion-presence"]');
+            const pRect = presence ? presence.getBoundingClientRect() : null;
+            const conv = document.querySelector('.companion-layout__conversation');
+            const cRect = conv ? conv.getBoundingClientRect() : null;
+            const input = document.querySelector('textarea');
+            return {
+                presenceWidth: pRect ? pRect.width : 0,
+                convWidth: cRect ? cRect.width : 0,
+                presenceWider: pRect && cRect ? (pRect.width > cRect.width) : false,
+                faceClippedRight: (fRect && pRect) ? (fRect.right > pRect.right) : false,
+                faceClippedLeft: (fRect && pRect) ? (fRect.left < pRect.left) : false,
+                faceWidth: fRect ? fRect.width : 0,
+                inputVisible: input ? (input.getBoundingClientRect().bottom <= innerHeight) : false,
+                horizontalOverflow: document.documentElement.scrollWidth > innerWidth,
+            };
+        })()""")
+        assert geo['presenceWider'], f'{name}: presence track must be wider than conversation rail'
+        assert not geo['faceClippedRight'], f'{name}: face clipped on right'
+        assert not geo['faceClippedLeft'], f'{name}: face clipped on left'
+        assert geo['inputVisible'], f'{name}: composer not visible'
+        assert not geo['horizontalOverflow'], f'{name}: horizontal overflow'
+
+        window.evaluate_js("""(() => {
+            const d1 = document.querySelector('[data-testid=companion-emotion-details]');
+            if (d1) d1.open = true;
+            const d2 = document.querySelector('[data-testid=companion-privacy-details]');
+            if (d2) d2.open = true;
+        })()""")
+        time.sleep(0.6)
+        capture(window, f'{name}-open')
+        open_geo = window.evaluate_js("""(() => {
+            const input = document.querySelector('textarea');
+            const utils = document.querySelector('[data-testid="companion-utilities"]');
+            return {
+                inputVisible: input ? (input.getBoundingClientRect().bottom <= innerHeight) : false,
+                horizontalOverflow: document.documentElement.scrollWidth > innerWidth,
+                utilsCanScroll: utils ? (utils.scrollHeight >= utils.clientHeight) : false,
+            };
+        })()""")
+        assert open_geo['inputVisible'], f'{name} open: composer not visible'
+        assert not open_geo['horizontalOverflow'], f'{name} open: horizontal overflow'
+
+        window.evaluate_js("""(() => {
+            const d1 = document.querySelector('[data-testid=companion-emotion-details]');
+            if (d1) d1.open = false;
+            const d2 = document.querySelector('[data-testid=companion-privacy-details]');
+            if (d2) d2.open = false;
+        })()""")
+        time.sleep(0.4)
+        results['scalingMatrix'].append({'scenario': name, 'closed': geo, 'open': open_geo})
+
+    if bv:
+        def restore():
+            bv.webview.set_zoom_level(1.0)
+            return False
+        GLib.idle_add(restore)
+        time.sleep(0.3)
+
+
 def inspect():
     window = None
     try:
@@ -185,6 +275,8 @@ def inspect():
             wait_for(window, 'document.body.innerText.includes("A presença pode permanecer tranquila")')
             time.sleep(1)
             capture(window, 'response-800')
+            if args.verify_scaling:
+                verify_scaling_matrix(window)
         else:
             wait_for(window, 'document.body.innerText.includes("O provedor remoto não está configurado")')
             wait_for(window, '!document.querySelector("textarea").disabled')

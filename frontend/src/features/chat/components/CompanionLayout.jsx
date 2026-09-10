@@ -44,7 +44,7 @@ export default function CompanionLayout({
                             onClick={onEnterPresence}
                             className="companion-layout__presence-toggle"
                             data-testid="companion-enter-presence-btn"
-                            title="Modo presença flutuante (Minimizar)"
+                            title="Modo presença flutuante"
                             aria-label="Modo presença flutuante"
                         >
                             <Minimize2 size={20} aria-hidden="true" />

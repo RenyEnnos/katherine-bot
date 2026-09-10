@@ -19,7 +19,7 @@
  * - In presence mode, CompanionLayout and all conversation DOM elements are
  *   completely unmounted.
  */
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import ChatWindow from './features/chat/components/ChatWindow';
 import CompanionLayout from './features/chat/components/CompanionLayout.jsx';
 import KatherinePresence from './features/katherine-face/KatherinePresence.jsx';
@@ -28,11 +28,14 @@ import {
     setAlwaysOnTop,
     getWindowState,
     closeDesktopWindow,
+    minimizeDesktopWindow,
 } from './lib/desktopBridge';
 
 export default function AppDesktop() {
     const [mode, setMode] = useState('companion');
     const [isAlwaysOnTop, setIsAlwaysOnTop] = useState(false);
+    const isTransitioningRef = useRef(false);
+    const isPinningRef = useRef(false);
 
     // Bounded one-shot sync on shell startup (#342) - no continuous polling.
     useEffect(() => {
@@ -53,32 +56,54 @@ export default function AppDesktop() {
     }, []);
 
     const handleEnterPresence = useCallback(async () => {
-        const res = await setPresenceMode(true);
-        if (res?.ok) {
-            setMode('presence');
-            if (typeof res.on_top === 'boolean') {
-                setIsAlwaysOnTop(res.on_top);
+        if (isTransitioningRef.current) return;
+        isTransitioningRef.current = true;
+        try {
+            const res = await setPresenceMode(true);
+            if (res?.ok) {
+                setMode('presence');
+                if (typeof res.on_top === 'boolean') {
+                    setIsAlwaysOnTop(res.on_top);
+                }
             }
+        } finally {
+            isTransitioningRef.current = false;
         }
     }, []);
 
     const handleReturnToCompanion = useCallback(async () => {
-        const res = await setPresenceMode(false);
-        if (res?.ok) {
-            setMode('companion');
-            if (typeof res.on_top === 'boolean') {
-                setIsAlwaysOnTop(res.on_top);
+        if (isTransitioningRef.current) return;
+        isTransitioningRef.current = true;
+        try {
+            const res = await setPresenceMode(false);
+            if (res?.ok) {
+                setMode('companion');
+                if (typeof res.on_top === 'boolean') {
+                    setIsAlwaysOnTop(res.on_top);
+                }
             }
+        } finally {
+            isTransitioningRef.current = false;
         }
     }, []);
 
     const handleToggleAlwaysOnTop = useCallback(async () => {
-        const nextState = !isAlwaysOnTop;
-        const res = await setAlwaysOnTop(nextState);
-        if (res?.ok && typeof res.on_top === 'boolean') {
-            setIsAlwaysOnTop(res.on_top);
+        if (isPinningRef.current) return;
+        isPinningRef.current = true;
+        try {
+            const nextState = !isAlwaysOnTop;
+            const res = await setAlwaysOnTop(nextState);
+            if (res?.ok && typeof res.on_top === 'boolean') {
+                setIsAlwaysOnTop(res.on_top);
+            }
+        } finally {
+            isPinningRef.current = false;
         }
     }, [isAlwaysOnTop]);
+
+    const handleMinimize = useCallback(async () => {
+        await minimizeDesktopWindow();
+    }, []);
 
     const handleClose = useCallback(async () => {
         await closeDesktopWindow();
@@ -94,6 +119,7 @@ export default function AppDesktop() {
                         onReturnToCompanion={handleReturnToCompanion}
                         onClose={handleClose}
                         onToggleAlwaysOnTop={handleToggleAlwaysOnTop}
+                        onMinimize={handleMinimize}
                         isAlwaysOnTop={isAlwaysOnTop}
                     />
                 );
@@ -111,6 +137,7 @@ export default function AppDesktop() {
             handleEnterPresence,
             handleReturnToCompanion,
             handleToggleAlwaysOnTop,
+            handleMinimize,
             handleClose,
         ],
     );

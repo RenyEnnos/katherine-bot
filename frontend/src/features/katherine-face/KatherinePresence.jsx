@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowUpRight, Pin, PinOff, X } from 'lucide-react';
+import { ArrowUpRight, Minus, Pin, PinOff, X } from 'lucide-react';
 import KatherineFace from './KatherineFace.jsx';
 import './KatherinePresence.css';
 
@@ -21,6 +21,7 @@ export default function KatherinePresence({
     onReturnToCompanion,
     onClose,
     onToggleAlwaysOnTop,
+    onMinimize,
     isAlwaysOnTop = false,
 }) {
     const handleControlMouseDown = (e) => {
@@ -84,6 +85,18 @@ export default function KatherinePresence({
                     ) : (
                         <Pin size={16} aria-hidden="true" />
                     )}
+                </button>
+
+                <button
+                    type="button"
+                    className="katherine-presence__btn"
+                    onClick={onMinimize}
+                    onMouseDown={handleControlMouseDown}
+                    title="Minimizar"
+                    aria-label="Minimizar"
+                    data-testid="presence-minimize-btn"
+                >
+                    <Minus size={16} aria-hidden="true" />
                 </button>
 
                 <button

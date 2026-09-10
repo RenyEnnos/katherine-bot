@@ -151,6 +151,7 @@ class TestRealBoundarySanitization:
             "set_always_on_top",
             "window_state",
             "close_window",
+            "minimize_window",
         )
 
     def test_api_exposes_no_generic_objects(self) -> None:
@@ -237,6 +238,7 @@ class TestCompanionAllowlist:
             "set_always_on_top",
             "window_state",
             "close_window",
+            "minimize_window",
         )
 
     def test_facade_exposes_exactly_the_allowlist(self) -> None:
@@ -442,6 +444,7 @@ class _MockWindow:
         self.resized: tuple[int, int] | None = None
         self.moved: tuple[int, int] | None = None
         self.destroyed = False
+        self.minimized = False
 
     def resize(self, w: int, h: int) -> None:
         self.resized = (w, h)
@@ -453,6 +456,9 @@ class _MockWindow:
 
     def destroy(self) -> None:
         self.destroyed = True
+
+    def minimize(self) -> None:
+        self.minimized = True
 
 
 class _StubWindowController:
@@ -466,7 +472,6 @@ class _StubWindowController:
     def set_presence_mode(self, enabled: bool) -> dict:
         self.calls.append(("set_presence_mode", enabled))
         self.mode = "presence" if enabled else "companion"
-        self.on_top = enabled
         return {
             "ok": True,
             "mode": self.mode,
@@ -479,6 +484,10 @@ class _StubWindowController:
         self.calls.append(("set_always_on_top", enabled))
         self.on_top = enabled
         return {"ok": True, "on_top": enabled}
+
+    def minimize_window(self) -> dict:
+        self.calls.append("minimize_window")
+        return {"ok": True}
 
     def window_state(self) -> dict:
         self.calls.append("window_state")
@@ -519,13 +528,13 @@ class TestWindowControllerDirect:
         assert enter_res == {
             "ok": True,
             "mode": "presence",
-            "on_top": True,
+            "on_top": False,
             "width": 200,
             "height": 200,
         }
         assert win.native.decorated is False
         assert win.resized == (200, 200)
-        assert win.on_top is True
+        assert win.on_top is False
         assert wc.window_state()["mode"] == "presence"
 
         # 2. Switch back to companion (restores saved geometry)
@@ -543,6 +552,51 @@ class TestWindowControllerDirect:
         assert win.on_top is False
         assert wc.window_state()["mode"] == "companion"
 
+    def test_always_on_top_lifecycle_persistence(self) -> None:
+        """Always-on-top persists independently across mode transitions (#342)."""
+        win = _MockWindow()
+        wc = WindowController(window=win)
+
+        # 1. Startup: on_top is False
+        assert wc.window_state()["on_top"] is False
+        assert win.on_top is False
+
+        # 2. Enter presence: on_top remains False
+        r_presence = wc.set_presence_mode(True)
+        assert r_presence["ok"] is True
+        assert r_presence["on_top"] is False
+        assert win.on_top is False
+
+        # 3. User pins: on_top becomes True
+        r_pin = wc.set_always_on_top(True)
+        assert r_pin["ok"] is True
+        assert r_pin["on_top"] is True
+        assert win.on_top is True
+
+        # 4. Return companion: on_top remains True
+        r_comp = wc.set_presence_mode(False)
+        assert r_comp["ok"] is True
+        assert r_comp["on_top"] is True
+        assert win.on_top is True
+
+        # 5. Enter presence again: on_top remains True
+        r_pres2 = wc.set_presence_mode(True)
+        assert r_pres2["ok"] is True
+        assert r_pres2["on_top"] is True
+        assert win.on_top is True
+
+        # 6. User unpins: on_top becomes False
+        r_unpin = wc.set_always_on_top(False)
+        assert r_unpin["ok"] is True
+        assert r_unpin["on_top"] is False
+        assert win.on_top is False
+
+        # 7. Return companion again: on_top remains False
+        r_comp2 = wc.set_presence_mode(False)
+        assert r_comp2["ok"] is True
+        assert r_comp2["on_top"] is False
+        assert win.on_top is False
+
     def test_set_always_on_top(self) -> None:
         win = _MockWindow()
         wc = WindowController(window=win)
@@ -555,6 +609,13 @@ class TestWindowControllerDirect:
         assert res_off == {"ok": True, "on_top": False}
         assert win.on_top is False
 
+    def test_minimize_window(self) -> None:
+        win = _MockWindow()
+        wc = WindowController(window=win)
+        res = wc.minimize_window()
+        assert res == {"ok": True}
+        assert win.minimized is True
+
     def test_close_window(self) -> None:
         win = _MockWindow()
         wc = WindowController(window=win)
@@ -566,6 +627,7 @@ class TestWindowControllerDirect:
         assert wc.set_presence_mode(True)["ok"] is False
         assert wc.set_presence_mode(True)["code"] == "window_unavailable"
         assert wc.set_always_on_top(True)["code"] == "window_unavailable"
+        assert wc.minimize_window()["code"] == "window_unavailable"
         assert wc.close_window()["code"] == "window_unavailable"
         # window_state returns local snapshot safely
         assert wc.window_state()["ok"] is True
@@ -573,7 +635,16 @@ class TestWindowControllerDirect:
     def test_glib_idle_add_dispatch_when_available(self, monkeypatch) -> None:
         idle_calls: list[Any] = []
 
+        class FakeMainContext:
+            def is_owner(self) -> bool:
+                return False
+
         class FakeGLib:
+            class MainContext:
+                @staticmethod
+                def default():
+                    return FakeMainContext()
+
             @staticmethod
             def idle_add(cb: Any) -> Any:
                 idle_calls.append(cb)
@@ -584,6 +655,10 @@ class TestWindowControllerDirect:
         fake_gi_repo = types.ModuleType("gi.repository")
         fake_gi_repo.GLib = FakeGLib  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "gi.repository", fake_gi_repo)
+
+        fake_wgtk = types.ModuleType("webview.platforms.gtk")
+        fake_wgtk._app = object()  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "webview.platforms.gtk", fake_wgtk)
 
         win = _MockWindow()
         wc = WindowController(window=win)
@@ -612,6 +687,10 @@ class TestWindowBridgeContract:
         state = bridge.window_state()
         assert state["ok"] is True
         assert state["mode"] == "presence"
+
+        min_res = bridge.minimize_window()
+        assert min_res["ok"] is True
+        assert "minimize_window" in wc.calls
 
         close = bridge.close_window()
         assert close["ok"] is True
@@ -649,6 +728,8 @@ class TestWindowBridgeContract:
 
         assert bridge.window_state("unexpected")["ok"] is False
         assert bridge.window_state("unexpected")["code"] == "invalid_input"
+        assert bridge.minimize_window("unexpected")["ok"] is False
+        assert bridge.minimize_window("unexpected")["code"] == "invalid_input"
         assert bridge.close_window("unexpected")["ok"] is False
         assert bridge.close_window("unexpected")["code"] == "invalid_input"
 
@@ -659,7 +740,7 @@ class TestWindowBridgeContract:
             assert res["ok"] is False
             assert res["code"] == "window_unavailable"
 
-        for name in ("window_state", "close_window"):
+        for name in ("window_state", "close_window", "minimize_window"):
             res = getattr(bridge, name)()
             assert res["ok"] is False
             assert res["code"] == "window_unavailable"

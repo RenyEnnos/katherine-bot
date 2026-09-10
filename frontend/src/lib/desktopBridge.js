@@ -341,12 +341,18 @@ export async function runPrivacyOpViaBridge(op, targetWindow) {
 // #342: presence mode & window control callers
 // =========================================================================
 
+const BRIDGE_UNAVAILABLE = Object.freeze({
+    ok: false,
+    code: 'bridge_unavailable',
+    message: 'Desktop window control is unavailable.',
+});
+
 /**
  * Toggle between desktop companion mode and floating presence mode (#342).
  *
  * @param {boolean} enabled - true to enter presence mode, false to return to companion
  * @param {object} [targetWindow] - optional window override for testing
- * @returns {Promise<{ok: boolean, mode: 'presence' | 'companion', on_top?: boolean, width?: number, height?: number, fallback?: boolean} | {ok: false, code: string, message: string}>}
+ * @returns {Promise<{ok: true, mode: 'presence' | 'companion', on_top: boolean, width?: number, height?: number} | {ok: false, code: string, message: string}>}
  */
 export async function setPresenceMode(enabled, targetWindow) {
     if (typeof enabled !== 'boolean') {
@@ -354,12 +360,7 @@ export async function setPresenceMode(enabled, targetWindow) {
     }
     const api = await resolveBridge(targetWindow);
     if (!api || typeof api.set_presence_mode !== 'function') {
-        return {
-            ok: true,
-            mode: enabled ? 'presence' : 'companion',
-            on_top: false,
-            fallback: true,
-        };
+        return { ...BRIDGE_UNAVAILABLE };
     }
     try {
         const payload = await api.set_presence_mode(enabled);
@@ -380,7 +381,7 @@ export async function setPresenceMode(enabled, targetWindow) {
  *
  * @param {boolean} enabled - true to keep window on top, false otherwise
  * @param {object} [targetWindow] - optional window override for testing
- * @returns {Promise<{ok: boolean, on_top: boolean, fallback?: boolean} | {ok: false, code: string, message: string}>}
+ * @returns {Promise<{ok: true, on_top: boolean} | {ok: false, code: string, message: string}>}
  */
 export async function setAlwaysOnTop(enabled, targetWindow) {
     if (typeof enabled !== 'boolean') {
@@ -388,7 +389,7 @@ export async function setAlwaysOnTop(enabled, targetWindow) {
     }
     const api = await resolveBridge(targetWindow);
     if (!api || typeof api.set_always_on_top !== 'function') {
-        return { ok: true, on_top: enabled, fallback: true };
+        return { ...BRIDGE_UNAVAILABLE };
     }
     try {
         const payload = await api.set_always_on_top(enabled);
@@ -408,12 +409,12 @@ export async function setAlwaysOnTop(enabled, targetWindow) {
  * Read current window state (mode, on_top, geometry) from the desktop bridge (#342).
  *
  * @param {object} [targetWindow] - optional window override for testing
- * @returns {Promise<{ok: boolean, mode: 'presence' | 'companion', on_top: boolean, width?: number, height?: number, fallback?: boolean} | {ok: false, code: string, message: string}>}
+ * @returns {Promise<{ok: true, mode: 'presence' | 'companion', on_top: boolean, width?: number, height?: number} | {ok: false, code: string, message: string}>}
  */
 export async function getWindowState(targetWindow) {
     const api = await resolveBridge(targetWindow);
     if (!api || typeof api.window_state !== 'function') {
-        return { ok: true, mode: 'companion', on_top: false, fallback: true };
+        return { ...BRIDGE_UNAVAILABLE };
     }
     try {
         const payload = await api.window_state();
@@ -433,24 +434,19 @@ export async function getWindowState(targetWindow) {
  * Request clean closure of the desktop window (#342).
  *
  * @param {object} [targetWindow] - optional window override for testing
- * @returns {Promise<{ok: boolean, fallback?: boolean} | {ok: false, code: string, message: string}>}
+ * @returns {Promise<{ok: true} | {ok: false, code: string, message: string}>}
  */
 export async function closeDesktopWindow(targetWindow) {
     const api = await resolveBridge(targetWindow);
     if (!api || typeof api.close_window !== 'function') {
-        const scope = targetWindow ?? (typeof window !== 'undefined' ? window : undefined);
-        if (scope && typeof scope.close === 'function') {
-            try {
-                scope.close();
-            } catch {
-                // Ignore if blocked by browser security
-            }
-        }
-        return { ok: true, fallback: true };
+        return { ...BRIDGE_UNAVAILABLE };
     }
     try {
         const payload = await api.close_window();
         if (isPlainObject(payload) && payload.ok === true) {
+            return payload;
+        }
+        if (isPlainObject(payload) && payload.ok === false) {
             return payload;
         }
         return { ok: false, code: 'unknown', message: 'Invalid payload from desktop bridge' };
@@ -458,3 +454,30 @@ export async function closeDesktopWindow(targetWindow) {
         return { ok: false, code: 'bridge_error', message: 'Failed to communicate with desktop bridge' };
     }
 }
+
+/**
+ * Request minimization of the desktop window (#342).
+ *
+ * @param {object} [targetWindow] - optional window override for testing
+ * @returns {Promise<{ok: true} | {ok: false, code: string, message: string}>}
+ */
+export async function minimizeDesktopWindow(targetWindow) {
+    const api = await resolveBridge(targetWindow);
+    if (!api || typeof api.minimize_window !== 'function') {
+        return { ...BRIDGE_UNAVAILABLE };
+    }
+    try {
+        const payload = await api.minimize_window();
+        if (isPlainObject(payload) && payload.ok === true) {
+            return payload;
+        }
+        if (isPlainObject(payload) && payload.ok === false) {
+            return payload;
+        }
+        return { ok: false, code: 'unknown', message: 'Invalid payload from desktop bridge' };
+    } catch {
+        return { ok: false, code: 'bridge_error', message: 'Failed to communicate with desktop bridge' };
+    }
+}
+
+export const minimizeWindow = minimizeDesktopWindow;

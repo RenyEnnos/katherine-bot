@@ -47,6 +47,7 @@ DESKTOP_API_METHODS: tuple[str, ...] = (
     "set_always_on_top",
     "window_state",
     "close_window",
+    "minimize_window",
 )
 
 #: Version of the desktop bridge contract. The frontend can feature-check
@@ -326,6 +327,18 @@ class DesktopApi:
             raise DesktopApiError(_ERROR_INTERNAL, _MSG_UNEXPECTED_RESPONSE)
         return dict(result)
 
+    def minimize_window(self, *args: Any) -> dict[str, Any]:
+        """Minimize the desktop window to the taskbar/dock (#342)."""
+        if args:
+            raise DesktopApiError(
+                _ERROR_INVALID_INPUT, "minimize_window() takes no arguments."
+            )
+        controller = self._require_window_controller()
+        result = controller.minimize_window()
+        if not isinstance(result, dict):
+            raise DesktopApiError(_ERROR_INTERNAL, _MSG_UNEXPECTED_RESPONSE)
+        return dict(result)
+
     # -- internals ----------------------------------------------------------
 
     def _privacy_op(self, name: str, args: tuple[Any, ...]) -> dict[str, Any]:
@@ -406,6 +419,7 @@ class DesktopBridge:
             "set_always_on_top": self._api.set_always_on_top,
             "window_state": self._api.window_state,
             "close_window": self._api.close_window,
+            "minimize_window": self._api.minimize_window,
         }
         # Sanity: the allowlist and the bound surface must match exactly,
         # at construction time (fail fast in dev/test, never in JS).
@@ -461,6 +475,10 @@ class DesktopBridge:
     def close_window(self, *args: Any) -> dict[str, Any]:
         """Sanitized wrapper; never raises."""
         return self._invoke("close_window", args)
+
+    def minimize_window(self, *args: Any) -> dict[str, Any]:
+        """Sanitized wrapper for DesktopApi.minimize_window; never raises."""
+        return self._invoke("minimize_window", args)
 
     # -- boundary internals (never exposed: underscore-prefixed) ---------
 

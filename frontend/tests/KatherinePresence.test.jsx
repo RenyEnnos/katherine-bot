@@ -44,6 +44,7 @@ describe('KatherinePresence Component', () => {
                 isLoading={false}
                 onReturnToCompanion={vi.fn()}
                 onClose={vi.fn()}
+                onMinimize={vi.fn()}
                 onToggleAlwaysOnTop={vi.fn()}
                 isAlwaysOnTop={false}
             />,
@@ -75,6 +76,7 @@ describe('KatherinePresence Component', () => {
                 isLoading={false}
                 onReturnToCompanion={vi.fn()}
                 onClose={vi.fn()}
+                onMinimize={vi.fn()}
                 onToggleAlwaysOnTop={vi.fn()}
                 isAlwaysOnTop={false}
             />,
@@ -86,6 +88,10 @@ describe('KatherinePresence Component', () => {
 
         const returnBtn = screen.getByTestId('presence-return-btn');
         expect(returnBtn).toHaveAttribute('aria-label', 'Voltar ao companion');
+
+        const minimizeBtn = screen.getByTestId('presence-minimize-btn');
+        expect(minimizeBtn).toHaveAttribute('aria-label', 'Minimizar');
+        expect(minimizeBtn).toHaveAttribute('title', 'Minimizar');
 
         const pinBtn = screen.getByTestId('presence-pin-btn');
         expect(pinBtn).toHaveAttribute('aria-label', 'Manter no topo');
@@ -102,6 +108,7 @@ describe('KatherinePresence Component', () => {
                 isLoading={false}
                 onReturnToCompanion={vi.fn()}
                 onClose={vi.fn()}
+                onMinimize={vi.fn()}
                 onToggleAlwaysOnTop={vi.fn()}
                 isAlwaysOnTop={false}
             />,
@@ -118,6 +125,7 @@ describe('KatherinePresence Component', () => {
                 isLoading={false}
                 onReturnToCompanion={vi.fn()}
                 onClose={vi.fn()}
+                onMinimize={vi.fn()}
                 onToggleAlwaysOnTop={vi.fn()}
                 isAlwaysOnTop={true}
             />,
@@ -130,6 +138,7 @@ describe('KatherinePresence Component', () => {
 
     it('triggers the corresponding action callbacks on control click', () => {
         const onReturn = vi.fn();
+        const onMinimize = vi.fn();
         const onTogglePin = vi.fn();
         const onClose = vi.fn();
 
@@ -139,6 +148,7 @@ describe('KatherinePresence Component', () => {
                 isLoading={false}
                 onReturnToCompanion={onReturn}
                 onClose={onClose}
+                onMinimize={onMinimize}
                 onToggleAlwaysOnTop={onTogglePin}
                 isAlwaysOnTop={false}
             />,
@@ -146,6 +156,9 @@ describe('KatherinePresence Component', () => {
 
         fireEvent.click(screen.getByTestId('presence-return-btn'));
         expect(onReturn).toHaveBeenCalledTimes(1);
+
+        fireEvent.click(screen.getByTestId('presence-minimize-btn'));
+        expect(onMinimize).toHaveBeenCalledTimes(1);
 
         fireEvent.click(screen.getByTestId('presence-pin-btn'));
         expect(onTogglePin).toHaveBeenCalledTimes(1);
@@ -161,12 +174,18 @@ describe('KatherinePresence Component', () => {
                 isLoading={false}
                 onReturnToCompanion={vi.fn()}
                 onClose={vi.fn()}
+                onMinimize={vi.fn()}
                 onToggleAlwaysOnTop={vi.fn()}
                 isAlwaysOnTop={false}
             />,
         );
 
-        for (const testId of ['presence-return-btn', 'presence-pin-btn', 'presence-close-btn']) {
+        for (const testId of [
+            'presence-return-btn',
+            'presence-minimize-btn',
+            'presence-pin-btn',
+            'presence-close-btn',
+        ]) {
             const btn = screen.getByTestId(testId);
             const mousedownEvent = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
             const stopPropagationSpy = vi.spyOn(mousedownEvent, 'stopPropagation');
@@ -186,6 +205,7 @@ describe('KatherinePresence Component', () => {
                 isLoading={false}
                 onReturnToCompanion={vi.fn()}
                 onClose={vi.fn()}
+                onMinimize={vi.fn()}
                 onToggleAlwaysOnTop={vi.fn()}
                 isAlwaysOnTop={false}
             />,
@@ -206,6 +226,7 @@ describe('KatherinePresence Component', () => {
                 isLoading={false}
                 onReturnToCompanion={vi.fn()}
                 onClose={vi.fn()}
+                onMinimize={vi.fn()}
                 onToggleAlwaysOnTop={vi.fn()}
                 isAlwaysOnTop={false}
             />,
@@ -219,6 +240,7 @@ describe('KatherinePresence Component', () => {
                 isLoading={true}
                 onReturnToCompanion={vi.fn()}
                 onClose={vi.fn()}
+                onMinimize={vi.fn()}
                 onToggleAlwaysOnTop={vi.fn()}
                 isAlwaysOnTop={false}
             />,

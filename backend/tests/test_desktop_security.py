@@ -74,6 +74,7 @@ class TestNoBridgeForRemoteContent:
             "set_always_on_top",
             "window_state",
             "close_window",
+            "minimize_window",
         )
         bridge = make_js_api()
         public = sorted(name for name in dir(bridge) if not name.startswith("_"))
@@ -83,6 +84,7 @@ class TestNoBridgeForRemoteContent:
             "delete_memories",
             "health",
             "load_history",
+            "minimize_window",
             "reset_emotional_state",
             "reset_relationship_state",
             "runtime_state",

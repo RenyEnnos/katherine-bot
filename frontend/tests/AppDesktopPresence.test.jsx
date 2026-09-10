@@ -41,6 +41,7 @@ import {
     setAlwaysOnTop,
     getWindowState,
     closeDesktopWindow,
+    minimizeDesktopWindow,
 } from '../src/lib/desktopBridge.js';
 
 if (typeof HTMLElement.prototype.scrollIntoView !== 'function') {
@@ -70,6 +71,9 @@ function setupBridge() {
             height: 800,
         })),
         close_window: vi.fn(async () => ({
+            ok: true,
+        })),
+        minimize_window: vi.fn(async () => ({
             ok: true,
         })),
         health: vi.fn(async () => ({
@@ -161,6 +165,51 @@ describe('AppDesktop Presence Mode Integration', () => {
         expect(pinBtn).toHaveAttribute('aria-pressed', 'false');
     });
 
+    it('preserves always-on-top pin state across mode transitions without resetting (Blocker 1)', async () => {
+        let currentOnTop = false;
+        pywebviewApi.set_always_on_top = vi.fn(async (enabled) => {
+            currentOnTop = enabled;
+            return { ok: true, on_top: enabled };
+        });
+        pywebviewApi.set_presence_mode = vi.fn(async (enabled) => ({
+            ok: true,
+            mode: enabled ? 'presence' : 'companion',
+            on_top: currentOnTop,
+            width: enabled ? 200 : 1280,
+            height: enabled ? 200 : 800,
+        }));
+
+        render(<AppDesktop />);
+
+        // 1. Enter presence mode
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('companion-enter-presence-btn'));
+        });
+
+        const pinBtn = screen.getByTestId('presence-pin-btn');
+        expect(pinBtn).toHaveAttribute('aria-pressed', 'false');
+
+        // 2. User pins window
+        await act(async () => {
+            fireEvent.click(pinBtn);
+        });
+        expect(pinBtn).toHaveAttribute('aria-pressed', 'true');
+        expect(currentOnTop).toBe(true);
+
+        // 3. Return to companion
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('presence-return-btn'));
+        });
+        expect(screen.getByTestId('companion-layout')).toBeInTheDocument();
+
+        // 4. Re-enter presence - pin state must survive
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('companion-enter-presence-btn'));
+        });
+        const pinBtnAfterReturn = screen.getByTestId('presence-pin-btn');
+        expect(pinBtnAfterReturn).toHaveAttribute('aria-pressed', 'true');
+    });
+
     it('returns from presence mode back to companion mode cleanly', async () => {
         render(<AppDesktop />);
 
@@ -208,6 +257,114 @@ describe('AppDesktop Presence Mode Integration', () => {
 
         expect(pywebviewApi.close_window).toHaveBeenCalledTimes(1);
     });
+
+    it('calls minimizeDesktopWindow when minimize button is clicked in presence mode (Major 5)', async () => {
+        render(<AppDesktop />);
+
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('companion-enter-presence-btn'));
+        });
+
+        const minimizeBtn = screen.getByTestId('presence-minimize-btn');
+        expect(minimizeBtn).toBeInTheDocument();
+        expect(minimizeBtn).toHaveAttribute('aria-label', 'Minimizar');
+
+        await act(async () => {
+            fireEvent.click(minimizeBtn);
+        });
+
+        expect(pywebviewApi.minimize_window).toHaveBeenCalledTimes(1);
+    });
+
+    it('remains in companion mode when bridge set_presence_mode returns failure (Blocker 3 UI invariant)', async () => {
+        pywebviewApi.set_presence_mode.mockResolvedValueOnce({
+            ok: false,
+            code: 'window_mutation_failed',
+            message: 'Failed to enter presence mode',
+        });
+
+        render(<AppDesktop />);
+
+        const enterBtn = screen.getByTestId('companion-enter-presence-btn');
+        await act(async () => {
+            fireEvent.click(enterBtn);
+        });
+
+        expect(pywebviewApi.set_presence_mode).toHaveBeenCalledWith(true);
+
+        const root = screen.getByTestId('app-desktop-root');
+        expect(root).toHaveClass('app-desktop--companion');
+        expect(root).toHaveAttribute('data-desktop-mode', 'companion');
+        expect(screen.getByTestId('companion-layout')).toBeInTheDocument();
+        expect(screen.queryByTestId('katherine-presence-surface')).toBeNull();
+    });
+
+    it('remains in companion mode when bridge is unavailable in browser/dev environment (Blocker 3)', async () => {
+        delete window.pywebview;
+
+        render(<AppDesktop />);
+
+        const enterBtn = screen.getByTestId('companion-enter-presence-btn');
+        await act(async () => {
+            fireEvent.click(enterBtn);
+        });
+
+        const root = screen.getByTestId('app-desktop-root');
+        expect(root).toHaveClass('app-desktop--companion');
+        expect(root).toHaveAttribute('data-desktop-mode', 'companion');
+        expect(screen.getByTestId('companion-layout')).toBeInTheDocument();
+        expect(screen.queryByTestId('katherine-presence-surface')).toBeNull();
+    });
+
+    it('does not toggle always-on-top state when bridge set_always_on_top returns failure (Blocker 3)', async () => {
+        render(<AppDesktop />);
+
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('companion-enter-presence-btn'));
+        });
+
+        const pinBtn = screen.getByTestId('presence-pin-btn');
+        expect(pinBtn).toHaveAttribute('aria-pressed', 'false');
+
+        pywebviewApi.set_always_on_top.mockResolvedValueOnce({
+            ok: false,
+            code: 'window_mutation_failed',
+            message: 'Failed to pin window',
+        });
+
+        await act(async () => {
+            fireEvent.click(pinBtn);
+        });
+
+        expect(pywebviewApi.set_always_on_top).toHaveBeenCalledWith(true);
+        expect(pinBtn).toHaveAttribute('aria-pressed', 'false');
+    });
+
+    it('remains in presence mode when set_presence_mode(false) fails returning to companion', async () => {
+        render(<AppDesktop />);
+
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('companion-enter-presence-btn'));
+        });
+
+        expect(screen.getByTestId('katherine-presence-surface')).toBeInTheDocument();
+
+        pywebviewApi.set_presence_mode.mockResolvedValueOnce({
+            ok: false,
+            code: 'window_mutation_failed',
+            message: 'Failed to restore companion',
+        });
+
+        const returnBtn = screen.getByTestId('presence-return-btn');
+        await act(async () => {
+            fireEvent.click(returnBtn);
+        });
+
+        const root = screen.getByTestId('app-desktop-root');
+        expect(root).toHaveAttribute('data-desktop-mode', 'presence');
+        expect(screen.getByTestId('katherine-presence-surface')).toBeInTheDocument();
+        expect(screen.queryByTestId('companion-layout')).toBeNull();
+    });
 });
 
 describe('desktopBridge window control client functions (unmocked)', () => {
@@ -241,17 +398,23 @@ describe('desktopBridge window control client functions (unmocked)', () => {
         });
     });
 
-    it('setPresenceMode provides graceful fallback when pywebview is absent', async () => {
-        const res = await setPresenceMode(true, {});
-        expect(res).toEqual({
-            ok: true,
-            mode: 'presence',
-            on_top: false,
-            fallback: true,
+    it('setPresenceMode returns honest bridge_unavailable error when pywebview is absent or missing method', async () => {
+        const res1 = await setPresenceMode(true, {});
+        expect(res1).toEqual({
+            ok: false,
+            code: 'bridge_unavailable',
+            message: 'Desktop window control is unavailable.',
+        });
+
+        const res2 = await setPresenceMode(true, makeBridgeWindow({}));
+        expect(res2).toEqual({
+            ok: false,
+            code: 'bridge_unavailable',
+            message: 'Desktop window control is unavailable.',
         });
     });
 
-    it('setAlwaysOnTop calls api.set_always_on_top and provides graceful fallback', async () => {
+    it('setAlwaysOnTop calls api.set_always_on_top and returns honest error when bridge missing', async () => {
         let calledWith = null;
         const fakeWindow = makeBridgeWindow({
             set_always_on_top: async (val) => {
@@ -264,12 +427,23 @@ describe('desktopBridge window control client functions (unmocked)', () => {
         expect(calledWith).toBe(true);
         expect(res).toEqual({ ok: true, on_top: true });
 
-        // Fallback when api missing
-        const fallbackRes = await setAlwaysOnTop(true, {});
-        expect(fallbackRes).toEqual({ ok: true, on_top: true, fallback: true });
+        // Honest error when api missing
+        const missingRes1 = await setAlwaysOnTop(true, {});
+        expect(missingRes1).toEqual({
+            ok: false,
+            code: 'bridge_unavailable',
+            message: 'Desktop window control is unavailable.',
+        });
+
+        const missingRes2 = await setAlwaysOnTop(true, makeBridgeWindow({}));
+        expect(missingRes2).toEqual({
+            ok: false,
+            code: 'bridge_unavailable',
+            message: 'Desktop window control is unavailable.',
+        });
     });
 
-    it('getWindowState calls api.window_state and provides fallback', async () => {
+    it('getWindowState calls api.window_state and returns honest error when bridge missing', async () => {
         const fakeWindow = makeBridgeWindow({
             window_state: async () => ({
                 ok: true,
@@ -289,17 +463,23 @@ describe('desktopBridge window control client functions (unmocked)', () => {
             height: 200,
         });
 
-        // Fallback
-        const fallbackRes = await getWindowState({});
-        expect(fallbackRes).toEqual({
-            ok: true,
-            mode: 'companion',
-            on_top: false,
-            fallback: true,
+        // Honest error when api missing
+        const missingRes1 = await getWindowState({});
+        expect(missingRes1).toEqual({
+            ok: false,
+            code: 'bridge_unavailable',
+            message: 'Desktop window control is unavailable.',
+        });
+
+        const missingRes2 = await getWindowState(makeBridgeWindow({}));
+        expect(missingRes2).toEqual({
+            ok: false,
+            code: 'bridge_unavailable',
+            message: 'Desktop window control is unavailable.',
         });
     });
 
-    it('closeDesktopWindow calls api.close_window and handles fallback', async () => {
+    it('closeDesktopWindow calls api.close_window and returns honest error without simulating closure', async () => {
         let closeCalled = false;
         const fakeWindow = makeBridgeWindow({
             close_window: async () => {
@@ -312,12 +492,51 @@ describe('desktopBridge window control client functions (unmocked)', () => {
         expect(closeCalled).toBe(true);
         expect(res).toEqual({ ok: true });
 
-        // Fallback
+        // Honest error: must NOT call window.close() or simulate closure
         let windowClosed = false;
-        const fallbackRes = await closeDesktopWindow({
+        const missingRes1 = await closeDesktopWindow({
             close: () => { windowClosed = true; },
         });
-        expect(windowClosed).toBe(true);
-        expect(fallbackRes).toEqual({ ok: true, fallback: true });
+        expect(windowClosed).toBe(false);
+        expect(missingRes1).toEqual({
+            ok: false,
+            code: 'bridge_unavailable',
+            message: 'Desktop window control is unavailable.',
+        });
+
+        const missingRes2 = await closeDesktopWindow(makeBridgeWindow({}));
+        expect(missingRes2).toEqual({
+            ok: false,
+            code: 'bridge_unavailable',
+            message: 'Desktop window control is unavailable.',
+        });
+    });
+
+    it('minimizeDesktopWindow calls api.minimize_window and returns honest error when missing (Major 5)', async () => {
+        let minimizeCalled = false;
+        const fakeWindow = makeBridgeWindow({
+            minimize_window: async () => {
+                minimizeCalled = true;
+                return { ok: true };
+            },
+        });
+
+        const res = await minimizeDesktopWindow(fakeWindow);
+        expect(minimizeCalled).toBe(true);
+        expect(res).toEqual({ ok: true });
+
+        const missingRes1 = await minimizeDesktopWindow({});
+        expect(missingRes1).toEqual({
+            ok: false,
+            code: 'bridge_unavailable',
+            message: 'Desktop window control is unavailable.',
+        });
+
+        const missingRes2 = await minimizeDesktopWindow(makeBridgeWindow({}));
+        expect(missingRes2).toEqual({
+            ok: false,
+            code: 'bridge_unavailable',
+            message: 'Desktop window control is unavailable.',
+        });
     });
 });

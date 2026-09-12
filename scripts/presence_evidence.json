@@ -1,6 +1,6 @@
 {
   "status": "PASS",
-  "timestamp_utc": "2026-09-10T00:41:59Z",
+  "timestamp_utc": "2026-09-12T01:17:25Z",
   "point_1_lifecycle": {
     "status": "PASS",
     "repetitions_count": 5,
@@ -13,7 +13,11 @@
           "presence_1",
           "companion_2",
           "presence_2",
-          "minimize",
+          {
+            "step": "minimize",
+            "bridge_ok": true,
+            "native_iconified": true
+          },
           "restore",
           "companion_final"
         ]
@@ -25,7 +29,11 @@
           "presence_1",
           "companion_2",
           "presence_2",
-          "minimize",
+          {
+            "step": "minimize",
+            "bridge_ok": true,
+            "native_iconified": true
+          },
           "restore",
           "companion_final"
         ]
@@ -37,7 +45,11 @@
           "presence_1",
           "companion_2",
           "presence_2",
-          "minimize",
+          {
+            "step": "minimize",
+            "bridge_ok": true,
+            "native_iconified": true
+          },
           "restore",
           "companion_final"
         ]
@@ -49,7 +61,11 @@
           "presence_1",
           "companion_2",
           "presence_2",
-          "minimize",
+          {
+            "step": "minimize",
+            "bridge_ok": true,
+            "native_iconified": true
+          },
           "restore",
           "companion_final"
         ]
@@ -61,7 +77,11 @@
           "presence_1",
           "companion_2",
           "presence_2",
-          "minimize",
+          {
+            "step": "minimize",
+            "bridge_ok": true,
+            "native_iconified": true
+          },
           "restore",
           "companion_final"
         ]
@@ -133,19 +153,36 @@
   },
   "point_5_resources": {
     "companion": {
-      "rss_mb": 430.13,
+      "rss_mb": 434.05,
       "process_count": 3,
       "webkit_process_count": 2,
       "cpu_idle_percent": 100.0,
-      "cpu_percent": 0.0
+      "cpu_percent": 0.0,
+      "tree_cpu_percent": 0.0,
+      "sample_interval_seconds": 0.5
     },
     "presence": {
-      "rss_mb": 443.1,
+      "rss_mb": 448.54,
       "process_count": 3,
       "webkit_process_count": 2,
       "cpu_idle_percent": 100.0,
-      "cpu_percent": 0.0
+      "cpu_percent": 0.0,
+      "tree_cpu_percent": 0.0,
+      "sample_interval_seconds": 0.5
     },
-    "delta_rss_mb": 12.97
+    "delta_rss_mb": 14.49
+  },
+  "point_6_geometry_clamp": {
+    "status": "PASS",
+    "negative_out_of_bounds_recovered_to": [
+      0,
+      0
+    ],
+    "large_out_of_bounds_recovered_to": [
+      1720,
+      880
+    ],
+    "reconciled_without_mode_change": true,
+    "mode_after_reconciliation": "presence"
   }
 }

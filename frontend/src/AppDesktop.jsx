@@ -102,7 +102,11 @@ export default function AppDesktop() {
     }, [isAlwaysOnTop]);
 
     const handleMinimize = useCallback(async () => {
-        await minimizeDesktopWindow();
+        const res = await minimizeDesktopWindow();
+        if (typeof window !== 'undefined') {
+            window.__lastMinimizeResult = res;
+        }
+        return res;
     }, []);
 
     const handleClose = useCallback(async () => {

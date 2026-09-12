@@ -383,32 +383,33 @@ def _query_workareas_and_primary() -> tuple[list[WorkArea], int]:
         from gi.repository import Gdk  # type: ignore[import-not-found]
 
         display = Gdk.Display.get_default()
-        if display is not None:
-            n = display.get_n_monitors()
-            if n > 0:
-                primary_mon = (
-                    display.get_primary_monitor()
-                    if hasattr(display, "get_primary_monitor")
-                    else None
-                )
-                workareas: list[WorkArea] = []
-                primary_idx = 0
-                for i in range(n):
-                    mon = display.get_monitor(i)
-                    if mon is primary_mon:
-                        primary_idx = i
-                    if mon is not None and hasattr(mon, "get_workarea"):
-                        rect = mon.get_workarea()
-                        workareas.append(
-                            WorkArea(rect.x, rect.y, rect.width, rect.height)
-                        )
-                    elif mon is not None and hasattr(mon, "get_geometry"):
-                        rect = mon.get_geometry()
-                        workareas.append(
-                            WorkArea(rect.x, rect.y, rect.width, rect.height)
-                        )
-                if workareas:
-                    return workareas, primary_idx
+        if display is None:
+            return [], 0
+        n = display.get_n_monitors()
+        if n > 0:
+            primary_mon = (
+                display.get_primary_monitor()
+                if hasattr(display, "get_primary_monitor")
+                else None
+            )
+            workareas: list[WorkArea] = []
+            primary_idx = 0
+            for i in range(n):
+                mon = display.get_monitor(i)
+                if mon is primary_mon:
+                    primary_idx = i
+                if mon is not None and hasattr(mon, "get_workarea"):
+                    rect = mon.get_workarea()
+                    workareas.append(
+                        WorkArea(rect.x, rect.y, rect.width, rect.height)
+                    )
+                elif mon is not None and hasattr(mon, "get_geometry"):
+                    rect = mon.get_geometry()
+                    workareas.append(
+                        WorkArea(rect.x, rect.y, rect.width, rect.height)
+                    )
+            if workareas:
+                return workareas, primary_idx
     except Exception:  # noqa: BLE001
         pass
 
@@ -502,7 +503,7 @@ class WindowController:
     ) -> None:
         import threading
 
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._window = window
         self._workareas = workareas
         self._dispatch_timeout = dispatch_timeout
@@ -510,17 +511,210 @@ class WindowController:
         self._on_top = False
         self._width = _WINDOW_SIZE[0]
         self._height = _WINDOW_SIZE[1]
+        self._x: int | None = None
+        self._y: int | None = None
+        self._is_reconciling = False
+        self._screen_signals_connected = False
         self._saved_geometry: tuple[int | None, int | None, int, int] = (
             None,
             None,
             _WINDOW_SIZE[0],
             _WINDOW_SIZE[1],
         )
+        if window is not None:
+            self._bind_window_events(window)
+
+    def _bind_window_events(self, window: Any) -> None:
+        """Bind moved and lifecycle event handlers on the pywebview window."""
+        if hasattr(window, "events") and hasattr(window.events, "moved"):
+            try:
+                window.events.moved -= self._on_window_moved
+            except (ValueError, KeyError, AttributeError):
+                pass
+            window.events.moved += self._on_window_moved
+        if hasattr(window, "events") and hasattr(window.events, "shown"):
+            try:
+                window.events.shown -= self._connect_screen_signals
+            except (ValueError, KeyError, AttributeError):
+                pass
+            window.events.shown += self._connect_screen_signals
 
     def set_window(self, window: Any) -> None:
         """Bind the pywebview window instance after creation."""
         with self._lock:
             self._window = window
+            if window is not None:
+                self._bind_window_events(window)
+
+    def _connect_screen_signals(self, *args: Any) -> None:
+        """Connect to Gdk.Screen signals for monitor/resolution changes (#342, #366)."""
+        with self._lock:
+            if self._screen_signals_connected:
+                return
+        try:
+            import gi
+
+            try:
+                gi.require_version("Gdk", "3.0")
+            except (ValueError, AttributeError):
+                pass
+            from gi.repository import Gdk  # type: ignore[import-not-found]
+
+            display = Gdk.Display.get_default()
+            if display is None:
+                return
+
+            screen = Gdk.Screen.get_default()
+            if screen is not None and hasattr(screen, "connect"):
+                screen.connect("monitors-changed", self._on_screen_changed)
+                screen.connect("size-changed", self._on_screen_changed)
+                with self._lock:
+                    self._screen_signals_connected = True
+        except Exception:
+            pass
+
+    def _on_screen_changed(self, *args: Any) -> None:
+        """Reconcile geometry upon display monitor addition, removal, or resolution changes."""
+        self.reconcile_geometry()
+
+    def _on_window_moved(self, *args: Any, **kwargs: Any) -> None:
+        """Handle window move event (e.g. from drag region or configure-event) with loop protection."""
+        if self._is_reconciling:
+            return
+        int_args = [a for a in args if isinstance(a, int) and not isinstance(a, bool)]
+        x = int_args[0] if len(int_args) >= 1 else None
+        y = int_args[1] if len(int_args) >= 2 else None
+        self.reconcile_geometry(x=x, y=y)
+
+    def reconcile_geometry(
+        self, x: int | None = None, y: int | None = None
+    ) -> dict[str, Any]:
+        """Reconcile window geometry against usable workareas while in presence mode (#342, #366).
+
+        Ensures dragged or shifted presence window stays 100% within usable bounds
+        and recovers windows upon resolution or monitor changes.
+        Protected against re-entrant event loops.
+        """
+        with self._lock:
+            if self._is_reconciling:
+                return {"ok": True, "clamped": False, "in_progress": True}
+            if self._window is None:
+                return {"ok": False, "code": "window_unavailable"}
+            if self._mode != "presence":
+                return {"ok": True, "clamped": False, "mode": self._mode}
+
+            window = self._window
+            curr_x = x
+            curr_y = y
+            curr_w = None
+            curr_h = None
+
+            native = getattr(window, "native", None)
+            if native is not None:
+                try:
+                    if (curr_x is None or curr_y is None) and hasattr(native, "get_position"):
+                        pos = native.get_position()
+                        if pos and len(pos) == 2:
+                            curr_x, curr_y = pos[0], pos[1]
+                    if hasattr(native, "get_size"):
+                        sz = native.get_size()
+                        if sz and len(sz) == 2:
+                            curr_w, curr_h = sz[0], sz[1]
+                except Exception:
+                    pass
+
+            if curr_x is None:
+                curr_x = getattr(window, "x", None)
+            if curr_y is None:
+                curr_y = getattr(window, "y", None)
+            if curr_w is None:
+                w_attr = getattr(window, "width", None)
+                curr_w = (
+                    w_attr
+                    if isinstance(w_attr, int) and not isinstance(w_attr, bool)
+                    else self._width
+                )
+            if curr_h is None:
+                h_attr = getattr(window, "height", None)
+                curr_h = (
+                    h_attr
+                    if isinstance(h_attr, int) and not isinstance(h_attr, bool)
+                    else self._height
+                )
+
+            w = curr_w if isinstance(curr_w, int) and curr_w > 0 else 200
+            h = curr_h if isinstance(curr_h, int) and curr_h > 0 else 200
+
+            workareas = self._workareas
+            primary_idx = 0
+            if workareas is None:
+                queried, pri = _query_workareas_and_primary()
+                if queried:
+                    workareas = queried
+                    primary_idx = pri
+
+            clamped = clamp_window_geometry(
+                (curr_x, curr_y, w, h),
+                workareas or [],
+                primary_index=primary_idx,
+                min_size=(120, 120),
+            )
+
+            needs_move = (
+                curr_x is not None
+                and curr_y is not None
+                and (clamped.x != curr_x or clamped.y != curr_y)
+            )
+            needs_resize = clamped.width != w or clamped.height != h
+
+            if not needs_move and not needs_resize:
+                if curr_x is not None:
+                    self._x = curr_x
+                if curr_y is not None:
+                    self._y = curr_y
+                self._width = clamped.width
+                self._height = clamped.height
+                return {
+                    "ok": True,
+                    "clamped": False,
+                    "x": clamped.x,
+                    "y": clamped.y,
+                    "width": clamped.width,
+                    "height": clamped.height,
+                }
+
+            self._is_reconciling = True
+
+        try:
+            def _apply_reconcile() -> None:
+                if needs_resize and hasattr(window, "resize"):
+                    window.resize(clamped.width, clamped.height)
+                if needs_move and hasattr(window, "move"):
+                    window.move(clamped.x, clamped.y)
+
+            ok, err = _dispatch_sync(_apply_reconcile, timeout=self._dispatch_timeout)
+            if not ok:
+                return {
+                    "ok": False,
+                    "code": "reconciliation_failed",
+                    "error": str(err),
+                }
+        finally:
+            with self._lock:
+                self._is_reconciling = False
+                self._x = clamped.x
+                self._y = clamped.y
+                self._width = clamped.width
+                self._height = clamped.height
+
+        return {
+            "ok": True,
+            "clamped": True,
+            "x": clamped.x,
+            "y": clamped.y,
+            "width": clamped.width,
+            "height": clamped.height,
+        }
 
     def set_presence_mode(self, enabled: bool) -> dict[str, Any]:
         """Transition between companion and floating presence modes."""
@@ -632,11 +826,15 @@ class WindowController:
                         "message": "The window operation could not be completed.",
                     }
 
+                self._connect_screen_signals()
+
                 # Commit transactional state only after confirmed success
                 self._saved_geometry = candidate_saved_geometry
                 self._mode = "presence"
                 self._width = presence_w
                 self._height = presence_h
+                self._x = presence_x
+                self._y = presence_y
 
                 return {
                     "ok": True,
@@ -721,6 +919,8 @@ class WindowController:
                 self._mode = "companion"
                 self._width = companion_w
                 self._height = companion_h
+                self._x = companion_x
+                self._y = companion_y
 
                 return {
                     "ok": True,
@@ -794,13 +994,18 @@ class WindowController:
     def window_state(self) -> dict[str, Any]:
         """Return current window state snapshot."""
         with self._lock:
-            return {
+            state: dict[str, Any] = {
                 "ok": True,
                 "mode": self._mode,
                 "on_top": self._on_top,
                 "width": self._width,
                 "height": self._height,
             }
+            if self._x is not None:
+                state["x"] = self._x
+            if self._y is not None:
+                state["y"] = self._y
+            return state
 
     def close_window(self) -> dict[str, Any]:
         """Request window destruction and clean shell shutdown."""
@@ -1103,6 +1308,7 @@ def run_desktop_shell(
         trust=trust,
     )
     window.events.loaded += policy.on_loaded
+    window.events.loaded += window_controller._connect_screen_signals
 
     try:
         webview.start()

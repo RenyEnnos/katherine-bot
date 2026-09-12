@@ -274,24 +274,60 @@ def call_bridge_js(window, call_expr, timeout=10.0):
     raise TimeoutError(f"Timed out waiting for {call_expr}")
 
 
-def measure_system_resources():
-    """Measure real system resources using psutil (or /proc fallback)."""
+def measure_system_resources(sample_interval: float = 0.5):
+    """Measure real system resources across Katherine process and all WebKit children (#342, #366).
+
+    Bounded, reproducible measurement:
+    - Queries total RSS of [current process] + all recursive children (WebKit processes).
+    - Measures CPU utilization of the entire application process tree across a bounded window (default 0.5s).
+    - Reports idle percentage = 100 - sum(tree CPU percent).
+    """
     import os
     try:
         import psutil
         current = psutil.Process(os.getpid())
         children = current.children(recursive=True)
         all_procs = [current] + children
-        total_rss = sum(p.memory_info().rss for p in all_procs)
+        total_rss = 0
+        for p in all_procs:
+            try:
+                total_rss += p.memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
         rss_mb = round(total_rss / (1024 * 1024), 2)
-        webkit_procs = [p for p in children if "WebKitWebProcess" in p.name() or "WebKit" in p.name()]
-        cpu_pct = round(current.cpu_percent(interval=0.5), 2)
+        webkit_procs = [
+            p for p in children
+            if "WebKit" in p.name() or "bwrap" in p.name()
+        ]
+
+        # Initialize CPU counter on all processes in the tree
+        for p in all_procs:
+            try:
+                p.cpu_percent(None)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        time.sleep(sample_interval)
+
+        # Sample CPU over the bounded window for the entire process tree
+        tree_cpu = 0.0
+        for p in all_procs:
+            try:
+                tree_cpu += p.cpu_percent(None)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        tree_cpu_pct = round(tree_cpu, 2)
+        idle_pct = round(max(0.0, 100.0 - tree_cpu_pct), 2)
+
         return {
             "rss_mb": rss_mb,
             "process_count": len(all_procs),
             "webkit_process_count": len(webkit_procs),
-            "cpu_idle_percent": round(max(0.0, 100.0 - cpu_pct), 2),
-            "cpu_percent": cpu_pct,
+            "cpu_idle_percent": idle_pct,
+            "cpu_percent": tree_cpu_pct,
+            "tree_cpu_percent": tree_cpu_pct,
+            "sample_interval_seconds": sample_interval,
         }
     except Exception as exc:
         return {"error": str(exc)}
@@ -543,10 +579,38 @@ def verify_matrix(window, output_dir):
         assert st.get("mode") == "presence", f"Rep {rep}: Must be presence, got {st}"
         rep_data["transitions"].append("presence_2")
 
-        # -> hide/minimize
+        # -> hide/minimize (verified bridge return + observed native state)
+        window.evaluate_js('window.__lastMinimizeResult = null')
         window.evaluate_js('document.querySelector("[data-testid=\\"presence-minimize-btn\\"]").click()')
+
+        # Wait for bridge call completion and verify ok: true
+        deadline = time.monotonic() + 5.0
+        min_res = None
+        while time.monotonic() < deadline:
+            min_res = window.evaluate_js('window.__lastMinimizeResult')
+            if min_res is not None:
+                break
+            time.sleep(0.05)
+
+        assert isinstance(min_res, dict), f"Rep {rep}: Minimize bridge call timed out or returned non-dict: {min_res}"
+        assert min_res.get("ok") is True, f"Rep {rep}: Minimize bridge returned non-ok: {min_res}"
+
+        # Verify native GTK window state
         time.sleep(0.2)
-        rep_data["transitions"].append("minimize")
+        native_minimized = False
+        native = getattr(window, "native", None)
+        if native is not None:
+            gdk_win = native.get_window()
+            if gdk_win:
+                st_flags = gdk_win.get_state()
+                if st_flags is not None:
+                    native_minimized = bool(st_flags & Gdk.WindowState.ICONIFIED)
+
+        rep_data["transitions"].append({
+            "step": "minimize",
+            "bridge_ok": True,
+            "native_iconified": native_minimized,
+        })
 
         # -> restore
         restore_done = threading.Event()
@@ -560,9 +624,10 @@ def verify_matrix(window, output_dir):
                 restore_done.set()
             return False
         GLib.idle_add(_restore_win)
-        restore_done.wait(3.0)
+        assert restore_done.wait(5.0), f"Rep {rep}: Native restore timed out"
         time.sleep(0.2)
         wait_for(window, 'Boolean(document.querySelector("[data-testid=\\"katherine-presence-surface\\"]"))')
+        assert len(webview.windows) == 1, f"Rep {rep}: Window count must remain 1 after restore"
         rep_data["transitions"].append("restore")
 
         # -> companion
@@ -574,7 +639,67 @@ def verify_matrix(window, output_dir):
         rep_data["transitions"].append("companion_final")
 
         lifecycle_results.append(rep_data)
-        print(f"  Repetition {rep}/5 completed cleanly (window count: {len(webview.windows)})", flush=True)
+        print(f"  Repetition {rep}/5 completed cleanly (minimized bridge_ok=True, native_iconified={native_minimized}, windows={len(webview.windows)})", flush=True)
+
+    # Point 6: Runtime Geometry Clamp Recovery Proof (§BLOCKER 1 / #342)
+    print("\n[Point 6] Verifying Runtime Geometry Clamp Recovery (§BLOCKER 1)...", flush=True)
+    # Switch to presence mode
+    window.evaluate_js('document.querySelector("[data-testid=\\"companion-enter-presence-btn\\"]").click()')
+    wait_for(window, 'Boolean(document.querySelector("[data-testid=\\"katherine-presence-surface\\"]"))')
+    time.sleep(0.3)
+
+    st_p = call_bridge_js(window, "window.pywebview.api.window_state()")
+    assert st_p.get("ok") and st_p.get("mode") == "presence", f"Must be in presence mode: {st_p}"
+
+    # 6.1 Move out of bounds (negative coordinates)
+    native = getattr(window, "native", None)
+    window.move(-400, -400)
+    time.sleep(0.5)
+
+    st_check1 = call_bridge_js(window, "window.pywebview.api.window_state()")
+    assert st_check1.get("ok") and st_check1.get("mode") == "presence", f"Mode must remain presence: {st_check1}"
+    assert st_check1.get("x") is not None and st_check1.get("x") >= 0, f"Clamped x must be >= 0: {st_check1}"
+    assert st_check1.get("y") is not None and st_check1.get("y") >= 0, f"Clamped y must be >= 0: {st_check1}"
+
+    gdk_win = native.get_window() if native else None
+    if gdk_win and hasattr(gdk_win, "get_origin"):
+        origin1 = gdk_win.get_origin()
+        if len(origin1) == 3:
+            assert origin1[1] >= 0 and origin1[2] >= 0, f"GDK origin outside screen: {origin1}"
+
+    # 6.2 Move out of bounds (large positive coordinates beyond screen)
+    window.move(9999, 9999)
+    time.sleep(0.5)
+
+    display = Gdk.Display.get_default()
+    primary_mon = display.get_primary_monitor() if display and hasattr(display, "get_primary_monitor") else None
+    wa = primary_mon.get_workarea() if primary_mon and hasattr(primary_mon, "get_workarea") else None
+    screen_w = wa.width if wa else 1280
+    screen_h = wa.height if wa else 800
+
+    st_check2 = call_bridge_js(window, "window.pywebview.api.window_state()")
+    assert st_check2.get("ok") and st_check2.get("mode") == "presence", f"Mode must remain presence: {st_check2}"
+    assert st_check2.get("x") <= screen_w - 200, f"Clamped x must be within screen: {st_check2}"
+    assert st_check2.get("y") <= screen_h - 200, f"Clamped y must be within screen: {st_check2}"
+
+    if gdk_win and hasattr(gdk_win, "get_origin"):
+        origin2 = gdk_win.get_origin()
+        if len(origin2) == 3:
+            assert origin2[1] <= screen_w - 200 and origin2[2] <= screen_h - 200, f"GDK origin outside bounds: {origin2}"
+
+    clamp_proof = {
+        "status": "PASS",
+        "negative_out_of_bounds_recovered_to": [st_check1.get("x"), st_check1.get("y")],
+        "large_out_of_bounds_recovered_to": [st_check2.get("x"), st_check2.get("y")],
+        "reconciled_without_mode_change": True,
+        "mode_after_reconciliation": "presence",
+    }
+    print(f"  Runtime geometry clamp recovery verified (negative->{[st_check1.get('x'), st_check1.get('y')]}, large->{[st_check2.get('x'), st_check2.get('y')]}: PASS", flush=True)
+
+    # Return to companion
+    window.evaluate_js('document.querySelector("[data-testid=\\"presence-return-btn\\"]").click()')
+    wait_for(window, 'Boolean(document.querySelector("[data-testid=\\"companion-layout\\"]"))')
+    time.sleep(0.3)
 
     # Compile final matrix results
     final_matrix = {
@@ -602,6 +727,7 @@ def verify_matrix(window, output_dir):
         },
         "point_4_transparency": transparency_data,
         "point_5_resources": resource_matrix,
+        "point_6_geometry_clamp": clamp_proof,
     }
 
     # Save to files

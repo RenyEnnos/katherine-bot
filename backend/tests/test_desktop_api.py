@@ -36,7 +36,12 @@ from backend.desktop.api import (
     DesktopApiError,
     make_js_api,
 )
-from backend.desktop.app import LocalBuildBridge, WindowController, is_local_build_url
+from backend.desktop.app import (
+    LocalBuildBridge,
+    WindowController,
+    WorkArea,
+    is_local_build_url,
+)
 from backend.desktop.build_resolver import ResolvedBuild
 
 
@@ -437,9 +442,35 @@ class _MockNative:
         return self.size
 
 
+class _MockEvent:
+    def __init__(self) -> None:
+        self._handlers: list[Any] = []
+
+    def __iadd__(self, handler: Any) -> "_MockEvent":
+        self._handlers.append(handler)
+        return self
+
+    def __isub__(self, handler: Any) -> "_MockEvent":
+        if handler in self._handlers:
+            self._handlers.remove(handler)
+        return self
+
+    def emit(self, *args: Any, **kwargs: Any) -> None:
+        for h in list(self._handlers):
+            h(*args, **kwargs)
+
+
+class _MockWindowEvents:
+    def __init__(self) -> None:
+        self.moved = _MockEvent()
+        self.shown = _MockEvent()
+        self.loaded = _MockEvent()
+
+
 class _MockWindow:
     def __init__(self) -> None:
         self.native = _MockNative()
+        self.events = _MockWindowEvents()
         self.on_top = False
         self.resized: tuple[int, int] | None = None
         self.moved: tuple[int, int] | None = None
@@ -665,6 +696,81 @@ class TestWindowControllerDirect:
         wc.set_presence_mode(True)
         assert len(idle_calls) == 1
         assert win.native.decorated is False
+
+    def test_reconcile_geometry_out_of_bounds_in_presence(self) -> None:
+        """Moving or dragging presence window out of bounds reconciles it back inside usable workarea."""
+        win = _MockWindow()
+        wa = [WorkArea(0, 0, 1920, 1080)]
+        wc = WindowController(window=win, workareas=wa)
+        wc.set_presence_mode(True)
+        assert wc.window_state()["mode"] == "presence"
+
+        # 1. Drag to negative out of bounds
+        win.events.moved.emit(-300, -200)
+        assert win.moved == (0, 0)
+        st = wc.window_state()
+        assert st["x"] == 0 and st["y"] == 0
+        assert st["mode"] == "presence"
+
+        # 2. Drag beyond bottom-right
+        win.events.moved.emit(2500, 1500)
+        assert win.moved == (1720, 880)
+        st2 = wc.window_state()
+        assert st2["x"] == 1720 and st2["y"] == 880
+        assert st2["mode"] == "presence"
+
+    def test_reconcile_geometry_noop_in_companion_mode(self) -> None:
+        """Moving window in companion mode does not clamp to presence 200x200 bounds."""
+        win = _MockWindow()
+        wa = [WorkArea(0, 0, 1920, 1080)]
+        wc = WindowController(window=win, workareas=wa)
+        assert wc.window_state()["mode"] == "companion"
+
+        win.events.moved.emit(-300, -200)
+        # Position was not mutated/clamped by presence reconciliation
+        assert win.moved is None
+
+    def test_reconcile_geometry_event_loop_protection(self) -> None:
+        """Re-entrant reconciliation calls return in_progress: True without looping."""
+        win = _MockWindow()
+        wc = WindowController(window=win)
+        wc.set_presence_mode(True)
+
+        wc._is_reconciling = True
+        res = wc.reconcile_geometry(-100, -100)
+        assert res["ok"] is True
+        assert res["clamped"] is False
+        assert res["in_progress"] is True
+        wc._is_reconciling = False
+
+    def test_reconcile_geometry_screen_changed(self) -> None:
+        """Screen/monitors change reconciles presence window position to new bounds."""
+        win = _MockWindow()
+        wa_large = [WorkArea(0, 0, 1920, 1080)]
+        wc = WindowController(window=win, workareas=wa_large)
+        wc.set_presence_mode(True)
+        # Simulate window moved to (1720, 880) within large screen
+        win.native.position = (1720, 880)
+        win.events.moved.emit(1720, 880)
+        st_before = wc.window_state()
+        assert st_before["x"] == 1720 and st_before["y"] == 880
+
+        # Resolution shrinks / secondary monitor unplugged:
+        wa_small = [WorkArea(0, 0, 1024, 768)]
+        wc._workareas = wa_small
+        wc._on_screen_changed()
+
+        # Window must be clamped into the 1024x768 boundary (1024 - 200, 768 - 200)
+        assert win.moved == (824, 568)
+        st = wc.window_state()
+        assert st["x"] == 824 and st["y"] == 568
+        assert st["mode"] == "presence"
+
+    def test_reconcile_geometry_without_window_fails_closed(self) -> None:
+        wc = WindowController(window=None)
+        wc._mode = "presence"
+        res = wc.reconcile_geometry(100, 100)
+        assert res == {"ok": False, "code": "window_unavailable"}
 
 
 class TestWindowBridgeContract:

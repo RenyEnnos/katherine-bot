@@ -439,10 +439,15 @@ def verify_matrix(window, output_dir):
             '[data-testid="chat-header"]',
             '[data-testid="companion-auxiliary-slot"]',
             '[data-testid="katherine-state-sidebar"]',
+            '[data-testid="companion-open-settings-btn"]',
+            '[data-testid="settings-workspace"]',
+            '[data-testid="settings-back-btn"]',
+            '[data-testid="settings-section-window"]',
             '.companion-layout__conversation',
             '.chat-header',
             '.companion-layout__history',
-            '.katherine-state-sidebar'
+            '.katherine-state-sidebar',
+            '.settings-workspace'
         ];
         const leaked = forbiddenSelectors.filter(sel => document.querySelector(sel) !== null);
         const text = document.body.innerText || '';

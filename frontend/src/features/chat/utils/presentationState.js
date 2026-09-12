@@ -112,6 +112,13 @@ export const selectKatherinePresentationState = (options = {}) => {
         });
     }
 
+    // Verify that all dominant emotions are mapped to safe descriptors
+    for (const emotion of validated.dominant_emotions) {
+        if (!SAFE_EMOTION_DESCRIPTORS[emotion?.name]) {
+            return UNAVAILABLE_PRESENTATION_STATE;
+        }
+    }
+
     // Sort dominant emotions descending by intensity, preserving original order on ties
     const sortedEmotions = [...validated.dominant_emotions].sort(
         (a, b) => b.intensity - a.intensity
@@ -120,27 +127,13 @@ export const selectKatherinePresentationState = (options = {}) => {
     // Select up to 2 unique presentation descriptors from the highest-intensity emotions
     const descriptors = [];
     for (const emotion of sortedEmotions) {
-        const descriptor = SAFE_EMOTION_DESCRIPTORS[emotion?.name];
-        if (!descriptor) {
-            // Rejected or unknown emotion name encountered
-            return UNAVAILABLE_PRESENTATION_STATE;
-        }
+        const descriptor = SAFE_EMOTION_DESCRIPTORS[emotion.name];
         if (!descriptors.includes(descriptor)) {
             descriptors.push(descriptor);
         }
         if (descriptors.length === 2) {
             break;
         }
-    }
-
-    if (descriptors.length === 0) {
-        return Object.freeze({
-            isAvailable: true,
-            statusText: null,
-            descriptors: Object.freeze([]),
-            descriptorsText: NO_DOMINANT_TENDENCY_DESCRIPTOR,
-            energyLabel,
-        });
     }
 
     return Object.freeze({

@@ -307,6 +307,11 @@ describe('presentationState: Honest Unavailable State & Malformed / Adversarial 
             [
                 { name: 'joy', intensity: 0.9 },
                 { name: 'trust', intensity: 0.8 },
+                { name: 'unregistered_third_emotion', intensity: 0.1 },
+            ],
+            [
+                { name: 'joy', intensity: 0.9 },
+                { name: 'trust', intensity: 0.8 },
                 { name: 'sadness', intensity: 0.7 },
                 { name: 'fear', intensity: 0.6 },
             ], // more than 3

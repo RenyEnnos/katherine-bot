@@ -1,25 +1,30 @@
 import { validateEmotionState } from '../../../shared/utils/formatters.js';
 
+const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+
 /**
  * Finite allowlist mapping canonical emotion names to calm, lowercase Portuguese adjectives.
  * Sensitive relationship states (jealousy, guilt) are neutralized to prevent manipulative
  * or coercive copy (coordination with safety policy and Issue #344).
+ * Null-prototype object to prevent prototype property resolution (e.g. toString, valueOf).
  */
-export const SAFE_EMOTION_DESCRIPTORS = Object.freeze({
-    joy: 'alegre',
-    trust: 'tranquila',
-    anticipation: 'curiosa',
-    gratitude: 'grata',
-    tenderness: 'acolhedora',
-    pride: 'satisfeita',
-    surprise: 'surpresa',
-    sadness: 'reflexiva',
-    fear: 'atenta',
-    anger: 'incomodada',
-    disgust: 'reservada',
-    jealousy: 'atenta',
-    guilt: 'reflexiva',
-});
+export const SAFE_EMOTION_DESCRIPTORS = Object.freeze(
+    Object.assign(Object.create(null), {
+        joy: 'alegre',
+        trust: 'tranquila',
+        anticipation: 'curiosa',
+        gratitude: 'grata',
+        tenderness: 'acolhedora',
+        pride: 'satisfeita',
+        surprise: 'surpresa',
+        sadness: 'reflexiva',
+        fear: 'atenta',
+        anger: 'incomodada',
+        disgust: 'reservada',
+        jealousy: 'atenta',
+        guilt: 'reflexiva',
+    }),
+);
 
 export const UNAVAILABLE_STATUS_TEXT = 'estado indisponível';
 export const NO_DOMINANT_TENDENCY_DESCRIPTOR = 'sem tendência dominante';
@@ -83,12 +88,11 @@ export const selectEnergyLabel = (arousal) => {
  * @returns {{ isAvailable: boolean, statusText: string|null, descriptors: readonly string[], descriptorsText: string|null, energyLabel: string|null }}
  */
 export const selectKatherinePresentationState = (options = {}) => {
-    if (!options || typeof options !== 'object' || Array.isArray(options)) {
-        return UNAVAILABLE_PRESENTATION_STATE;
-    }
-
     let rawEmotionState;
     try {
+        if (!options || typeof options !== 'object' || Array.isArray(options)) {
+            return UNAVAILABLE_PRESENTATION_STATE;
+        }
         rawEmotionState = options.emotionState;
     } catch {
         return UNAVAILABLE_PRESENTATION_STATE;
@@ -114,7 +118,8 @@ export const selectKatherinePresentationState = (options = {}) => {
 
     // Verify that all dominant emotions are mapped to safe descriptors
     for (const emotion of validated.dominant_emotions) {
-        if (!SAFE_EMOTION_DESCRIPTORS[emotion?.name]) {
+        const name = emotion?.name;
+        if (!name || !hasOwn(SAFE_EMOTION_DESCRIPTORS, name) || typeof SAFE_EMOTION_DESCRIPTORS[name] !== 'string') {
             return UNAVAILABLE_PRESENTATION_STATE;
         }
     }

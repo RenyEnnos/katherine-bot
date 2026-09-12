@@ -9,7 +9,7 @@ import './KatherineStateSidebar.css';
  * without deceptive psychological telemetry, percentage dials, or progress bars.
  * Zero network requests, zero timers, zero side effects.
  */
-export default function KatherineStateSidebar({ emotionState }) {
+export default function KatherineStateSidebar({ emotionState } = {}) {
     const presentation = selectKatherinePresentationState({ emotionState });
 
     return (

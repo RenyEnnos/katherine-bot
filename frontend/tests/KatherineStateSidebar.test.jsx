@@ -183,6 +183,11 @@ describe('KatherineStateSidebar — 20 Required Behaviors (§12)', () => {
         expect(sidebar).not.toHaveTextContent('energia estável');
         expect(sidebar.querySelector('.katherine-state-sidebar__descriptors')).toBeNull();
         expect(sidebar.querySelector('.katherine-state-sidebar__energy')).toBeNull();
+
+        // Direct invocation with 0 arguments does not throw and renders unavailable state
+        const unadornedElement = KatherineStateSidebar();
+        expect(unadornedElement).not.toBeNull();
+        expect(unadornedElement.type).toBe('aside');
     });
 
     // 3. malformed state or invalid schema produces honest unavailability
@@ -243,6 +248,20 @@ describe('KatherineStateSidebar — 20 Required Behaviors (§12)', () => {
                 dominant_emotions: [{ name: '__proto__', intensity: 0.8 }],
                 timestamp: 1700000000,
             },
+            {
+                schema_version: 1,
+                mood_label: 'TOSTRING',
+                pad: { pleasure: 0.1, arousal: 0, dominance: 0 },
+                dominant_emotions: [{ name: 'toString', intensity: 0.8 }],
+                timestamp: 1700000000,
+            },
+            {
+                schema_version: 1,
+                mood_label: 'VALUEOF',
+                pad: { pleasure: 0.1, arousal: 0, dominance: 0 },
+                dominant_emotions: [{ name: 'valueOf', intensity: 0.8 }],
+                timestamp: 1700000000,
+            },
         ];
 
         for (const payload of untrustedPayloads) {
@@ -253,6 +272,8 @@ describe('KatherineStateSidebar — 20 Required Behaviors (§12)', () => {
             expect(sidebar.textContent).not.toContain('<script>');
             expect(sidebar.textContent).not.toContain('alert');
             expect(sidebar.textContent).not.toContain('__proto__');
+            expect(sidebar.textContent).not.toContain('toString');
+            expect(sidebar.textContent).not.toContain('valueOf');
 
             expect(sidebar).toHaveTextContent('Estado');
             expect(sidebar).toHaveTextContent('estado indisponível');

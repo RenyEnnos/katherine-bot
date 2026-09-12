@@ -42,6 +42,14 @@ describe('presentationState: Contract Surface & Allowlist', () => {
         assert.strictEqual(descriptorKeys.length, 13);
     });
 
+    it('SAFE_EMOTION_DESCRIPTORS has a null prototype and does not resolve Object.prototype methods', () => {
+        assert.strictEqual(Object.getPrototypeOf(SAFE_EMOTION_DESCRIPTORS), null);
+        assert.strictEqual(SAFE_EMOTION_DESCRIPTORS.toString, undefined);
+        assert.strictEqual(SAFE_EMOTION_DESCRIPTORS.valueOf, undefined);
+        assert.strictEqual(SAFE_EMOTION_DESCRIPTORS.constructor, undefined);
+        assert.strictEqual(SAFE_EMOTION_DESCRIPTORS.__proto__, undefined);
+    });
+
     it('all descriptors in SAFE_EMOTION_DESCRIPTORS are non-empty lowercase Portuguese strings', () => {
         for (const [emotion, descriptor] of Object.entries(SAFE_EMOTION_DESCRIPTORS)) {
             assert.strictEqual(typeof descriptor, 'string', `${emotion} descriptor must be a string`);
@@ -300,6 +308,8 @@ describe('presentationState: Honest Unavailable State & Malformed / Adversarial 
             [{ name: 'clinical_depression', intensity: 0.9 }],
             [{ name: '<script>alert(1)</script>', intensity: 0.8 }],
             [{ name: '__proto__', intensity: 0.8 }],
+            [{ name: 'toString', intensity: 0.8 }],
+            [{ name: 'valueOf', intensity: 0.8 }],
             [{ name: 'joy', intensity: 1.5 }],
             [{ name: 'joy', intensity: -0.1 }],
             [{ name: 'joy', intensity: Number.NaN }],
@@ -379,6 +389,24 @@ describe('presentationState: Honest Unavailable State & Malformed / Adversarial 
         };
         assert.strictEqual(
             selectKatherinePresentationState({ emotionState: throwingState }),
+            UNAVAILABLE_PRESENTATION_STATE,
+        );
+    });
+
+    it('safely catches and handles explosive Proxy options', () => {
+        const explosiveProxy = new Proxy({}, {
+            get(_target, prop) {
+                if (prop === 'emotionState') {
+                    throw new Error('Explosive proxy get');
+                }
+                return undefined;
+            },
+            getPrototypeOf() {
+                throw new Error('Explosive getPrototypeOf trap');
+            },
+        });
+        assert.strictEqual(
+            selectKatherinePresentationState(explosiveProxy),
             UNAVAILABLE_PRESENTATION_STATE,
         );
     });

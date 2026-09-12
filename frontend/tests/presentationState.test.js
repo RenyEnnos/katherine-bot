@@ -410,6 +410,52 @@ describe('presentationState: Honest Unavailable State & Malformed / Adversarial 
             UNAVAILABLE_PRESENTATION_STATE,
         );
     });
+
+    it('safely catches and handles explosive Proxy inside emotionState payload', () => {
+        // Explosive length getter on dominant_emotions array (triggers during formatters.js length check)
+        const explosiveLengthArray = new Proxy([], {
+            get(target, prop) {
+                if (prop === 'length') {
+                    throw new Error('Explosive proxy trap on length');
+                }
+                return Reflect.get(target, prop);
+            },
+        });
+        const stateWithExplosiveLength = {
+            schema_version: 1,
+            pad: { pleasure: 0, arousal: 0, dominance: 0 },
+            dominant_emotions: explosiveLengthArray,
+            mood_label: 'NEUTRA',
+            timestamp: 1700000000,
+        };
+        assert.strictEqual(
+            selectKatherinePresentationState({ emotionState: stateWithExplosiveLength }),
+            UNAVAILABLE_PRESENTATION_STATE,
+        );
+
+        // Explosive getOwnPropertyDescriptor trap in emotionState
+        const explosiveDescriptorState = new Proxy(
+            {
+                schema_version: 1,
+                pad: { pleasure: 0, arousal: 0, dominance: 0 },
+                dominant_emotions: [],
+                mood_label: 'NEUTRA',
+                timestamp: 1700000000,
+            },
+            {
+                getOwnPropertyDescriptor(target, prop) {
+                    if (prop === 'dominant_emotions') {
+                        throw new Error('Explosive getOwnPropertyDescriptor trap');
+                    }
+                    return Reflect.getOwnPropertyDescriptor(target, prop);
+                },
+            },
+        );
+        assert.strictEqual(
+            selectKatherinePresentationState({ emotionState: explosiveDescriptorState }),
+            UNAVAILABLE_PRESENTATION_STATE,
+        );
+    });
 });
 
 describe('presentationState: Valid DTO with Empty Dominant Emotions (dominant_emotions: [])', () => {

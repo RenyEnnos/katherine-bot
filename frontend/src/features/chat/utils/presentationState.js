@@ -88,64 +88,67 @@ export const selectEnergyLabel = (arousal) => {
  * @returns {{ isAvailable: boolean, statusText: string|null, descriptors: readonly string[], descriptorsText: string|null, energyLabel: string|null }}
  */
 export const selectKatherinePresentationState = (options = {}) => {
-    let rawEmotionState;
     try {
         if (!options || typeof options !== 'object' || Array.isArray(options)) {
             return UNAVAILABLE_PRESENTATION_STATE;
         }
-        rawEmotionState = options.emotionState;
-    } catch {
-        return UNAVAILABLE_PRESENTATION_STATE;
-    }
 
-    const validated = validateEmotionState(rawEmotionState);
-    if (!validated) {
-        return UNAVAILABLE_PRESENTATION_STATE;
-    }
+        const rawEmotionState = options.emotionState;
+        const validated = validateEmotionState(rawEmotionState);
+        if (!validated) {
+            return UNAVAILABLE_PRESENTATION_STATE;
+        }
 
-    const energyLabel = selectEnergyLabel(validated.pad.arousal);
+        const energyLabel = selectEnergyLabel(validated.pad.arousal);
 
-    // DTO válido com dominant_emotions: [] (sem tendência dominante)
-    if (validated.dominant_emotions.length === 0) {
+        // DTO válido com dominant_emotions: [] (sem tendência dominante)
+        if (validated.dominant_emotions.length === 0) {
+            return Object.freeze({
+                isAvailable: true,
+                statusText: null,
+                descriptors: Object.freeze([]),
+                descriptorsText: NO_DOMINANT_TENDENCY_DESCRIPTOR,
+                energyLabel,
+            });
+        }
+
+        // Verify that all dominant emotions are mapped to safe descriptors
+        for (const emotion of validated.dominant_emotions) {
+            const name = emotion?.name;
+            if (!name || !hasOwn(SAFE_EMOTION_DESCRIPTORS, name) || typeof SAFE_EMOTION_DESCRIPTORS[name] !== 'string') {
+                return UNAVAILABLE_PRESENTATION_STATE;
+            }
+        }
+
+        // Sort dominant emotions descending by intensity, preserving original order on ties
+        const sortedEmotions = [...validated.dominant_emotions].sort(
+            (a, b) => b.intensity - a.intensity
+        );
+
+        // Select up to 2 unique presentation descriptors from the highest-intensity emotions
+        const descriptors = [];
+        for (const emotion of sortedEmotions) {
+            const descriptor = SAFE_EMOTION_DESCRIPTORS[emotion.name];
+            if (!descriptors.includes(descriptor)) {
+                descriptors.push(descriptor);
+            }
+            if (descriptors.length === 2) {
+                break;
+            }
+        }
+
+        if (descriptors.length === 0) {
+            return UNAVAILABLE_PRESENTATION_STATE;
+        }
+
         return Object.freeze({
             isAvailable: true,
             statusText: null,
-            descriptors: Object.freeze([]),
-            descriptorsText: NO_DOMINANT_TENDENCY_DESCRIPTOR,
+            descriptors: Object.freeze(descriptors),
+            descriptorsText: descriptors.join(DESCRIPTOR_SEPARATOR),
             energyLabel,
         });
+    } catch {
+        return UNAVAILABLE_PRESENTATION_STATE;
     }
-
-    // Verify that all dominant emotions are mapped to safe descriptors
-    for (const emotion of validated.dominant_emotions) {
-        const name = emotion?.name;
-        if (!name || !hasOwn(SAFE_EMOTION_DESCRIPTORS, name) || typeof SAFE_EMOTION_DESCRIPTORS[name] !== 'string') {
-            return UNAVAILABLE_PRESENTATION_STATE;
-        }
-    }
-
-    // Sort dominant emotions descending by intensity, preserving original order on ties
-    const sortedEmotions = [...validated.dominant_emotions].sort(
-        (a, b) => b.intensity - a.intensity
-    );
-
-    // Select up to 2 unique presentation descriptors from the highest-intensity emotions
-    const descriptors = [];
-    for (const emotion of sortedEmotions) {
-        const descriptor = SAFE_EMOTION_DESCRIPTORS[emotion.name];
-        if (!descriptors.includes(descriptor)) {
-            descriptors.push(descriptor);
-        }
-        if (descriptors.length === 2) {
-            break;
-        }
-    }
-
-    return Object.freeze({
-        isAvailable: true,
-        statusText: null,
-        descriptors: Object.freeze(descriptors),
-        descriptorsText: descriptors.join(DESCRIPTOR_SEPARATOR),
-        energyLabel,
-    });
 };

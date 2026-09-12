@@ -184,10 +184,36 @@ describe('KatherineStateSidebar — 20 Required Behaviors (§12)', () => {
         expect(sidebar.querySelector('.katherine-state-sidebar__descriptors')).toBeNull();
         expect(sidebar.querySelector('.katherine-state-sidebar__energy')).toBeNull();
 
-        // Direct invocation with 0 arguments does not throw and renders unavailable state
-        const unadornedElement = KatherineStateSidebar();
-        expect(unadornedElement).not.toBeNull();
-        expect(unadornedElement.type).toBe('aside');
+        // Direct invocation with 0 arguments, null, primitives, or throwing getters does not throw and renders unavailable state
+        const zeroArgElement = KatherineStateSidebar();
+        expect(zeroArgElement).not.toBeNull();
+        expect(zeroArgElement.type).toBe('aside');
+
+        const nullArgElement = KatherineStateSidebar(null);
+        expect(nullArgElement).not.toBeNull();
+        expect(nullArgElement.type).toBe('aside');
+
+        const primitiveElement = KatherineStateSidebar(42);
+        expect(primitiveElement).not.toBeNull();
+        expect(primitiveElement.type).toBe('aside');
+
+        const throwingPropElement = KatherineStateSidebar({
+            get emotionState() {
+                throw new Error('Explosive prop getter');
+            },
+        });
+        expect(throwingPropElement).not.toBeNull();
+        expect(throwingPropElement.type).toBe('aside');
+
+        const proxyPropElement = KatherineStateSidebar(
+            new Proxy({}, {
+                get() {
+                    throw new Error('Explosive proxy get');
+                },
+            }),
+        );
+        expect(proxyPropElement).not.toBeNull();
+        expect(proxyPropElement.type).toBe('aside');
     });
 
     // 3. malformed state or invalid schema produces honest unavailability

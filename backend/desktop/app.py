@@ -694,18 +694,24 @@ class WindowController:
 
             ok, err = _dispatch_sync(_apply_reconcile, timeout=self._dispatch_timeout)
             if not ok:
+                code = (
+                    "timeout"
+                    if isinstance(err, TimeoutError)
+                    else "window_mutation_failed"
+                )
                 return {
                     "ok": False,
-                    "code": "reconciliation_failed",
-                    "error": str(err),
+                    "code": code,
+                    "message": "The window operation could not be completed.",
                 }
-        finally:
             with self._lock:
-                self._is_reconciling = False
                 self._x = clamped.x
                 self._y = clamped.y
                 self._width = clamped.width
                 self._height = clamped.height
+        finally:
+            with self._lock:
+                self._is_reconciling = False
 
         return {
             "ok": True,

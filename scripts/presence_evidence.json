@@ -1,6 +1,6 @@
 {
   "status": "PASS",
-  "timestamp_utc": "2026-09-12T01:17:25Z",
+  "timestamp_utc": "2026-09-12T01:40:48Z",
   "point_1_lifecycle": {
     "status": "PASS",
     "repetitions_count": 5,
@@ -153,7 +153,7 @@
   },
   "point_5_resources": {
     "companion": {
-      "rss_mb": 434.05,
+      "rss_mb": 434.55,
       "process_count": 3,
       "webkit_process_count": 2,
       "cpu_idle_percent": 100.0,
@@ -162,7 +162,7 @@
       "sample_interval_seconds": 0.5
     },
     "presence": {
-      "rss_mb": 448.54,
+      "rss_mb": 448.37,
       "process_count": 3,
       "webkit_process_count": 2,
       "cpu_idle_percent": 100.0,
@@ -170,7 +170,7 @@
       "tree_cpu_percent": 0.0,
       "sample_interval_seconds": 0.5
     },
-    "delta_rss_mb": 14.49
+    "delta_rss_mb": 13.82
   },
   "point_6_geometry_clamp": {
     "status": "PASS",

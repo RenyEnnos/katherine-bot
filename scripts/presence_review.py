@@ -595,21 +595,28 @@ def verify_matrix(window, output_dir):
         assert isinstance(min_res, dict), f"Rep {rep}: Minimize bridge call timed out or returned non-dict: {min_res}"
         assert min_res.get("ok") is True, f"Rep {rep}: Minimize bridge returned non-ok: {min_res}"
 
-        # Verify native GTK window state
-        time.sleep(0.2)
+        # Bounded wait for native GTK window state to reflect ICONIFIED
+        iconify_deadline = time.monotonic() + 3.0
         native_minimized = False
         native = getattr(window, "native", None)
-        if native is not None:
-            gdk_win = native.get_window()
-            if gdk_win:
-                st_flags = gdk_win.get_state()
-                if st_flags is not None:
-                    native_minimized = bool(st_flags & Gdk.WindowState.ICONIFIED)
+        while time.monotonic() < iconify_deadline:
+            if native is not None:
+                gdk_win = native.get_window()
+                if gdk_win:
+                    st_flags = gdk_win.get_state()
+                    if st_flags is not None and bool(st_flags & Gdk.WindowState.ICONIFIED):
+                        native_minimized = True
+                        break
+            time.sleep(0.05)
+
+        assert native_minimized is True, (
+            f"Rep {rep}: Native GTK window failed to reach ICONIFIED state before restore"
+        )
 
         rep_data["transitions"].append({
             "step": "minimize",
             "bridge_ok": True,
-            "native_iconified": native_minimized,
+            "native_iconified": True,
         })
 
         # -> restore
@@ -627,6 +634,23 @@ def verify_matrix(window, output_dir):
         assert restore_done.wait(5.0), f"Rep {rep}: Native restore timed out"
         time.sleep(0.2)
         wait_for(window, 'Boolean(document.querySelector("[data-testid=\\"katherine-presence-surface\\"]"))')
+
+        # Confirm ICONIFIED was removed after restore
+        deiconify_deadline = time.monotonic() + 3.0
+        native_restored = False
+        while time.monotonic() < deiconify_deadline:
+            if native is not None:
+                gdk_win = native.get_window()
+                if gdk_win:
+                    st_flags = gdk_win.get_state()
+                    if st_flags is not None and not bool(st_flags & Gdk.WindowState.ICONIFIED):
+                        native_restored = True
+                        break
+            time.sleep(0.05)
+        assert native_restored is True, (
+            f"Rep {rep}: Native GTK window still has ICONIFIED flag after restore"
+        )
+
         assert len(webview.windows) == 1, f"Rep {rep}: Window count must remain 1 after restore"
         rep_data["transitions"].append("restore")
 

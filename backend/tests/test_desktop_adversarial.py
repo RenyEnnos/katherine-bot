@@ -396,6 +396,81 @@ class TestWindowControllerFaultTolerance:
         assert res["ok"] is False
         assert res["code"] == "window_mutation_failed"
 
+    def test_reconcile_geometry_move_failure_preserves_state_and_clears_guard(self) -> None:
+        """When native move fails during reconciliation in presence mode,
+
+        state does NOT advance to unapplied coordinates, native geometry is untouched,
+        sanitized error is returned, and reentrancy guard is released.
+        """
+        win = _FaultyWindow()
+        win.native.position = (100, 150)
+        win.native.size = (200, 200)
+        wc = WindowController(window=win, workareas=[WorkArea(0, 0, 1920, 1080)])
+
+        # Enter presence mode: initial state committed
+        r = wc.set_presence_mode(True)
+        assert r["ok"] is True
+        st_before = wc.window_state()
+        assert st_before["x"] == 100
+        assert st_before["y"] == 150
+        assert st_before["width"] == 200
+        assert st_before["height"] == 200
+
+        # Inject failure on move
+        win.fail_move = True
+
+        # Attempt to reconcile out-of-bounds coords (e.g. -400, -400)
+        res = wc.reconcile_geometry(x=-400, y=-400)
+        assert res["ok"] is False
+        assert res["code"] == "window_mutation_failed"
+        assert res["message"] == "The window operation could not be completed."
+
+        # Native geometry must remain untouched
+        assert win.native.position == (100, 150)
+        assert win.x == 100
+        assert win.y == 150
+
+        # Logical window_state must NOT advance to clamped (0, 0)
+        st_after = wc.window_state()
+        assert st_after["x"] == 100
+        assert st_after["y"] == 150
+        assert st_after["width"] == 200
+        assert st_after["height"] == 200
+
+        # Reentrancy guard must be cleared
+        assert wc._is_reconciling is False
+
+        # Clear fault and verify subsequent reconciliation succeeds
+        win.fail_move = False
+        res_recovered = wc.reconcile_geometry(x=-400, y=-400)
+        assert res_recovered["ok"] is True
+        assert res_recovered["clamped"] is True
+        assert res_recovered["x"] == 0
+        assert res_recovered["y"] == 0
+        assert win.native.position == (0, 0)
+        st_final = wc.window_state()
+        assert st_final["x"] == 0
+        assert st_final["y"] == 0
+
+    def test_reconcile_geometry_resize_failure_preserves_state_and_clears_guard(self) -> None:
+        """When native resize fails during reconciliation, state does not advance and guard is cleared."""
+        win = _FaultyWindow()
+        win.native.position = (100, 150)
+        win.native.size = (200, 200)
+        wc = WindowController(window=win, workareas=[WorkArea(0, 0, 1920, 1080)])
+
+        r = wc.set_presence_mode(True)
+        assert r["ok"] is True
+
+        win.fail_resize = True
+        win.native.size = (80, 80)  # less than min_size 120, requiring resize to 120
+        win.width = 80
+        res = wc.reconcile_geometry(x=100, y=150)
+        assert res["ok"] is False
+        assert res["code"] == "window_mutation_failed"
+        assert res["message"] == "The window operation could not be completed."
+        assert wc._is_reconciling is False
+
     def test_dispatch_sync_timeout_returns_timeout_code(self, monkeypatch) -> None:
         """When an operation exceeds timeout, code 'timeout' is returned."""
         class FakeMainContext:

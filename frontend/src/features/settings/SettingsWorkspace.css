@@ -1,0 +1,234 @@
+/*
+ * Katherine settings workspace (#347).
+ *
+ * Visual contract: same dark companion world (#0b0f14 base, slate text,
+ * one hairline at a time, no gradients, no cards-for-everything, no
+ * corporate sidebar). Low density: one category, one control, generous
+ * space. Reduced motion kills the only transition (switch color).
+ */
+
+.settings-workspace {
+    --settings-bg: #0b0f14;
+    --settings-line: rgba(148, 163, 184, 0.16);
+    --settings-muted: #a7b0be;
+    --settings-focus: #93c5fd;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100vh;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--settings-bg);
+    color: #f3f4f6;
+}
+
+.settings-workspace__frame {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 34rem;
+    margin: 0 auto;
+    padding: clamp(1rem, 4vh, 3rem) clamp(1.25rem, 4vw, 2.5rem);
+    min-height: 0;
+    flex: 1 1 auto;
+}
+
+.settings-workspace__header {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding-bottom: 1.25rem;
+    border-bottom: 1px solid var(--settings-line);
+}
+
+.settings-workspace__back {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    align-self: flex-start;
+    padding: 0.35rem 0.6rem 0.35rem 0.35rem;
+    border: none;
+    border-radius: 0.5rem;
+    background: transparent;
+    color: var(--settings-muted);
+    font-size: 0.9375rem;
+    cursor: pointer;
+    transition: color 150ms ease, background-color 150ms ease;
+    -webkit-app-region: no-drag;
+}
+
+.settings-workspace__back:hover {
+    color: #e5e7eb;
+    background-color: rgba(31, 41, 55, 0.6);
+}
+
+.settings-workspace__back:active {
+    transform: scale(0.98);
+}
+
+.settings-workspace__back:focus-visible {
+    outline: 2px solid var(--settings-focus);
+    outline-offset: 2px;
+}
+
+.settings-workspace__title {
+    margin: 0;
+    font-size: 1.5rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
+    color: #f8fafc;
+}
+
+.settings-workspace__content {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding-top: 1.75rem;
+    overflow-y: auto;
+}
+
+.settings-workspace__section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.875rem;
+}
+
+.settings-workspace__section-title {
+    margin: 0;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: #dbe2ea;
+    line-height: 1.2;
+}
+
+.settings-workspace__control {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1.25rem;
+    padding: 0.125rem 0;
+}
+
+.settings-workspace__control-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    min-width: 0;
+}
+
+.settings-workspace__control-label {
+    font-size: 1rem;
+    font-weight: 500;
+    line-height: 1.35;
+    color: #f3f4f6;
+}
+
+.settings-workspace__control-hint {
+    margin: 0;
+    font-size: 0.875rem;
+    line-height: 1.45;
+    color: var(--settings-muted);
+}
+
+.settings-workspace__control-scope {
+    margin: 0;
+    font-size: 0.8125rem;
+    line-height: 1.4;
+    color: #7c8797;
+}
+
+.settings-workspace__control-error {
+    margin: 0.125rem 0 0 0;
+    font-size: 0.875rem;
+    line-height: 1.4;
+    color: #f87171;
+}
+
+/* Switch: native button semantics (role=switch + aria-checked), one
+   hairline border, flat colors. No gradient, no glow. */
+.settings-workspace__switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 0 0 auto;
+    padding: 0.45rem 0.7rem;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 9999px;
+    background: rgba(17, 24, 39, 0.6);
+    color: var(--settings-muted);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: border-color 150ms ease, color 150ms ease, background-color 150ms ease;
+    -webkit-app-region: no-drag;
+}
+
+.settings-workspace__switch:hover {
+    border-color: rgba(148, 163, 184, 0.45);
+    color: #e5e7eb;
+}
+
+.settings-workspace__switch:focus-visible {
+    outline: 2px solid var(--settings-focus);
+    outline-offset: 2px;
+}
+
+.settings-workspace__switch:disabled {
+    cursor: default;
+    opacity: 0.7;
+}
+
+.settings-workspace__switch--on {
+    border-color: rgba(147, 197, 253, 0.55);
+    background: rgba(59, 130, 246, 0.16);
+    color: #bfdbfe;
+}
+
+.settings-workspace__switch--on:hover {
+    border-color: rgba(147, 197, 253, 0.75);
+    color: #dbeafe;
+}
+
+.settings-workspace__switch-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.settings-workspace__switch-text {
+    line-height: 1.2;
+}
+
+/* The knob is decorative only: the state is communicated by text +
+   aria-checked, never color alone. */
+.settings-workspace__switch-knob {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 9999px;
+    background: currentColor;
+}
+
+/* Narrow heights (e.g. 800x600): keep the single control reachable
+   without scrolling when possible; allow vertical scroll otherwise. */
+@media (max-height: 42rem) {
+    .settings-workspace__frame {
+        padding-top: 1rem;
+        padding-bottom: 1rem;
+    }
+
+    .settings-workspace__content {
+        padding-top: 1.25rem;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .settings-workspace,
+    .settings-workspace * {
+        transition-duration: 0ms !important;
+        animation: none !important;
+        transform: none !important;
+    }
+}

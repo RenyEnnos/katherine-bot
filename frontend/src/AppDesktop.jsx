@@ -18,12 +18,24 @@
  *   true alpha transparency on the window surface.
  * - In presence mode, CompanionLayout and all conversation DOM elements are
  *   completely unmounted.
+ *
+ * Settings workspace (#347):
+ * - `isSettingsOpen` is a plain composition flag, not a router: when open
+ *   (companion mode only), `renderLayout` renders SettingsWorkspace instead
+ *   of CompanionLayout. ChatWindow — and therefore the single useChat()
+ *   call with its history and draft state — stays mounted above this seam
+ *   and is never remounted by opening/closing settings.
+ * - Settings never renders inside floating presence mode: the presence
+ *   surface stays minimal and free of conversation/settings DOM (#342).
+ * - The gear access lives in the companion header, not in the #344 state
+ *   sidebar: the sidebar keeps answering "how Katherine is right now".
  */
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import ChatWindow from './features/chat/components/ChatWindow';
 import CompanionLayout from './features/chat/components/CompanionLayout.jsx';
 import KatherinePresence from './features/katherine-face/KatherinePresence.jsx';
 import KatherineStateSidebar from './features/chat/components/KatherineStateSidebar.jsx';
+import SettingsWorkspace from './features/settings/SettingsWorkspace.jsx';
 import {
     setPresenceMode,
     setAlwaysOnTop,
@@ -35,8 +47,11 @@ import {
 export default function AppDesktop() {
     const [mode, setMode] = useState('companion');
     const [isAlwaysOnTop, setIsAlwaysOnTop] = useState(false);
+    const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const isTransitioningRef = useRef(false);
     const isPinningRef = useRef(false);
+    const settingsButtonRef = useRef(null);
+    const shouldFocusSettingsButtonRef = useRef(false);
 
     // Bounded one-shot sync on shell startup (#342) - no continuous polling.
     useEffect(() => {
@@ -89,18 +104,34 @@ export default function AppDesktop() {
     }, []);
 
     const handleToggleAlwaysOnTop = useCallback(async () => {
-        if (isPinningRef.current) return;
+        if (isPinningRef.current) {
+            return { applied: false, code: 'busy' };
+        }
         isPinningRef.current = true;
         try {
             const nextState = !isAlwaysOnTop;
             const res = await setAlwaysOnTop(nextState);
             if (res?.ok && typeof res.on_top === 'boolean') {
                 setIsAlwaysOnTop(res.on_top);
+                return { applied: true, on_top: res.on_top };
             }
+            // Bridge refused or failed: keep the previous coherent
+            // state and return the sanitized failure payload (#347).
+            return res?.ok === false
+                ? { applied: false, code: res.code, message: res.message }
+                : { applied: false, code: 'unknown' };
         } finally {
             isPinningRef.current = false;
         }
     }, [isAlwaysOnTop]);
+
+    // #347: sync-only entry used by SettingsWorkspace to adopt the real
+    // initial bridge state without triggering a bridge mutation.
+    const handleSyncAlwaysOnTop = useCallback((onTop) => {
+        if (typeof onTop === 'boolean') {
+            setIsAlwaysOnTop(onTop);
+        }
+    }, []);
 
     const handleMinimize = useCallback(async () => {
         const res = await minimizeDesktopWindow();
@@ -113,6 +144,27 @@ export default function AppDesktop() {
     const handleClose = useCallback(async () => {
         await closeDesktopWindow();
     }, []);
+
+    const handleOpenSettings = useCallback(() => {
+        setIsSettingsOpen(true);
+    }, []);
+
+    const handleCloseSettings = useCallback(() => {
+        shouldFocusSettingsButtonRef.current = true;
+        setIsSettingsOpen(false);
+    }, []);
+
+    // After settings closes, the companion header (with the gear
+    // button that opened the workspace) is re-mounted. Restore focus
+    // there so keyboard users are not stranded at the end of the DOM.
+    // The ref is null while settings is open (the button unmounts), so
+    // the focus must happen in this post-commit effect.
+    useEffect(() => {
+        if (!isSettingsOpen && shouldFocusSettingsButtonRef.current) {
+            shouldFocusSettingsButtonRef.current = false;
+            settingsButtonRef.current?.focus();
+        }
+    }, [isSettingsOpen]);
 
     const renderLayout = useCallback(
         (chatModel) => {
@@ -129,10 +181,24 @@ export default function AppDesktop() {
                     />
                 );
             }
+            // #347: settings is a companion-mode composition swap. The
+            // single useChat() in ChatWindow is untouched by this branch.
+            if (isSettingsOpen) {
+                return (
+                    <SettingsWorkspace
+                        onReturn={handleCloseSettings}
+                        isAlwaysOnTop={isAlwaysOnTop}
+                        onToggleAlwaysOnTop={handleToggleAlwaysOnTop}
+                        onSyncAlwaysOnTop={handleSyncAlwaysOnTop}
+                    />
+                );
+            }
             return (
                 <CompanionLayout
                     {...chatModel}
                     onEnterPresence={handleEnterPresence}
+                    onOpenSettings={handleOpenSettings}
+                    settingsButtonRef={settingsButtonRef}
                     auxiliarySlot={
                         <KatherineStateSidebar emotionState={chatModel.emotionState} />
                     }
@@ -142,11 +208,15 @@ export default function AppDesktop() {
         [
             mode,
             isAlwaysOnTop,
+            isSettingsOpen,
             handleEnterPresence,
             handleReturnToCompanion,
             handleToggleAlwaysOnTop,
+            handleSyncAlwaysOnTop,
             handleMinimize,
             handleClose,
+            handleOpenSettings,
+            handleCloseSettings,
         ],
     );
 

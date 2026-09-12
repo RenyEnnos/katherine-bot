@@ -683,14 +683,41 @@ class WindowController:
                     "height": clamped.height,
                 }
 
+            orig_w = w
+            orig_h = h
+            orig_x = curr_x
+            orig_y = curr_y
+
             self._is_reconciling = True
 
         try:
             def _apply_reconcile() -> None:
-                if needs_resize and hasattr(window, "resize"):
-                    window.resize(clamped.width, clamped.height)
-                if needs_move and hasattr(window, "move"):
-                    window.move(clamped.x, clamped.y)
+                resized = False
+                moved = False
+                try:
+                    if needs_resize and hasattr(window, "resize"):
+                        window.resize(clamped.width, clamped.height)
+                        resized = True
+                    if needs_move and hasattr(window, "move"):
+                        window.move(clamped.x, clamped.y)
+                        moved = True
+                except Exception:
+                    if resized and hasattr(window, "resize"):
+                        try:
+                            window.resize(orig_w, orig_h)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    if (
+                        moved
+                        and orig_x is not None
+                        and orig_y is not None
+                        and hasattr(window, "move")
+                    ):
+                        try:
+                            window.move(orig_x, orig_y)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    raise
 
             ok, err = _dispatch_sync(_apply_reconcile, timeout=self._dispatch_timeout)
             if not ok:

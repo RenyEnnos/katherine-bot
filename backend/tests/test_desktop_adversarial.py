@@ -471,6 +471,82 @@ class TestWindowControllerFaultTolerance:
         assert res["message"] == "The window operation could not be completed."
         assert wc._is_reconciling is False
 
+    def test_reconcile_geometry_composite_mutation_rollback_on_move_failure(self) -> None:
+        """When needs_resize and needs_move are both True, resize succeeds, and move fails:
+
+        the native resize is rolled back to original geometry, logical state does not advance,
+        reentrancy guard is released, and sanitized error is returned.
+        """
+        win = _FaultyWindow()
+        win.native.position = (100, 150)
+        win.native.size = (200, 200)
+        wc = WindowController(window=win, workareas=[WorkArea(0, 0, 1920, 1080)])
+
+        r = wc.set_presence_mode(True)
+        assert r["ok"] is True
+        st_initial = wc.window_state()
+        assert st_initial["x"] == 100
+        assert st_initial["y"] == 150
+        assert st_initial["width"] == 200
+        assert st_initial["height"] == 200
+
+        # Set up conditions where BOTH resize and move are required:
+        # Native size 80x80 is under min_size 120 -> clamped to 120x120 (needs_resize == True)
+        # Position (-400, -400) is out of bounds -> clamped to (0, 0) (needs_move == True)
+        win.native.size = (80, 80)
+        win.width = 80
+        win.height = 80
+        win.native.position = (100, 150)
+        win.x = 100
+        win.y = 150
+
+        # Resize succeeds, but move fails
+        win.fail_resize = False
+        win.fail_move = True
+
+        res = wc.reconcile_geometry(x=-400, y=-400)
+        assert res["ok"] is False
+        assert res["code"] == "window_mutation_failed"
+        assert res["message"] == "The window operation could not be completed."
+
+        # Native size was rolled back to original (80, 80)
+        assert win.native.size == (80, 80)
+        assert win.width == 80
+        assert win.height == 80
+
+        # Native position remained original (100, 150)
+        assert win.native.position == (100, 150)
+        assert win.x == 100
+        assert win.y == 150
+
+        # Logical window_state did NOT advance to clamped values (0, 0, 120, 120)
+        st_after = wc.window_state()
+        assert st_after["x"] == 100
+        assert st_after["y"] == 150
+        assert st_after["width"] == 200
+        assert st_after["height"] == 200
+
+        # Guard is released
+        assert wc._is_reconciling is False
+
+        # Recover from failure and verify composite mutation succeeds completely
+        win.fail_move = False
+        res2 = wc.reconcile_geometry(x=-400, y=-400)
+        assert res2["ok"] is True
+        assert res2["clamped"] is True
+        assert res2["x"] == 0
+        assert res2["y"] == 0
+        assert res2["width"] == 120
+        assert res2["height"] == 120
+
+        assert win.native.position == (0, 0)
+        assert win.native.size == (120, 120)
+        st_final = wc.window_state()
+        assert st_final["x"] == 0
+        assert st_final["y"] == 0
+        assert st_final["width"] == 120
+        assert st_final["height"] == 120
+
     def test_dispatch_sync_timeout_returns_timeout_code(self, monkeypatch) -> None:
         """When an operation exceeds timeout, code 'timeout' is returned."""
         class FakeMainContext:

@@ -12,8 +12,9 @@
  *   already exists (`desktopBridge.js` allowlist); no mock state, no
  *   fake save, no placeholder for future integrations.
  * - The single exposed capability is "Sempre no topo" (always-on-top):
- *   read via `getWindowState()` on mount and mutated via
- *   `setAlwaysOnTop()`. Both go through the validated pywebview bridge.
+ *   its authoritative state is owned by `AppDesktop`, read through
+ *   `getWindowState()` at shell startup, and mutated via `setAlwaysOnTop()`.
+ *   Both bridge operations use the validated pywebview allowlist.
  * - The control is session state only. The window controller keeps the
  *   flag in memory for the lifetime of the window; nothing in the
  *   bridge contract persists it across restarts, so the copy must not
@@ -21,9 +22,8 @@
  * - Success is never optimistic: the UI only reflects the `on_top`
  *   value confirmed by the bridge payload. A failed mutation keeps the
  *   previous coherent state and surfaces a sanitized error message.
- * - No polling, no timers, no network. The single mount-time
- *   `getWindowState()` read mirrors the bounded one-shot sync already
- *   used by `AppDesktop`.
+ * - No polling, no timers, no network. Opening this workspace performs no
+ *   bridge reads or mutations; it consumes the owner state from `AppDesktop`.
  *
  * Conversation preservation (#347 critical requirement):
  * this component is rendered by `AppDesktop` *below* `ChatWindow`, so
@@ -32,7 +32,6 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Pin, PinOff } from 'lucide-react';
-import { getWindowState } from '../../lib/desktopBridge';
 import './SettingsWorkspace.css';
 const AOT_PENDING_MESSAGE = 'Aplicando…';
 
@@ -48,27 +47,11 @@ function alwaysOnTopFailureMessage(result) {
     return 'Não foi possível alterar agora. A configuração permanece como estava.';
 }
 
-export default function SettingsWorkspace({ onReturn, isAlwaysOnTop = false, onToggleAlwaysOnTop, onSyncAlwaysOnTop }) {
+export default function SettingsWorkspace({ onReturn, isAlwaysOnTop = false, onToggleAlwaysOnTop }) {
     const headerRef = useRef(null);
     const [aotError, setAotError] = useState(null);
     const [aotPending, setAotPending] = useState(false);
     const pendingRef = useRef(false);
-
-    // Bounded, one-shot sync on mount: the authoritative initial state
-    // comes from the real bridge contract, never from an assumption.
-    // No polling: this runs once per mount and aborts on unmount.
-    useEffect(() => {
-        let active = true;
-        getWindowState().then((state) => {
-            if (active && state?.ok && typeof state.on_top === 'boolean') {
-                onSyncAlwaysOnTop?.(state.on_top);
-            }
-        });
-        return () => {
-            active = false;
-        };
-        // onSyncAlwaysOnTop is a stable callback from AppDesktop.
-    }, []);
 
     // Give the back button focus on open so keyboard users land in a
     // predictable place (and the screen reader announces the surface).

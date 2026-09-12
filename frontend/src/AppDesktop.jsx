@@ -50,14 +50,19 @@ export default function AppDesktop() {
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const isTransitioningRef = useRef(false);
     const isPinningRef = useRef(false);
+    const windowStateEpochRef = useRef(0);
     const settingsButtonRef = useRef(null);
     const shouldFocusSettingsButtonRef = useRef(false);
 
     // Bounded one-shot sync on shell startup (#342) - no continuous polling.
     useEffect(() => {
         let active = true;
+        const readEpoch = windowStateEpochRef.current;
         getWindowState().then((state) => {
-            if (active && state?.ok) {
+            // A startup snapshot may resolve after a newer confirmed window
+            // operation. Never let that stale read overwrite the newer
+            // owner state.
+            if (active && readEpoch === windowStateEpochRef.current && state?.ok) {
                 if (state.mode === 'presence' || state.mode === 'companion') {
                     setMode(state.mode);
                 }
@@ -79,6 +84,7 @@ export default function AppDesktop() {
             if (res?.ok) {
                 setMode('presence');
                 if (typeof res.on_top === 'boolean') {
+                    windowStateEpochRef.current += 1;
                     setIsAlwaysOnTop(res.on_top);
                 }
             }
@@ -95,6 +101,7 @@ export default function AppDesktop() {
             if (res?.ok) {
                 setMode('companion');
                 if (typeof res.on_top === 'boolean') {
+                    windowStateEpochRef.current += 1;
                     setIsAlwaysOnTop(res.on_top);
                 }
             }
@@ -112,6 +119,7 @@ export default function AppDesktop() {
             const nextState = !isAlwaysOnTop;
             const res = await setAlwaysOnTop(nextState);
             if (res?.ok && typeof res.on_top === 'boolean') {
+                windowStateEpochRef.current += 1;
                 setIsAlwaysOnTop(res.on_top);
                 return { applied: true, on_top: res.on_top };
             }
@@ -124,14 +132,6 @@ export default function AppDesktop() {
             isPinningRef.current = false;
         }
     }, [isAlwaysOnTop]);
-
-    // #347: sync-only entry used by SettingsWorkspace to adopt the real
-    // initial bridge state without triggering a bridge mutation.
-    const handleSyncAlwaysOnTop = useCallback((onTop) => {
-        if (typeof onTop === 'boolean') {
-            setIsAlwaysOnTop(onTop);
-        }
-    }, []);
 
     const handleMinimize = useCallback(async () => {
         const res = await minimizeDesktopWindow();
@@ -189,7 +189,6 @@ export default function AppDesktop() {
                         onReturn={handleCloseSettings}
                         isAlwaysOnTop={isAlwaysOnTop}
                         onToggleAlwaysOnTop={handleToggleAlwaysOnTop}
-                        onSyncAlwaysOnTop={handleSyncAlwaysOnTop}
                     />
                 );
             }
@@ -212,7 +211,6 @@ export default function AppDesktop() {
             handleEnterPresence,
             handleReturnToCompanion,
             handleToggleAlwaysOnTop,
-            handleSyncAlwaysOnTop,
             handleMinimize,
             handleClose,
             handleOpenSettings,

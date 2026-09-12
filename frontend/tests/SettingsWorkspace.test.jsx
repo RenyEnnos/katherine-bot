@@ -19,7 +19,7 @@
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import '@testing-library/jest-dom/vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const chatHarness = vi.hoisted(() => ({
     calls: 0,
@@ -262,10 +262,10 @@ describe('SettingsWorkspace: honesty of capabilities', () => {
 
         await openSettings();
 
-        // Opening the workspace performs exactly one bounded read of the
-        // real window state (the initial sync) and nothing else: no
-        // history load, no mutations, no network.
-        expect(pywebviewApi.window_state).toHaveBeenCalledTimes(1);
+        // Opening the workspace performs no bridge reads: AppDesktop owns
+        // the single bounded startup sync, and settings only consumes its
+        // state. There are also no mutations or network calls.
+        expect(pywebviewApi.window_state).not.toHaveBeenCalled();
         expect(pywebviewApi.set_always_on_top).not.toHaveBeenCalled();
         expect(pywebviewApi.set_presence_mode).not.toHaveBeenCalled();
         expect(pywebviewApi.close_window).not.toHaveBeenCalled();
@@ -276,10 +276,86 @@ describe('SettingsWorkspace: honesty of capabilities', () => {
 describe('SettingsWorkspace: always-on-top control lifecycle', () => {
     beforeEach(resetState);
 
-    it('adopts the real initial state from the bridge on open', async () => {
+    it('keeps the confirmed pin when an older startup read resolves afterward', async () => {
+        let resolveInitialRead;
+        const initialRead = new Promise((resolve) => {
+            resolveInitialRead = resolve;
+        });
+        pywebviewApi.window_state.mockImplementationOnce(() => initialRead);
+
         render(<AppDesktop />);
-        // The shell startup sync consumed the first read; change the
-        // authoritative bridge state before opening the workspace.
+        await waitFor(() => {
+            expect(pywebviewApi.window_state).toHaveBeenCalledTimes(1);
+        });
+
+        await openSettings();
+        const control = screen.getByTestId('settings-always-on-top-switch');
+        expect(control).toHaveAttribute('aria-checked', 'false');
+
+        await act(async () => {
+            fireEvent.click(control);
+        });
+        expect(control).toHaveAttribute('aria-checked', 'true');
+        expect(pywebviewApi.set_always_on_top).toHaveBeenCalledTimes(1);
+        expect(pywebviewApi.set_always_on_top).toHaveBeenCalledWith(true);
+
+        await act(async () => {
+            resolveInitialRead({
+                ok: true,
+                mode: 'companion',
+                on_top: false,
+                width: 1280,
+                height: 800,
+            });
+        });
+
+        expect(control).toHaveAttribute('aria-checked', 'true');
+        expect(pywebviewApi.set_always_on_top).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the confirmed unpin when an older startup read resolves afterward', async () => {
+        let resolveInitialRead;
+        const initialRead = new Promise((resolve) => {
+            resolveInitialRead = resolve;
+        });
+        pywebviewApi.window_state.mockImplementationOnce(() => initialRead);
+
+        render(<AppDesktop />);
+        await waitFor(() => {
+            expect(pywebviewApi.window_state).toHaveBeenCalledTimes(1);
+        });
+
+        await openSettings();
+        const control = screen.getByTestId('settings-always-on-top-switch');
+
+        await act(async () => {
+            fireEvent.click(control);
+        });
+        expect(control).toHaveAttribute('aria-checked', 'true');
+
+        await act(async () => {
+            fireEvent.click(control);
+        });
+        expect(control).toHaveAttribute('aria-checked', 'false');
+        expect(pywebviewApi.set_always_on_top).toHaveBeenCalledTimes(2);
+        expect(pywebviewApi.set_always_on_top).toHaveBeenNthCalledWith(1, true);
+        expect(pywebviewApi.set_always_on_top).toHaveBeenNthCalledWith(2, false);
+
+        await act(async () => {
+            resolveInitialRead({
+                ok: true,
+                mode: 'companion',
+                on_top: true,
+                width: 1280,
+                height: 800,
+            });
+        });
+
+        expect(control).toHaveAttribute('aria-checked', 'false');
+        expect(pywebviewApi.set_always_on_top).toHaveBeenCalledTimes(2);
+    });
+
+    it('uses the AppDesktop-owned initial state without a workspace read', async () => {
         windowStatePayload = {
             ok: true,
             mode: 'companion',
@@ -287,11 +363,17 @@ describe('SettingsWorkspace: always-on-top control lifecycle', () => {
             width: 1280,
             height: 800,
         };
+        render(<AppDesktop />);
 
+        // The startup read is asynchronous, so wait for it to adopt the
+        // state before opening the workspace.
+        await waitFor(() => {
+            expect(pywebviewApi.window_state).toHaveBeenCalledTimes(1);
+        });
         await openSettings();
 
         const control = screen.getByTestId('settings-always-on-top-switch');
-        expect(pywebviewApi.window_state).toHaveBeenCalled();
+        expect(pywebviewApi.window_state).toHaveBeenCalledTimes(1);
         expect(control).toHaveAttribute('aria-checked', 'true');
     });
 

@@ -40,6 +40,15 @@
     color: #cbd5e1;
 }
 
+.katherine-state-sidebar__status {
+    margin: 0;
+    font-size: 0.9375rem;
+    font-weight: 400;
+    line-height: 1.4;
+    color: #94a3b8;
+    word-break: break-word;
+}
+
 @media (prefers-reduced-motion: reduce) {
     .katherine-state-sidebar,
     .katherine-state-sidebar * {

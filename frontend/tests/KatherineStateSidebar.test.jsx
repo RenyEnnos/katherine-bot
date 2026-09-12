@@ -154,35 +154,50 @@ describe('KatherineStateSidebar — 20 Required Behaviors (§12)', () => {
         expect(sidebar2).toHaveTextContent('energia alta');
     });
 
-    // 2. missing state (null/undefined) produces neutral honest fallback ("serena", "energia estável")
-    it('Behavior 2: missing state produces neutral honest fallback', () => {
+    // 2. missing state (null/undefined) produces explicit honest indication of unavailability ("estado indisponível")
+    it('Behavior 2: missing state (null/undefined) produces explicit honest indication of unavailability', () => {
         const { rerender } = render(<KatherineStateSidebar emotionState={null} />);
         let sidebar = screen.getByTestId('katherine-state-sidebar');
-        expect(sidebar).toHaveTextContent('serena');
-        expect(sidebar).toHaveTextContent('energia estável');
+        expect(sidebar).toHaveTextContent('Estado');
+        expect(sidebar).toHaveTextContent('estado indisponível');
+        expect(sidebar).not.toHaveTextContent('serena');
+        expect(sidebar).not.toHaveTextContent('neutra');
+        expect(sidebar).not.toHaveTextContent('tranquila');
+        expect(sidebar).not.toHaveTextContent('energia estável');
+        expect(sidebar.querySelector('.katherine-state-sidebar__descriptors')).toBeNull();
+        expect(sidebar.querySelector('.katherine-state-sidebar__energy')).toBeNull();
+        expect(sidebar.querySelector('.katherine-state-sidebar__status')).toHaveTextContent('estado indisponível');
 
         rerender(<KatherineStateSidebar emotionState={undefined} />);
         sidebar = screen.getByTestId('katherine-state-sidebar');
-        expect(sidebar).toHaveTextContent('serena');
-        expect(sidebar).toHaveTextContent('energia estável');
+        expect(sidebar).toHaveTextContent('estado indisponível');
+        expect(sidebar).not.toHaveTextContent('serena');
+        expect(sidebar).not.toHaveTextContent('energia estável');
+        expect(sidebar.querySelector('.katherine-state-sidebar__descriptors')).toBeNull();
+        expect(sidebar.querySelector('.katherine-state-sidebar__energy')).toBeNull();
 
         rerender(<KatherineStateSidebar />);
         sidebar = screen.getByTestId('katherine-state-sidebar');
-        expect(sidebar).toHaveTextContent('serena');
-        expect(sidebar).toHaveTextContent('energia estável');
+        expect(sidebar).toHaveTextContent('estado indisponível');
+        expect(sidebar).not.toHaveTextContent('serena');
+        expect(sidebar).not.toHaveTextContent('energia estável');
+        expect(sidebar.querySelector('.katherine-state-sidebar__descriptors')).toBeNull();
+        expect(sidebar.querySelector('.katherine-state-sidebar__energy')).toBeNull();
     });
 
-    // 3. malformed state produces neutral honest fallback
-    it('Behavior 3: malformed state produces neutral honest fallback', () => {
+    // 3. malformed state or invalid schema produces honest unavailability
+    it('Behavior 3: malformed state or invalid schema produces honest unavailability', () => {
         const malformedCases = [
             {},
             { schema_version: 2 },
+            { schema_version: '1' },
+            { schema_version: null },
             { schema_version: 1, pad: { pleasure: 999, arousal: 0, dominance: 0 } },
             { schema_version: 1, pad: { pleasure: 0, arousal: NaN, dominance: 0 } },
+            { schema_version: 1, pad: { pleasure: 0, arousal: 0 } },
             { schema_version: 1, dominant_emotions: 'not an array' },
             { schema_version: 1, dominant_emotions: [{ name: 'joy', intensity: 2.0 }] },
             { schema_version: 1, dominant_emotions: [{ name: 'joy', intensity: -0.5 }] },
-            { schema_version: 1, dominant_emotions: [] },
             'invalid string',
             42,
             false,
@@ -191,14 +206,21 @@ describe('KatherineStateSidebar — 20 Required Behaviors (§12)', () => {
         for (const malformed of malformedCases) {
             const { unmount } = render(<KatherineStateSidebar emotionState={malformed} />);
             const sidebar = screen.getByTestId('katherine-state-sidebar');
-            expect(sidebar).toHaveTextContent('serena');
-            expect(sidebar).toHaveTextContent('energia estável');
+            expect(sidebar).toHaveTextContent('Estado');
+            expect(sidebar).toHaveTextContent('estado indisponível');
+            expect(sidebar).not.toHaveTextContent('serena');
+            expect(sidebar).not.toHaveTextContent('neutra');
+            expect(sidebar).not.toHaveTextContent('tranquila');
+            expect(sidebar).not.toHaveTextContent('energia estável');
+            expect(sidebar.querySelector('.katherine-state-sidebar__descriptors')).toBeNull();
+            expect(sidebar.querySelector('.katherine-state-sidebar__energy')).toBeNull();
+            expect(sidebar.querySelector('.katherine-state-sidebar__status')).toHaveTextContent('estado indisponível');
             unmount();
         }
     });
 
-    // 4. unknown/untrusted emotion names are never rendered raw
-    it('Behavior 4: unknown or untrusted emotion names are never rendered raw', () => {
+    // 4. unknown or rejected emotion names result in honest unavailability and are never rendered raw
+    it('Behavior 4: unknown or rejected emotion names result in honest unavailability and are never rendered raw', () => {
         const untrustedPayloads = [
             {
                 schema_version: 1,
@@ -232,10 +254,98 @@ describe('KatherineStateSidebar — 20 Required Behaviors (§12)', () => {
             expect(sidebar.textContent).not.toContain('alert');
             expect(sidebar.textContent).not.toContain('__proto__');
 
-            expect(sidebar).toHaveTextContent('serena');
-            expect(sidebar).toHaveTextContent('energia estável');
+            expect(sidebar).toHaveTextContent('Estado');
+            expect(sidebar).toHaveTextContent('estado indisponível');
+            expect(sidebar).not.toHaveTextContent('serena');
+            expect(sidebar).not.toHaveTextContent('energia estável');
+            expect(sidebar.querySelector('.katherine-state-sidebar__descriptors')).toBeNull();
+            expect(sidebar.querySelector('.katherine-state-sidebar__energy')).toBeNull();
             unmount();
         }
+    });
+
+    // Valid DTO with dominant_emotions: [] is distinguished from unavailable state
+    it('distinguishes valid DTO with empty dominant_emotions from unavailable state', () => {
+        const emptyDominantState = makeValidEmotionState({
+            dominant_emotions: [],
+            pad: { pleasure: 0.1, arousal: 0.0, dominance: 0.0 },
+        });
+
+        const { rerender } = render(<KatherineStateSidebar emotionState={emptyDominantState} />);
+        let sidebar = screen.getByTestId('katherine-state-sidebar');
+
+        expect(sidebar).toHaveTextContent('Estado');
+        expect(sidebar).toHaveTextContent('sem tendência dominante');
+        expect(sidebar).toHaveTextContent('energia estável');
+        expect(sidebar).not.toHaveTextContent('estado indisponível');
+        expect(sidebar).not.toHaveTextContent('serena');
+        expect(sidebar).not.toHaveTextContent('neutra');
+        expect(sidebar.querySelector('.katherine-state-sidebar__descriptors')).toHaveTextContent('sem tendência dominante');
+        expect(sidebar.querySelector('.katherine-state-sidebar__energy')).toHaveTextContent('energia estável');
+        expect(sidebar.querySelector('.katherine-state-sidebar__status')).toBeNull();
+
+        // Valid qualitative energy variation with empty dominant_emotions
+        rerender(
+            <KatherineStateSidebar
+                emotionState={makeValidEmotionState({
+                    dominant_emotions: [],
+                    pad: { pleasure: 0.0, arousal: -0.5, dominance: 0.0 },
+                })}
+            />,
+        );
+        sidebar = screen.getByTestId('katherine-state-sidebar');
+        expect(sidebar).toHaveTextContent('sem tendência dominante');
+        expect(sidebar).toHaveTextContent('energia baixa');
+
+        rerender(
+            <KatherineStateSidebar
+                emotionState={makeValidEmotionState({
+                    dominant_emotions: [],
+                    pad: { pleasure: 0.0, arousal: 0.7, dominance: 0.0 },
+                })}
+            />,
+        );
+        sidebar = screen.getByTestId('katherine-state-sidebar');
+        expect(sidebar).toHaveTextContent('sem tendência dominante');
+        expect(sidebar).toHaveTextContent('energia alta');
+    });
+
+    // Energy only appears when valid DTO exists capable of sustaining it
+    it('energy only appears when valid DTO exists capable of sustaining it', () => {
+        // Unavailable states: NO energy rendered
+        const invalidStates = [
+            null,
+            undefined,
+            {},
+            { schema_version: 2 },
+            { schema_version: 1, dominant_emotions: [{ name: 'unknown_emotion', intensity: 0.5 }] },
+        ];
+
+        for (const invalid of invalidStates) {
+            const { unmount } = render(<KatherineStateSidebar emotionState={invalid} />);
+            const sidebar = screen.getByTestId('katherine-state-sidebar');
+            expect(sidebar.querySelector('.katherine-state-sidebar__energy')).toBeNull();
+            expect(sidebar.textContent).not.toMatch(/energia (baixa|estável|alta)/);
+            unmount();
+        }
+
+        // Valid state with emotions: energy rendered
+        const validWithEmotions = makeValidEmotionState({
+            dominant_emotions: [{ name: 'joy', intensity: 0.8 }],
+            pad: { pleasure: 0.5, arousal: 0.4, dominance: 0.2 },
+        });
+        const { unmount: unmountValid1 } = render(<KatherineStateSidebar emotionState={validWithEmotions} />);
+        expect(screen.getByTestId('katherine-state-sidebar').querySelector('.katherine-state-sidebar__energy')).toHaveTextContent('energia alta');
+        unmountValid1();
+
+        // Valid state without dominant emotions: energy rendered
+        const validEmptyEmotions = makeValidEmotionState({
+            dominant_emotions: [],
+            pad: { pleasure: 0.0, arousal: -0.3, dominance: 0.0 },
+        });
+        const { unmount: unmountValid2 } = render(<KatherineStateSidebar emotionState={validEmptyEmotions} />);
+        expect(screen.getByTestId('katherine-state-sidebar').querySelector('.katherine-state-sidebar__energy')).toHaveTextContent('energia baixa');
+        unmountValid2();
     });
 
     // 5. PAD values are not presented as psychological percentages
@@ -426,6 +536,17 @@ describe('KatherineStateSidebar — 20 Required Behaviors (§12)', () => {
         for (const p of paragraphs) {
             expect(p).not.toHaveAttribute('tabindex');
         }
+
+        // Also verify semantics when state is unavailable (1 paragraph, accessible status, no focus trap)
+        const { unmount: unmountUnavail } = render(<KatherineStateSidebar emotionState={null} />);
+        const unavailAside = screen.getAllByTestId('katherine-state-sidebar')[1];
+        expect(unavailAside.tagName).toBe('ASIDE');
+        expect(unavailAside).toHaveAttribute('aria-labelledby', 'katherine-state-heading');
+        const unavailParagraphs = unavailAside.querySelectorAll('p');
+        expect(unavailParagraphs.length).toBe(1);
+        expect(unavailParagraphs[0]).toHaveTextContent('estado indisponível');
+        expect(unavailParagraphs[0]).not.toHaveAttribute('tabindex');
+        unmountUnavail();
     });
 
     // 13. KatherineFace remains mounted as dominant companion presence

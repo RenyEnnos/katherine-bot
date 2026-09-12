@@ -22,12 +22,31 @@ export default function KatherineStateSidebar({ emotionState }) {
                 Estado
             </h2>
             <div className="katherine-state-sidebar__body">
-                <p className="katherine-state-sidebar__descriptors">
-                    {presentation.descriptorsText}
-                </p>
-                <p className="katherine-state-sidebar__energy">
-                    {presentation.energyLabel}
-                </p>
+                {!presentation.isAvailable ? (
+                    <p
+                        className="katherine-state-sidebar__status"
+                        data-testid="katherine-state-status"
+                    >
+                        {presentation.statusText}
+                    </p>
+                ) : (
+                    <>
+                        <p
+                            className="katherine-state-sidebar__descriptors"
+                            data-testid="katherine-state-descriptors"
+                        >
+                            {presentation.descriptorsText}
+                        </p>
+                        {presentation.energyLabel ? (
+                            <p
+                                className="katherine-state-sidebar__energy"
+                                data-testid="katherine-state-energy"
+                            >
+                                {presentation.energyLabel}
+                            </p>
+                        ) : null}
+                    </>
+                )}
             </div>
         </aside>
     );

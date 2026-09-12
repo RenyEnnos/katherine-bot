@@ -21,15 +21,20 @@ export const SAFE_EMOTION_DESCRIPTORS = Object.freeze({
     guilt: 'reflexiva',
 });
 
+export const UNAVAILABLE_STATUS_TEXT = 'estado indisponível';
+export const NO_DOMINANT_TENDENCY_DESCRIPTOR = 'sem tendência dominante';
+
 /**
- * Immutable neutral fallback state used when emotion state is absent, malformed,
- * or contains zero valid dominant emotions.
+ * Immutable unavailable presentation state used when emotion state DTO is absent,
+ * malformed, or contains an invalid schema/unknown emotion.
+ * Honest: does not invent emotions ('serena', 'neutra') and does not derive energy.
  */
-export const NEUTRAL_PRESENTATION_STATE = Object.freeze({
-    descriptors: Object.freeze(['serena']),
-    descriptorsText: 'serena',
-    energyLabel: 'energia estável',
-    isFallback: true,
+export const UNAVAILABLE_PRESENTATION_STATE = Object.freeze({
+    isAvailable: false,
+    statusText: UNAVAILABLE_STATUS_TEXT,
+    descriptors: Object.freeze([]),
+    descriptorsText: null,
+    energyLabel: null,
 });
 
 const DESCRIPTOR_SEPARATOR = ' · ';
@@ -37,13 +42,14 @@ const DESCRIPTOR_SEPARATOR = ' · ';
 /**
  * Deterministically maps arousal to a calm, qualitative energy tier.
  * Never exposes raw numbers, percentages, or clinical telemetry.
+ * Returns null if arousal is not a valid coordinate (-1.0 to +1.0).
  *
  * @param {number} arousal Bipolar arousal coordinate (-1.0 to +1.0)
- * @returns {string} Qualitative energy label ('energia baixa', 'energia alta', or 'energia estável')
+ * @returns {string|null} Qualitative energy label ('energia baixa', 'energia alta', or 'energia estável'), or null if invalid
  */
 export const selectEnergyLabel = (arousal) => {
-    if (typeof arousal !== 'number' || !Number.isFinite(arousal)) {
-        return 'energia estável';
+    if (typeof arousal !== 'number' || !Number.isFinite(arousal) || arousal < -1 || arousal > 1) {
+        return null;
     }
     if (arousal < -0.2) {
         return 'energia baixa';
@@ -59,32 +65,51 @@ export const selectEnergyLabel = (arousal) => {
  *
  * Requirements & Invariants:
  * 1. Consumes only validated public emotion state via validateEmotionState().
- * 2. Uses finite allowlist SAFE_EMOTION_DESCRIPTORS for descriptors.
- * 3. Never renders raw mood_label (excludes clinical and alarmist backend strings).
- * 4. Never renders percentages, progress bars, or PAD dimensions.
- * 5. Never uses timestamp for elapsed time or user absence heuristics.
- * 6. Zero side effects, zero I/O, zero network calls, zero timers.
- * 7. Returns immutable, frozen objects.
+ * 2. If DTO is absent or invalid (null, undefined, malformed, invalid schema, rejected emotion):
+ *    returns UNAVAILABLE_PRESENTATION_STATE (honest unavailability, zero invented emotions, zero derived energy).
+ * 3. If DTO is valid with dominant_emotions: []:
+ *    distinguishes from unavailable state by presenting NO_DOMINANT_TENDENCY_DESCRIPTOR ('sem tendência dominante')
+ *    and qualitative energy from validated PAD arousal.
+ * 4. If DTO is valid with dominant emotions:
+ *    uses finite allowlist SAFE_EMOTION_DESCRIPTORS (max 2 descriptors) and qualitative energy.
+ * 5. Never renders raw mood_label (excludes clinical and alarmist backend strings).
+ * 6. Never renders percentages, progress bars, or raw PAD dimensions.
+ * 7. Never uses timestamp for elapsed time or user absence heuristics.
+ * 8. Zero side effects, zero I/O, zero network calls, zero timers.
+ * 9. Returns immutable, frozen objects.
  *
  * @param {Object} [options={}]
  * @param {Object|null} [options.emotionState] Public emotion state payload
- * @returns {{ descriptors: readonly string[], descriptorsText: string, energyLabel: string, isFallback: boolean }}
+ * @returns {{ isAvailable: boolean, statusText: string|null, descriptors: readonly string[], descriptorsText: string|null, energyLabel: string|null }}
  */
 export const selectKatherinePresentationState = (options = {}) => {
-    if (!options || typeof options !== 'object') {
-        return NEUTRAL_PRESENTATION_STATE;
+    if (!options || typeof options !== 'object' || Array.isArray(options)) {
+        return UNAVAILABLE_PRESENTATION_STATE;
     }
 
     let rawEmotionState;
     try {
         rawEmotionState = options.emotionState;
     } catch {
-        return NEUTRAL_PRESENTATION_STATE;
+        return UNAVAILABLE_PRESENTATION_STATE;
     }
 
     const validated = validateEmotionState(rawEmotionState);
-    if (!validated || validated.dominant_emotions.length === 0) {
-        return NEUTRAL_PRESENTATION_STATE;
+    if (!validated) {
+        return UNAVAILABLE_PRESENTATION_STATE;
+    }
+
+    const energyLabel = selectEnergyLabel(validated.pad.arousal);
+
+    // DTO válido com dominant_emotions: [] (sem tendência dominante)
+    if (validated.dominant_emotions.length === 0) {
+        return Object.freeze({
+            isAvailable: true,
+            statusText: null,
+            descriptors: Object.freeze([]),
+            descriptorsText: NO_DOMINANT_TENDENCY_DESCRIPTOR,
+            energyLabel,
+        });
     }
 
     // Sort dominant emotions descending by intensity, preserving original order on ties
@@ -95,8 +120,12 @@ export const selectKatherinePresentationState = (options = {}) => {
     // Select up to 2 unique presentation descriptors from the highest-intensity emotions
     const descriptors = [];
     for (const emotion of sortedEmotions) {
-        const descriptor = SAFE_EMOTION_DESCRIPTORS[emotion.name];
-        if (descriptor && !descriptors.includes(descriptor)) {
+        const descriptor = SAFE_EMOTION_DESCRIPTORS[emotion?.name];
+        if (!descriptor) {
+            // Rejected or unknown emotion name encountered
+            return UNAVAILABLE_PRESENTATION_STATE;
+        }
+        if (!descriptors.includes(descriptor)) {
             descriptors.push(descriptor);
         }
         if (descriptors.length === 2) {
@@ -105,15 +134,20 @@ export const selectKatherinePresentationState = (options = {}) => {
     }
 
     if (descriptors.length === 0) {
-        return NEUTRAL_PRESENTATION_STATE;
+        return Object.freeze({
+            isAvailable: true,
+            statusText: null,
+            descriptors: Object.freeze([]),
+            descriptorsText: NO_DOMINANT_TENDENCY_DESCRIPTOR,
+            energyLabel,
+        });
     }
 
-    const energyLabel = selectEnergyLabel(validated.pad.arousal);
-
     return Object.freeze({
+        isAvailable: true,
+        statusText: null,
         descriptors: Object.freeze(descriptors),
         descriptorsText: descriptors.join(DESCRIPTOR_SEPARATOR),
         energyLabel,
-        isFallback: false,
     });
 };

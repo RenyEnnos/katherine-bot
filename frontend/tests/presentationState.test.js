@@ -4,7 +4,9 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     SAFE_EMOTION_DESCRIPTORS,
-    NEUTRAL_PRESENTATION_STATE,
+    UNAVAILABLE_PRESENTATION_STATE,
+    UNAVAILABLE_STATUS_TEXT,
+    NO_DOMINANT_TENDENCY_DESCRIPTOR,
     selectEnergyLabel,
     selectKatherinePresentationState,
 } from '../src/features/chat/utils/presentationState.js';
@@ -27,7 +29,9 @@ describe('presentationState: Contract Surface & Allowlist', () => {
         assert.strictEqual(typeof selectKatherinePresentationState, 'function');
         assert.strictEqual(typeof selectEnergyLabel, 'function');
         assert.strictEqual(typeof SAFE_EMOTION_DESCRIPTORS, 'object');
-        assert.strictEqual(typeof NEUTRAL_PRESENTATION_STATE, 'object');
+        assert.strictEqual(typeof UNAVAILABLE_PRESENTATION_STATE, 'object');
+        assert.strictEqual(typeof UNAVAILABLE_STATUS_TEXT, 'string');
+        assert.strictEqual(typeof NO_DOMINANT_TENDENCY_DESCRIPTOR, 'string');
     });
 
     it('SAFE_EMOTION_DESCRIPTORS is frozen and contains all 13 canonical emotions', () => {
@@ -46,13 +50,14 @@ describe('presentationState: Contract Surface & Allowlist', () => {
         }
     });
 
-    it('NEUTRAL_PRESENTATION_STATE is frozen and conforms to required schema', () => {
-        assert.ok(Object.isFrozen(NEUTRAL_PRESENTATION_STATE));
-        assert.ok(Object.isFrozen(NEUTRAL_PRESENTATION_STATE.descriptors));
-        assert.deepStrictEqual(NEUTRAL_PRESENTATION_STATE.descriptors, ['serena']);
-        assert.strictEqual(NEUTRAL_PRESENTATION_STATE.descriptorsText, 'serena');
-        assert.strictEqual(NEUTRAL_PRESENTATION_STATE.energyLabel, 'energia estável');
-        assert.strictEqual(NEUTRAL_PRESENTATION_STATE.isFallback, true);
+    it('UNAVAILABLE_PRESENTATION_STATE is frozen and conforms to honest unavailable schema', () => {
+        assert.ok(Object.isFrozen(UNAVAILABLE_PRESENTATION_STATE));
+        assert.ok(Object.isFrozen(UNAVAILABLE_PRESENTATION_STATE.descriptors));
+        assert.strictEqual(UNAVAILABLE_PRESENTATION_STATE.isAvailable, false);
+        assert.strictEqual(UNAVAILABLE_PRESENTATION_STATE.statusText, 'estado indisponível');
+        assert.deepStrictEqual(UNAVAILABLE_PRESENTATION_STATE.descriptors, []);
+        assert.strictEqual(UNAVAILABLE_PRESENTATION_STATE.descriptorsText, null);
+        assert.strictEqual(UNAVAILABLE_PRESENTATION_STATE.energyLabel, null);
     });
 });
 
@@ -81,7 +86,8 @@ describe('presentationState: Canonical Emotions in Isolation', () => {
             assert.deepStrictEqual(result.descriptors, [expectedDescriptor]);
             assert.strictEqual(result.descriptorsText, expectedDescriptor);
             assert.strictEqual(result.energyLabel, 'energia estável');
-            assert.strictEqual(result.isFallback, false);
+            assert.strictEqual(result.isAvailable, true);
+            assert.strictEqual(result.statusText, null);
         });
     }
 });
@@ -96,7 +102,7 @@ describe('presentationState: Multi-Emotion Combinations', () => {
 
         assert.deepStrictEqual(result.descriptors, ['tranquila', 'curiosa']);
         assert.strictEqual(result.descriptorsText, 'tranquila · curiosa');
-        assert.strictEqual(result.isFallback, false);
+        assert.strictEqual(result.isAvailable, true);
     });
 
     it('sorts dominant emotions descending by intensity regardless of payload order', () => {
@@ -182,15 +188,17 @@ describe('presentationState: Energy Tiers (selectEnergyLabel & Arousal Mapping)'
         assert.strictEqual(selectEnergyLabel(1.0), 'energia alta');
     });
 
-    it('returns "energia estável" for non-finite and invalid inputs to selectEnergyLabel', () => {
-        assert.strictEqual(selectEnergyLabel(Number.NaN), 'energia estável');
-        assert.strictEqual(selectEnergyLabel(Number.POSITIVE_INFINITY), 'energia estável');
-        assert.strictEqual(selectEnergyLabel(Number.NEGATIVE_INFINITY), 'energia estável');
-        assert.strictEqual(selectEnergyLabel(undefined), 'energia estável');
-        assert.strictEqual(selectEnergyLabel(null), 'energia estável');
-        assert.strictEqual(selectEnergyLabel('0.5'), 'energia estável');
-        assert.strictEqual(selectEnergyLabel({}), 'energia estável');
-        assert.strictEqual(selectEnergyLabel(true), 'energia estável');
+    it('returns null for non-finite, out-of-bounds, and invalid inputs to selectEnergyLabel', () => {
+        assert.strictEqual(selectEnergyLabel(Number.NaN), null);
+        assert.strictEqual(selectEnergyLabel(Number.POSITIVE_INFINITY), null);
+        assert.strictEqual(selectEnergyLabel(Number.NEGATIVE_INFINITY), null);
+        assert.strictEqual(selectEnergyLabel(undefined), null);
+        assert.strictEqual(selectEnergyLabel(null), null);
+        assert.strictEqual(selectEnergyLabel('0.5'), null);
+        assert.strictEqual(selectEnergyLabel({}), null);
+        assert.strictEqual(selectEnergyLabel(true), null);
+        assert.strictEqual(selectEnergyLabel(1.5), null);
+        assert.strictEqual(selectEnergyLabel(-1.5), null);
     });
 
     it('integrates energy tier accurately in selectKatherinePresentationState', () => {
@@ -220,48 +228,49 @@ describe('presentationState: Energy Tiers (selectEnergyLabel & Arousal Mapping)'
     });
 });
 
-describe('presentationState: Neutral Fallback & Malformed / Adversarial Inputs', () => {
-    it('returns NEUTRAL_PRESENTATION_STATE when options is omitted or invalid', () => {
-        assert.strictEqual(selectKatherinePresentationState(), NEUTRAL_PRESENTATION_STATE);
-        assert.strictEqual(selectKatherinePresentationState(null), NEUTRAL_PRESENTATION_STATE);
-        assert.strictEqual(selectKatherinePresentationState(undefined), NEUTRAL_PRESENTATION_STATE);
-        assert.strictEqual(selectKatherinePresentationState(123), NEUTRAL_PRESENTATION_STATE);
-        assert.strictEqual(selectKatherinePresentationState('invalid'), NEUTRAL_PRESENTATION_STATE);
-        assert.strictEqual(selectKatherinePresentationState(true), NEUTRAL_PRESENTATION_STATE);
-        assert.strictEqual(selectKatherinePresentationState({}), NEUTRAL_PRESENTATION_STATE);
+describe('presentationState: Honest Unavailable State & Malformed / Adversarial Inputs', () => {
+    it('returns UNAVAILABLE_PRESENTATION_STATE when options is omitted or invalid', () => {
+        assert.strictEqual(selectKatherinePresentationState(), UNAVAILABLE_PRESENTATION_STATE);
+        assert.strictEqual(selectKatherinePresentationState(null), UNAVAILABLE_PRESENTATION_STATE);
+        assert.strictEqual(selectKatherinePresentationState(undefined), UNAVAILABLE_PRESENTATION_STATE);
+        assert.strictEqual(selectKatherinePresentationState(123), UNAVAILABLE_PRESENTATION_STATE);
+        assert.strictEqual(selectKatherinePresentationState('invalid'), UNAVAILABLE_PRESENTATION_STATE);
+        assert.strictEqual(selectKatherinePresentationState(true), UNAVAILABLE_PRESENTATION_STATE);
+        assert.strictEqual(selectKatherinePresentationState({}), UNAVAILABLE_PRESENTATION_STATE);
+        assert.strictEqual(selectKatherinePresentationState([]), UNAVAILABLE_PRESENTATION_STATE);
     });
 
-    it('returns NEUTRAL_PRESENTATION_STATE when emotionState is null or undefined', () => {
+    it('returns UNAVAILABLE_PRESENTATION_STATE when emotionState is null or undefined', () => {
         assert.strictEqual(
             selectKatherinePresentationState({ emotionState: null }),
-            NEUTRAL_PRESENTATION_STATE,
+            UNAVAILABLE_PRESENTATION_STATE,
         );
         assert.strictEqual(
             selectKatherinePresentationState({ emotionState: undefined }),
-            NEUTRAL_PRESENTATION_STATE,
+            UNAVAILABLE_PRESENTATION_STATE,
         );
     });
 
-    it('returns NEUTRAL_PRESENTATION_STATE when emotionState is a primitive or array', () => {
+    it('returns UNAVAILABLE_PRESENTATION_STATE when emotionState is a primitive or array', () => {
         for (const bad of [42, 'string', true, false, Symbol('state'), [], [1, 2, 3]]) {
             assert.strictEqual(
                 selectKatherinePresentationState({ emotionState: bad }),
-                NEUTRAL_PRESENTATION_STATE,
+                UNAVAILABLE_PRESENTATION_STATE,
             );
         }
     });
 
-    it('returns NEUTRAL_PRESENTATION_STATE when schema_version is invalid or missing', () => {
+    it('returns UNAVAILABLE_PRESENTATION_STATE when schema_version is invalid or missing', () => {
         for (const badVersion of [undefined, null, 2, 0, -1, '1', 1.1]) {
             const state = validState([{ name: 'joy', intensity: 0.5 }], { schema_version: badVersion });
             assert.strictEqual(
                 selectKatherinePresentationState({ emotionState: state }),
-                NEUTRAL_PRESENTATION_STATE,
+                UNAVAILABLE_PRESENTATION_STATE,
             );
         }
     });
 
-    it('returns NEUTRAL_PRESENTATION_STATE when pad is missing or invalid', () => {
+    it('returns UNAVAILABLE_PRESENTATION_STATE when pad is missing or invalid', () => {
         for (const badPad of [
             undefined,
             null,
@@ -276,25 +285,21 @@ describe('presentationState: Neutral Fallback & Malformed / Adversarial Inputs',
             const state = validState([{ name: 'joy', intensity: 0.5 }], { pad: badPad });
             assert.strictEqual(
                 selectKatherinePresentationState({ emotionState: state }),
-                NEUTRAL_PRESENTATION_STATE,
+                UNAVAILABLE_PRESENTATION_STATE,
             );
         }
     });
 
-    it('returns NEUTRAL_PRESENTATION_STATE when dominant_emotions is empty or invalid', () => {
-        // Valid contract payload with 0 dominant emotions falls back to neutral
-        const emptyEmotionsState = validState([]);
-        assert.strictEqual(
-            selectKatherinePresentationState({ emotionState: emptyEmotionsState }),
-            NEUTRAL_PRESENTATION_STATE,
-        );
-
+    it('returns UNAVAILABLE_PRESENTATION_STATE when dominant_emotions is malformed or has unknown/rejected emotions', () => {
         for (const badEmotions of [
             null,
             undefined,
             'joy',
             { name: 'joy' },
             [{ name: 'unregistered_emotion', intensity: 0.5 }],
+            [{ name: 'clinical_depression', intensity: 0.9 }],
+            [{ name: '<script>alert(1)</script>', intensity: 0.8 }],
+            [{ name: '__proto__', intensity: 0.8 }],
             [{ name: 'joy', intensity: 1.5 }],
             [{ name: 'joy', intensity: -0.1 }],
             [{ name: 'joy', intensity: Number.NaN }],
@@ -306,20 +311,20 @@ describe('presentationState: Neutral Fallback & Malformed / Adversarial Inputs',
                 { name: 'fear', intensity: 0.6 },
             ], // more than 3
         ]) {
-            const state = validState(badEmotions);
+            const state = { ...validState(), dominant_emotions: badEmotions };
             assert.strictEqual(
                 selectKatherinePresentationState({ emotionState: state }),
-                NEUTRAL_PRESENTATION_STATE,
+                UNAVAILABLE_PRESENTATION_STATE,
             );
         }
     });
 
-    it('returns NEUTRAL_PRESENTATION_STATE when mood_label or timestamp are invalid', () => {
+    it('returns UNAVAILABLE_PRESENTATION_STATE when mood_label or timestamp are invalid', () => {
         for (const badMood of [undefined, null, '', 123, {}]) {
             const state = validState([{ name: 'joy', intensity: 0.5 }], { mood_label: badMood });
             assert.strictEqual(
                 selectKatherinePresentationState({ emotionState: state }),
-                NEUTRAL_PRESENTATION_STATE,
+                UNAVAILABLE_PRESENTATION_STATE,
             );
         }
 
@@ -327,12 +332,12 @@ describe('presentationState: Neutral Fallback & Malformed / Adversarial Inputs',
             const state = validState([{ name: 'joy', intensity: 0.5 }], { timestamp: badTs });
             assert.strictEqual(
                 selectKatherinePresentationState({ emotionState: state }),
-                NEUTRAL_PRESENTATION_STATE,
+                UNAVAILABLE_PRESENTATION_STATE,
             );
         }
     });
 
-    it('returns NEUTRAL_PRESENTATION_STATE when prototype pollution is attempted', () => {
+    it('returns UNAVAILABLE_PRESENTATION_STATE when prototype pollution is attempted', () => {
         const maliciousPrototype = Object.create({
             schema_version: 1,
             pad: { pleasure: 0, arousal: 0, dominance: 0 },
@@ -343,7 +348,7 @@ describe('presentationState: Neutral Fallback & Malformed / Adversarial Inputs',
 
         assert.strictEqual(
             selectKatherinePresentationState({ emotionState: maliciousPrototype }),
-            NEUTRAL_PRESENTATION_STATE,
+            UNAVAILABLE_PRESENTATION_STATE,
         );
     });
 
@@ -355,7 +360,7 @@ describe('presentationState: Neutral Fallback & Malformed / Adversarial Inputs',
         };
         assert.strictEqual(
             selectKatherinePresentationState(throwingOptions),
-            NEUTRAL_PRESENTATION_STATE,
+            UNAVAILABLE_PRESENTATION_STATE,
         );
 
         const throwingState = {
@@ -369,7 +374,44 @@ describe('presentationState: Neutral Fallback & Malformed / Adversarial Inputs',
         };
         assert.strictEqual(
             selectKatherinePresentationState({ emotionState: throwingState }),
-            NEUTRAL_PRESENTATION_STATE,
+            UNAVAILABLE_PRESENTATION_STATE,
+        );
+    });
+});
+
+describe('presentationState: Valid DTO with Empty Dominant Emotions (dominant_emotions: [])', () => {
+    it('distinguishes from unavailable state and produces "sem tendência dominante"', () => {
+        const state = validState([]);
+        const result = selectKatherinePresentationState({ emotionState: state });
+
+        assert.notStrictEqual(result, UNAVAILABLE_PRESENTATION_STATE);
+        assert.strictEqual(result.isAvailable, true);
+        assert.strictEqual(result.statusText, null);
+        assert.deepStrictEqual(result.descriptors, []);
+        assert.strictEqual(result.descriptorsText, 'sem tendência dominante');
+        assert.strictEqual(result.energyLabel, 'energia estável');
+        assert.ok(!JSON.stringify(result).includes('serena'));
+        assert.ok(!JSON.stringify(result).includes('neutra'));
+        assert.ok(!JSON.stringify(result).includes('tranquila'));
+    });
+
+    it('derives qualitative energy appropriately from PAD arousal for empty dominant emotions', () => {
+        const lowState = validState([], { pad: { pleasure: 0, arousal: -0.5, dominance: 0 } });
+        assert.strictEqual(
+            selectKatherinePresentationState({ emotionState: lowState }).energyLabel,
+            'energia baixa',
+        );
+
+        const highState = validState([], { pad: { pleasure: 0, arousal: 0.7, dominance: 0 } });
+        assert.strictEqual(
+            selectKatherinePresentationState({ emotionState: highState }).energyLabel,
+            'energia alta',
+        );
+
+        const stableState = validState([], { pad: { pleasure: 0, arousal: 0.1, dominance: 0 } });
+        assert.strictEqual(
+            selectKatherinePresentationState({ emotionState: stableState }).energyLabel,
+            'energia estável',
         );
     });
 });
@@ -492,7 +534,7 @@ describe('presentationState: Immutability, Purity & Isolation', () => {
         }, TypeError);
 
         assert.throws(() => {
-            result.isFallback = true;
+            result.isAvailable = false;
         }, TypeError);
     });
 

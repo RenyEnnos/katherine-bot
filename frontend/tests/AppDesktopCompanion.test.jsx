@@ -90,13 +90,14 @@ describe('AppDesktop companion integration', () => {
             isLoading: false,
         }));
 
-        // Auxiliary slot mounts KatherineStateSidebar with neutral fallback
+        // Auxiliary slot mounts KatherineStateSidebar with unavailable state when emotionState is null
         const auxSlot = screen.getByTestId('companion-auxiliary-slot');
         const sidebar = screen.getByTestId('katherine-state-sidebar');
         expect(auxSlot).toContainElement(sidebar);
         expect(sidebar).toHaveTextContent('Estado');
-        expect(sidebar).toHaveTextContent('serena');
-        expect(sidebar).toHaveTextContent('energia estável');
+        expect(sidebar).toHaveTextContent('estado indisponível');
+        expect(sidebar).not.toHaveTextContent('serena');
+        expect(sidebar).not.toHaveTextContent('energia estável');
     });
 
     it('passes a valid emotion state and loading status through the existing desktop model', () => {

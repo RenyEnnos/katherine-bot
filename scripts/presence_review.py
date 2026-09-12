@@ -438,9 +438,11 @@ def verify_matrix(window, output_dir):
             '[data-testid="message-list"]',
             '[data-testid="chat-header"]',
             '[data-testid="companion-auxiliary-slot"]',
+            '[data-testid="katherine-state-sidebar"]',
             '.companion-layout__conversation',
             '.chat-header',
-            '.companion-layout__history'
+            '.companion-layout__history',
+            '.katherine-state-sidebar'
         ];
         const leaked = forbiddenSelectors.filter(sel => document.querySelector(sel) !== null);
         const text = document.body.innerText || '';

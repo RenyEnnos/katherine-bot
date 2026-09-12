@@ -23,6 +23,7 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import ChatWindow from './features/chat/components/ChatWindow';
 import CompanionLayout from './features/chat/components/CompanionLayout.jsx';
 import KatherinePresence from './features/katherine-face/KatherinePresence.jsx';
+import KatherineStateSidebar from './features/chat/components/KatherineStateSidebar.jsx';
 import {
     setPresenceMode,
     setAlwaysOnTop,
@@ -132,6 +133,9 @@ export default function AppDesktop() {
                 <CompanionLayout
                     {...chatModel}
                     onEnterPresence={handleEnterPresence}
+                    auxiliarySlot={
+                        <KatherineStateSidebar emotionState={chatModel.emotionState} />
+                    }
                 />
             );
         },

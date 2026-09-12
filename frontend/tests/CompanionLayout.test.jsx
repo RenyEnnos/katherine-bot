@@ -81,7 +81,7 @@ describe('CompanionLayout', () => {
         expect(screen.queryByText(/área futura|em breve|atividade|ouroboros/i)).toBeNull();
     });
 
-    it('passes a valid emotion state to the existing face boundary and keeps its details collapsed', () => {
+    it('passes a valid emotion state to the existing face boundary and does not render legacy emotion details', () => {
         const emotionState = makeEmotionState();
         render(<CompanionLayout {...makeChatModel({ emotionState })} />);
 
@@ -89,8 +89,8 @@ describe('CompanionLayout', () => {
             emotionState,
             isLoading: false,
         }));
-        expect(screen.getByTestId('companion-emotion-details')).not.toHaveAttribute('open');
-        expect(screen.getByText('Detalhes do estado')).toBeInTheDocument();
+        expect(screen.queryByTestId('companion-emotion-details')).toBeNull();
+        expect(screen.queryByText('Detalhes do estado')).toBeNull();
     });
 
     it('keeps loading visible in the conversation rail and passes it to the face', () => {
@@ -142,10 +142,12 @@ describe('CompanionLayout', () => {
         expect(screen.queryByText(/está digitando/)).toBeNull();
     });
 
-    it('renders an auxiliary slot only when a future surface explicitly supplies it', () => {
+    it('renders an auxiliary slot inside companion-auxiliary-slot only when explicitly supplied', () => {
         const { rerender } = render(<CompanionLayout {...makeChatModel()} />);
 
         expect(screen.queryByTestId('companion-auxiliary-slot')).toBeNull();
+        const main = screen.getByRole('main', { name: 'Companion Katherine' });
+        expect(main).not.toHaveClass('companion-layout__body--with-auxiliary');
 
         rerender(
             <CompanionLayout
@@ -154,8 +156,12 @@ describe('CompanionLayout', () => {
             />,
         );
 
-        expect(screen.getByTestId('companion-auxiliary-slot')).toContainElement(
+        const slot = screen.getByTestId('companion-auxiliary-slot');
+        expect(slot).toBeInTheDocument();
+        expect(slot).toHaveAttribute('aria-label', 'Área auxiliar da Katherine');
+        expect(slot).toContainElement(
             screen.getByTestId('future-surface'),
         );
+        expect(main).toHaveClass('companion-layout__body--with-auxiliary');
     });
 });

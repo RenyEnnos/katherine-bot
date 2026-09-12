@@ -22,7 +22,7 @@
 }
 
 .companion-layout__body--with-auxiliary {
-    grid-template-columns: minmax(0, 1.35fr) minmax(20rem, 30rem) minmax(16rem, 20rem);
+    grid-template-columns: minmax(0, 1.4fr) minmax(18rem, 28rem) minmax(14rem, 18rem);
 }
 
 .companion-layout__presence {
@@ -148,7 +148,7 @@
     }
 
     .companion-layout__body--with-auxiliary {
-        grid-template-columns: minmax(0, 1fr) minmax(min(19rem, 38%), min(26rem, 44%)) minmax(15rem, 18rem);
+        grid-template-columns: minmax(0, 1.3fr) minmax(min(17rem, 30%), min(19rem, 33%)) minmax(13rem, 16rem);
     }
 
     .companion-layout__presence {
@@ -162,6 +162,31 @@
     }
 }
 
+@media (max-width: 58rem) {
+    .companion-layout__body--with-auxiliary {
+        grid-template-columns: minmax(0, 1.25fr) minmax(min(18rem, 38%), min(22rem, 44%));
+        grid-template-rows: minmax(0, 1fr) auto;
+    }
+
+    .companion-layout__body--with-auxiliary .companion-layout__presence {
+        grid-column: 1;
+        grid-row: 1 / span 2;
+    }
+
+    .companion-layout__body--with-auxiliary .companion-layout__conversation {
+        grid-column: 2;
+        grid-row: 1;
+    }
+
+    .companion-layout__body--with-auxiliary .companion-layout__auxiliary {
+        grid-column: 2;
+        grid-row: 2;
+        max-height: min(30vh, 10rem);
+        border-top: 1px solid var(--companion-line);
+        border-left: 0;
+    }
+}
+
 @media (max-width: 48rem) {
     .companion-layout__body,
     .companion-layout__body--with-auxiliary {
@@ -170,7 +195,10 @@
         overflow-y: auto;
     }
 
-    .companion-layout__presence {
+    .companion-layout__presence,
+    .companion-layout__body--with-auxiliary .companion-layout__presence {
+        grid-column: 1;
+        grid-row: 1;
         min-height: 14rem;
         padding: 1.5rem;
         border-right: 0;
@@ -181,13 +209,19 @@
         width: clamp(10rem, 34vw, 15rem);
     }
 
-    .companion-layout__conversation {
+    .companion-layout__conversation,
+    .companion-layout__body--with-auxiliary .companion-layout__conversation {
+        grid-column: 1;
+        grid-row: 2;
         min-height: 22rem;
     }
 
-    .companion-layout__auxiliary {
+    .companion-layout__auxiliary,
+    .companion-layout__body--with-auxiliary .companion-layout__auxiliary {
         grid-column: 1;
+        grid-row: 3;
         min-height: 12rem;
+        max-height: none;
         border-top: 1px solid var(--companion-line);
         border-left: 0;
     }

@@ -1,8 +1,9 @@
 /**
- * Tests for the desktop bridge client (#334).
+ * Tests for the desktop bridge client (#334, #342).
  *
  * Node-native tests (no DOM): validate the contract rules —
- * null outside the shell, payload validation inside it, bounded wait.
+ * null outside the shell for companion ops, payload validation inside it,
+ * honest bridge_unavailable failure for native window capabilities.
  * The window object is injected explicitly (no global mutation).
  */
 
@@ -228,8 +229,6 @@ test('sendMessageViaBridge rejects a non-dict success payload', async () => {
 // =========================================================================
 
 test('sendMessageViaBridge settles as timeout when the signal aborts (bridge never resolves)', async () => {
-    // Deterministic hung bridge: the underlying promise NEVER settles.
-    // The aborted signal must race it and reject with ChatError timeout.
     const window = apiWindow({
         send_message: () => new Promise(() => {}), // hangs forever
     });
@@ -318,4 +317,62 @@ test('runPrivacyOpViaBridge maps a failed op to a ChatError', async () => {
         () => runPrivacyOpViaBridge('delete_history', window),
         (err) => err.name === 'ChatError' && err.type === 'service_unavailable',
     );
+});
+
+// =========================================================================
+// #342: presence mode & window control client functions (honest bridge)
+// =========================================================================
+
+import {
+    setPresenceMode,
+    setAlwaysOnTop,
+    getWindowState,
+    closeDesktopWindow,
+    minimizeDesktopWindow,
+} from '../src/lib/desktopBridge.js';
+
+test('window control functions return bridge_unavailable when bridge is missing', async () => {
+    const emptyWindow = {};
+    const expectedError = {
+        ok: false,
+        code: 'bridge_unavailable',
+        message: 'Desktop window control is unavailable.',
+    };
+
+    assert.deepEqual(await setPresenceMode(true, emptyWindow), expectedError);
+    assert.deepEqual(await setAlwaysOnTop(true, emptyWindow), expectedError);
+    assert.deepEqual(await getWindowState(emptyWindow), expectedError);
+    assert.deepEqual(await closeDesktopWindow(emptyWindow), expectedError);
+    assert.deepEqual(await minimizeDesktopWindow(emptyWindow), expectedError);
+});
+
+test('window control functions return bridge_unavailable when methods are missing on api', async () => {
+    const window = apiWindow({});
+    const expectedError = {
+        ok: false,
+        code: 'bridge_unavailable',
+        message: 'Desktop window control is unavailable.',
+    };
+
+    assert.deepEqual(await setPresenceMode(true, window), expectedError);
+    assert.deepEqual(await setAlwaysOnTop(true, window), expectedError);
+    assert.deepEqual(await getWindowState(window), expectedError);
+    assert.deepEqual(await closeDesktopWindow(window), expectedError);
+    assert.deepEqual(await minimizeDesktopWindow(window), expectedError);
+});
+
+test('window control functions pass through valid responses from api', async () => {
+    const window = apiWindow({
+        set_presence_mode: async (val) => ({ ok: true, mode: val ? 'presence' : 'companion', on_top: false }),
+        set_always_on_top: async (val) => ({ ok: true, on_top: val }),
+        window_state: async () => ({ ok: true, mode: 'presence', on_top: true }),
+        close_window: async () => ({ ok: true }),
+        minimize_window: async () => ({ ok: true }),
+    });
+
+    assert.deepEqual(await setPresenceMode(true, window), { ok: true, mode: 'presence', on_top: false });
+    assert.deepEqual(await setAlwaysOnTop(true, window), { ok: true, on_top: true });
+    assert.deepEqual(await getWindowState(window), { ok: true, mode: 'presence', on_top: true });
+    assert.deepEqual(await closeDesktopWindow(window), { ok: true });
+    assert.deepEqual(await minimizeDesktopWindow(window), { ok: true });
 });

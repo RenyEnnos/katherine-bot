@@ -336,3 +336,148 @@ export async function runPrivacyOpViaBridge(op, targetWindow) {
     }
     throw new ChatError('unknown', CHAT_ERROR_MESSAGES.unknown);
 }
+
+// =========================================================================
+// #342: presence mode & window control callers
+// =========================================================================
+
+const BRIDGE_UNAVAILABLE = Object.freeze({
+    ok: false,
+    code: 'bridge_unavailable',
+    message: 'Desktop window control is unavailable.',
+});
+
+/**
+ * Toggle between desktop companion mode and floating presence mode (#342).
+ *
+ * @param {boolean} enabled - true to enter presence mode, false to return to companion
+ * @param {object} [targetWindow] - optional window override for testing
+ * @returns {Promise<{ok: true, mode: 'presence' | 'companion', on_top: boolean, width?: number, height?: number} | {ok: false, code: string, message: string}>}
+ */
+export async function setPresenceMode(enabled, targetWindow) {
+    if (typeof enabled !== 'boolean') {
+        return { ok: false, code: 'invalid_input', message: 'enabled must be a boolean' };
+    }
+    const api = await resolveBridge(targetWindow);
+    if (!api || typeof api.set_presence_mode !== 'function') {
+        return { ...BRIDGE_UNAVAILABLE };
+    }
+    try {
+        const payload = await api.set_presence_mode(enabled);
+        if (isPlainObject(payload) && payload.ok === true) {
+            return payload;
+        }
+        if (isPlainObject(payload) && payload.ok === false) {
+            return payload;
+        }
+        return { ok: false, code: 'unknown', message: 'Invalid payload from desktop bridge' };
+    } catch {
+        return { ok: false, code: 'bridge_error', message: 'Failed to communicate with desktop bridge' };
+    }
+}
+
+/**
+ * Toggle always-on-top state for the desktop window (#342).
+ *
+ * @param {boolean} enabled - true to keep window on top, false otherwise
+ * @param {object} [targetWindow] - optional window override for testing
+ * @returns {Promise<{ok: true, on_top: boolean} | {ok: false, code: string, message: string}>}
+ */
+export async function setAlwaysOnTop(enabled, targetWindow) {
+    if (typeof enabled !== 'boolean') {
+        return { ok: false, code: 'invalid_input', message: 'enabled must be a boolean' };
+    }
+    const api = await resolveBridge(targetWindow);
+    if (!api || typeof api.set_always_on_top !== 'function') {
+        return { ...BRIDGE_UNAVAILABLE };
+    }
+    try {
+        const payload = await api.set_always_on_top(enabled);
+        if (isPlainObject(payload) && payload.ok === true) {
+            return payload;
+        }
+        if (isPlainObject(payload) && payload.ok === false) {
+            return payload;
+        }
+        return { ok: false, code: 'unknown', message: 'Invalid payload from desktop bridge' };
+    } catch {
+        return { ok: false, code: 'bridge_error', message: 'Failed to communicate with desktop bridge' };
+    }
+}
+
+/**
+ * Read current window state (mode, on_top, geometry) from the desktop bridge (#342).
+ *
+ * @param {object} [targetWindow] - optional window override for testing
+ * @returns {Promise<{ok: true, mode: 'presence' | 'companion', on_top: boolean, width?: number, height?: number} | {ok: false, code: string, message: string}>}
+ */
+export async function getWindowState(targetWindow) {
+    const api = await resolveBridge(targetWindow);
+    if (!api || typeof api.window_state !== 'function') {
+        return { ...BRIDGE_UNAVAILABLE };
+    }
+    try {
+        const payload = await api.window_state();
+        if (isPlainObject(payload) && payload.ok === true) {
+            return payload;
+        }
+        if (isPlainObject(payload) && payload.ok === false) {
+            return payload;
+        }
+        return { ok: false, code: 'unknown', message: 'Invalid payload from desktop bridge' };
+    } catch {
+        return { ok: false, code: 'bridge_error', message: 'Failed to communicate with desktop bridge' };
+    }
+}
+
+/**
+ * Request clean closure of the desktop window (#342).
+ *
+ * @param {object} [targetWindow] - optional window override for testing
+ * @returns {Promise<{ok: true} | {ok: false, code: string, message: string}>}
+ */
+export async function closeDesktopWindow(targetWindow) {
+    const api = await resolveBridge(targetWindow);
+    if (!api || typeof api.close_window !== 'function') {
+        return { ...BRIDGE_UNAVAILABLE };
+    }
+    try {
+        const payload = await api.close_window();
+        if (isPlainObject(payload) && payload.ok === true) {
+            return payload;
+        }
+        if (isPlainObject(payload) && payload.ok === false) {
+            return payload;
+        }
+        return { ok: false, code: 'unknown', message: 'Invalid payload from desktop bridge' };
+    } catch {
+        return { ok: false, code: 'bridge_error', message: 'Failed to communicate with desktop bridge' };
+    }
+}
+
+/**
+ * Request minimization of the desktop window (#342).
+ *
+ * @param {object} [targetWindow] - optional window override for testing
+ * @returns {Promise<{ok: true} | {ok: false, code: string, message: string}>}
+ */
+export async function minimizeDesktopWindow(targetWindow) {
+    const api = await resolveBridge(targetWindow);
+    if (!api || typeof api.minimize_window !== 'function') {
+        return { ...BRIDGE_UNAVAILABLE };
+    }
+    try {
+        const payload = await api.minimize_window();
+        if (isPlainObject(payload) && payload.ok === true) {
+            return payload;
+        }
+        if (isPlainObject(payload) && payload.ok === false) {
+            return payload;
+        }
+        return { ok: false, code: 'unknown', message: 'Invalid payload from desktop bridge' };
+    } catch {
+        return { ok: false, code: 'bridge_error', message: 'Failed to communicate with desktop bridge' };
+    }
+}
+
+export const minimizeWindow = minimizeDesktopWindow;

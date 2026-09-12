@@ -70,18 +70,28 @@ class TestNoBridgeForRemoteContent:
             "delete_memories",
             "reset_emotional_state",
             "reset_relationship_state",
+            "set_presence_mode",
+            "set_always_on_top",
+            "window_state",
+            "close_window",
+            "minimize_window",
         )
         bridge = make_js_api()
         public = sorted(name for name in dir(bridge) if not name.startswith("_"))
         assert public == [
+            "close_window",
             "delete_history",
             "delete_memories",
             "health",
             "load_history",
+            "minimize_window",
             "reset_emotional_state",
             "reset_relationship_state",
             "runtime_state",
             "send_message",
+            "set_always_on_top",
+            "set_presence_mode",
+            "window_state",
         ]
 
     def test_bridge_has_no_generic_dispatch_or_passthrough(self) -> None:

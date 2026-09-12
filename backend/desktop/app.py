@@ -58,8 +58,9 @@ committing again.
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
 
 import webview
@@ -268,6 +269,806 @@ class BuildTrust:
         return current_url == committed and is_local_build_url(current_url, self._build)
 
 
+@dataclass(frozen=True)
+class WorkArea:
+    x: int
+    y: int
+    width: int
+    height: int
+
+    @property
+    def right(self) -> int:
+        return self.x + self.width
+
+    @property
+    def bottom(self) -> int:
+        return self.y + self.height
+
+
+@dataclass(frozen=True)
+class ClampedGeometry:
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+def clamp_window_geometry(
+    target_rect: tuple[int | None, int | None, int, int],
+    workareas: Sequence[WorkArea],
+    primary_index: int = 0,
+    min_size: tuple[int, int] = (120, 120),
+) -> ClampedGeometry:
+    """Pure, deterministic clamp ensuring window is reachable and within usable screen bounds.
+
+    - Handles negative coordinates for multi-monitor setups.
+    - Uses usable workareas (excluding OS panels/docks).
+    - Recovers windows when monitors vanish or resolution shrinks.
+    """
+    if not workareas:
+        workareas = [WorkArea(0, 0, _WINDOW_SIZE[0], _WINDOW_SIZE[1])]
+
+    pri_idx = primary_index if 0 <= primary_index < len(workareas) else 0
+    primary_wa = workareas[pri_idx]
+
+    prop_x, prop_y, prop_w, prop_h = target_rect
+    w = max(min_size[0], prop_w)
+    h = max(min_size[1], prop_h)
+
+    # 1. Unspecified position: center on primary workarea
+    if prop_x is None or prop_y is None:
+        target_w = min(w, primary_wa.width)
+        target_h = min(h, primary_wa.height)
+        target_x = primary_wa.x + max(0, (primary_wa.width - target_w) // 2)
+        target_y = primary_wa.y + max(0, (primary_wa.height - target_h) // 2)
+        return ClampedGeometry(target_x, target_y, target_w, target_h)
+
+    # 2. Select best workarea based on maximum overlap area
+    best_wa: WorkArea | None = None
+    max_overlap = -1
+    for wa in workareas:
+        ix1 = max(prop_x, wa.x)
+        iy1 = max(prop_y, wa.y)
+        ix2 = min(prop_x + w, wa.right)
+        iy2 = min(prop_y + h, wa.bottom)
+        overlap = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+        if overlap > max_overlap:
+            max_overlap = overlap
+            best_wa = wa
+
+    # 3. If zero overlap (e.g. monitor unplugged), pick closest workarea by center distance
+    if max_overlap <= 0 or best_wa is None:
+        center_x = prop_x + w / 2
+        center_y = prop_y + h / 2
+        min_dist_sq = float("inf")
+        best_wa = primary_wa
+        for wa in workareas:
+            wa_cx = wa.x + wa.width / 2
+            wa_cy = wa.y + wa.height / 2
+            dist_sq = (center_x - wa_cx) ** 2 + (center_y - wa_cy) ** 2
+            if dist_sq < min_dist_sq:
+                min_dist_sq = dist_sq
+                best_wa = wa
+
+    # 4. Clamp dimensions to selected workarea
+    clamped_w = min(w, best_wa.width)
+    clamped_h = min(h, best_wa.height)
+
+    # 5. Clamp coordinates to keep window 100% inside workarea bounds
+    max_x = best_wa.x + best_wa.width - clamped_w
+    max_y = best_wa.y + best_wa.height - clamped_h
+
+    clamped_x = max(best_wa.x, min(prop_x, max_x))
+    clamped_y = max(best_wa.y, min(prop_y, max_y))
+
+    return ClampedGeometry(clamped_x, clamped_y, clamped_w, clamped_h)
+
+
+def _query_workareas_and_primary() -> tuple[list[WorkArea], int]:
+    """Query available monitor workareas from Gdk Display, excluding OS panels/docks."""
+    try:
+        import sys
+
+        wgtk = sys.modules.get("webview.platforms.gtk")
+        has_active_app = wgtk is not None and getattr(wgtk, "_app", None) is not None
+        if not has_active_app:
+            return [], 0
+
+        import gi
+
+        try:
+            gi.require_version("Gdk", "3.0")
+        except (ValueError, AttributeError):
+            pass
+        from gi.repository import Gdk  # type: ignore[import-not-found]
+
+        display = Gdk.Display.get_default()
+        if display is None:
+            return [], 0
+        n = display.get_n_monitors()
+        if n > 0:
+            primary_mon = (
+                display.get_primary_monitor()
+                if hasattr(display, "get_primary_monitor")
+                else None
+            )
+            workareas: list[WorkArea] = []
+            primary_idx = 0
+            for i in range(n):
+                mon = display.get_monitor(i)
+                if mon is primary_mon:
+                    primary_idx = i
+                if mon is not None and hasattr(mon, "get_workarea"):
+                    rect = mon.get_workarea()
+                    workareas.append(
+                        WorkArea(rect.x, rect.y, rect.width, rect.height)
+                    )
+                elif mon is not None and hasattr(mon, "get_geometry"):
+                    rect = mon.get_geometry()
+                    workareas.append(
+                        WorkArea(rect.x, rect.y, rect.width, rect.height)
+                    )
+            if workareas:
+                return workareas, primary_idx
+    except Exception:  # noqa: BLE001
+        pass
+
+    return [], 0
+
+
+def _dispatch_sync(
+    action: Callable[[], Any], timeout: float = 2.0
+) -> tuple[bool, Any]:
+    """Execute action synchronously on the GUI main loop thread with bounded timeout.
+
+    If already on the GUI thread or if no GTK main loop is active, runs immediately.
+    Returns (True, result) on success, (False, exception) on failure or timeout.
+    """
+    try:
+        from gi.repository import GLib  # type: ignore[import-not-found]
+        import sys
+
+        wgtk = sys.modules.get("webview.platforms.gtk")
+        has_active_app = wgtk is not None and getattr(wgtk, "_app", None) is not None
+
+        is_owner = False
+        try:
+            main_ctx = GLib.MainContext.default()
+            if main_ctx is not None and hasattr(main_ctx, "is_owner"):
+                is_owner = main_ctx.is_owner()
+        except Exception:  # noqa: BLE001
+            is_owner = False
+
+        if is_owner or not has_active_app:
+            try:
+                return True, action()
+            except Exception as exc:  # noqa: BLE001
+                return False, exc
+
+        import threading
+
+        cancelled = threading.Event()
+        event = threading.Event()
+        result_box: list[Any] = []
+        error_box: list[Exception] = []
+
+        def _callback() -> bool:
+            if cancelled.is_set():
+                return False
+            try:
+                result_box.append(action())
+            except Exception as exc:  # noqa: BLE001
+                error_box.append(exc)
+            finally:
+                event.set()
+            return False
+
+        source_id = GLib.idle_add(_callback)
+        if not event.wait(timeout=timeout):
+            cancelled.set()
+            try:
+                if hasattr(GLib, "source_remove"):
+                    GLib.source_remove(source_id)
+            except Exception:  # noqa: BLE001
+                pass
+            return False, TimeoutError("Window operation timed out.")
+        if error_box:
+            return False, error_box[0]
+        return True, result_box[0] if result_box else None
+    except (ImportError, AttributeError):
+        try:
+            return True, action()
+        except Exception as exc:  # noqa: BLE001
+            return False, exc
+
+
+def _dispatch_main_loop(action: Callable[[], Any]) -> None:
+    """Legacy helper; delegates to _dispatch_sync."""
+    _dispatch_sync(action)
+
+
+class WindowController:
+    """Thread-safe controller for desktop window lifecycle and mode transitions (#342).
+
+    Dispatches native GTK operations (set_decorated, resize, move, on_top, destroy)
+    safely onto the GUI main loop via bounded synchronous dispatch while maintaining
+    transactional state tracking for mode, geometry, and always-on-top status.
+    """
+
+    def __init__(
+        self,
+        window: Any = None,
+        workareas: Sequence[WorkArea] | None = None,
+        dispatch_timeout: float = 2.0,
+    ) -> None:
+        import threading
+
+        self._lock = threading.RLock()
+        self._window = window
+        self._workareas = workareas
+        self._dispatch_timeout = dispatch_timeout
+        self._mode = "companion"
+        self._on_top = False
+        self._width = _WINDOW_SIZE[0]
+        self._height = _WINDOW_SIZE[1]
+        self._x: int | None = None
+        self._y: int | None = None
+        self._is_reconciling = False
+        self._screen_signals_connected = False
+        self._saved_geometry: tuple[int | None, int | None, int, int] = (
+            None,
+            None,
+            _WINDOW_SIZE[0],
+            _WINDOW_SIZE[1],
+        )
+        if window is not None:
+            self._bind_window_events(window)
+
+    def _bind_window_events(self, window: Any) -> None:
+        """Bind moved and lifecycle event handlers on the pywebview window."""
+        if hasattr(window, "events") and hasattr(window.events, "moved"):
+            try:
+                window.events.moved -= self._on_window_moved
+            except (ValueError, KeyError, AttributeError):
+                pass
+            window.events.moved += self._on_window_moved
+        if hasattr(window, "events") and hasattr(window.events, "shown"):
+            try:
+                window.events.shown -= self._connect_screen_signals
+            except (ValueError, KeyError, AttributeError):
+                pass
+            window.events.shown += self._connect_screen_signals
+
+    def set_window(self, window: Any) -> None:
+        """Bind the pywebview window instance after creation."""
+        with self._lock:
+            self._window = window
+            if window is not None:
+                self._bind_window_events(window)
+
+    def _connect_screen_signals(self, *args: Any) -> None:
+        """Connect to Gdk.Screen signals for monitor/resolution changes (#342, #366)."""
+        with self._lock:
+            if self._screen_signals_connected:
+                return
+        try:
+            import gi
+
+            try:
+                gi.require_version("Gdk", "3.0")
+            except (ValueError, AttributeError):
+                pass
+            from gi.repository import Gdk  # type: ignore[import-not-found]
+
+            display = Gdk.Display.get_default()
+            if display is None:
+                return
+
+            screen = Gdk.Screen.get_default()
+            if screen is not None and hasattr(screen, "connect"):
+                screen.connect("monitors-changed", self._on_screen_changed)
+                screen.connect("size-changed", self._on_screen_changed)
+                with self._lock:
+                    self._screen_signals_connected = True
+        except Exception:
+            pass
+
+    def _on_screen_changed(self, *args: Any) -> None:
+        """Reconcile geometry upon display monitor addition, removal, or resolution changes."""
+        self.reconcile_geometry()
+
+    def _on_window_moved(self, *args: Any, **kwargs: Any) -> None:
+        """Handle window move event (e.g. from drag region or configure-event) with loop protection."""
+        if self._is_reconciling:
+            return
+        int_args = [a for a in args if isinstance(a, int) and not isinstance(a, bool)]
+        x = int_args[0] if len(int_args) >= 1 else None
+        y = int_args[1] if len(int_args) >= 2 else None
+        self.reconcile_geometry(x=x, y=y)
+
+    def reconcile_geometry(
+        self, x: int | None = None, y: int | None = None
+    ) -> dict[str, Any]:
+        """Reconcile window geometry against usable workareas while in presence mode (#342, #366).
+
+        Ensures dragged or shifted presence window stays 100% within usable bounds
+        and recovers windows upon resolution or monitor changes.
+        Protected against re-entrant event loops.
+        """
+        with self._lock:
+            if self._is_reconciling:
+                return {"ok": True, "clamped": False, "in_progress": True}
+            if self._window is None:
+                return {"ok": False, "code": "window_unavailable"}
+            if self._mode != "presence":
+                return {"ok": True, "clamped": False, "mode": self._mode}
+
+            window = self._window
+            curr_x = x
+            curr_y = y
+            curr_w = None
+            curr_h = None
+
+            native = getattr(window, "native", None)
+            if native is not None:
+                try:
+                    if (curr_x is None or curr_y is None) and hasattr(native, "get_position"):
+                        pos = native.get_position()
+                        if pos and len(pos) == 2:
+                            curr_x, curr_y = pos[0], pos[1]
+                    if hasattr(native, "get_size"):
+                        sz = native.get_size()
+                        if sz and len(sz) == 2:
+                            curr_w, curr_h = sz[0], sz[1]
+                except Exception:
+                    pass
+
+            if curr_x is None:
+                curr_x = getattr(window, "x", None)
+            if curr_y is None:
+                curr_y = getattr(window, "y", None)
+            if curr_w is None:
+                w_attr = getattr(window, "width", None)
+                curr_w = (
+                    w_attr
+                    if isinstance(w_attr, int) and not isinstance(w_attr, bool)
+                    else self._width
+                )
+            if curr_h is None:
+                h_attr = getattr(window, "height", None)
+                curr_h = (
+                    h_attr
+                    if isinstance(h_attr, int) and not isinstance(h_attr, bool)
+                    else self._height
+                )
+
+            w = curr_w if isinstance(curr_w, int) and curr_w > 0 else 200
+            h = curr_h if isinstance(curr_h, int) and curr_h > 0 else 200
+
+            workareas = self._workareas
+            primary_idx = 0
+            if workareas is None:
+                queried, pri = _query_workareas_and_primary()
+                if queried:
+                    workareas = queried
+                    primary_idx = pri
+
+            clamped = clamp_window_geometry(
+                (curr_x, curr_y, w, h),
+                workareas or [],
+                primary_index=primary_idx,
+                min_size=(120, 120),
+            )
+
+            needs_move = (
+                curr_x is not None
+                and curr_y is not None
+                and (clamped.x != curr_x or clamped.y != curr_y)
+            )
+            needs_resize = clamped.width != w or clamped.height != h
+
+            if not needs_move and not needs_resize:
+                if curr_x is not None:
+                    self._x = curr_x
+                if curr_y is not None:
+                    self._y = curr_y
+                self._width = clamped.width
+                self._height = clamped.height
+                return {
+                    "ok": True,
+                    "clamped": False,
+                    "x": clamped.x,
+                    "y": clamped.y,
+                    "width": clamped.width,
+                    "height": clamped.height,
+                }
+
+            orig_w = w
+            orig_h = h
+            orig_x = curr_x
+            orig_y = curr_y
+
+            self._is_reconciling = True
+
+        try:
+            def _apply_reconcile() -> None:
+                resized = False
+                moved = False
+                try:
+                    if needs_resize and hasattr(window, "resize"):
+                        window.resize(clamped.width, clamped.height)
+                        resized = True
+                    if needs_move and hasattr(window, "move"):
+                        window.move(clamped.x, clamped.y)
+                        moved = True
+                except Exception:
+                    if resized and hasattr(window, "resize"):
+                        try:
+                            window.resize(orig_w, orig_h)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    if (
+                        moved
+                        and orig_x is not None
+                        and orig_y is not None
+                        and hasattr(window, "move")
+                    ):
+                        try:
+                            window.move(orig_x, orig_y)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    raise
+
+            ok, err = _dispatch_sync(_apply_reconcile, timeout=self._dispatch_timeout)
+            if not ok:
+                code = (
+                    "timeout"
+                    if isinstance(err, TimeoutError)
+                    else "window_mutation_failed"
+                )
+                return {
+                    "ok": False,
+                    "code": code,
+                    "message": "The window operation could not be completed.",
+                }
+            with self._lock:
+                self._x = clamped.x
+                self._y = clamped.y
+                self._width = clamped.width
+                self._height = clamped.height
+        finally:
+            with self._lock:
+                self._is_reconciling = False
+
+        return {
+            "ok": True,
+            "clamped": True,
+            "x": clamped.x,
+            "y": clamped.y,
+            "width": clamped.width,
+            "height": clamped.height,
+        }
+
+    def set_presence_mode(self, enabled: bool) -> dict[str, Any]:
+        """Transition between companion and floating presence modes."""
+        with self._lock:
+            if self._window is None:
+                return {
+                    "ok": False,
+                    "code": "window_unavailable",
+                    "message": "The window is not available.",
+                }
+            window = self._window
+
+            if enabled:
+                curr_x: int | None = None
+                curr_y: int | None = None
+                curr_w: int | None = None
+                curr_h: int | None = None
+
+                native = getattr(window, "native", None)
+                if native is not None:
+                    try:
+                        if hasattr(native, "get_position"):
+                            curr_x, curr_y = native.get_position()
+                        if hasattr(native, "get_size"):
+                            curr_w, curr_h = native.get_size()
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                if curr_x is None:
+                    curr_x = getattr(window, "x", None)
+                if curr_y is None:
+                    curr_y = getattr(window, "y", None)
+                if curr_w is None and hasattr(window, "width") and isinstance(window.width, int):
+                    curr_w = window.width
+                if curr_h is None and hasattr(window, "height") and isinstance(window.height, int):
+                    curr_h = window.height
+
+                # Precompute candidate saved geometry only when transitioning from companion
+                candidate_saved_geometry = self._saved_geometry
+                if self._mode == "companion":
+                    candidate_saved_geometry = (
+                        curr_x,
+                        curr_y,
+                        curr_w or self._width or _WINDOW_SIZE[0],
+                        curr_h or self._height or _WINDOW_SIZE[1],
+                    )
+
+                # Query or use injected workareas
+                workareas = self._workareas
+                primary_idx = 0
+                if workareas is None:
+                    queried, pri = _query_workareas_and_primary()
+                    if queried:
+                        workareas = queried
+                        primary_idx = pri
+
+                if workareas:
+                    clamped = clamp_window_geometry(
+                        (curr_x, curr_y, 200, 200),
+                        workareas,
+                        primary_index=primary_idx,
+                    )
+                    presence_w = clamped.width
+                    presence_h = clamped.height
+                    presence_x = clamped.x
+                    presence_y = clamped.y
+                else:
+                    presence_w = 200
+                    presence_h = 200
+                    presence_x = curr_x
+                    presence_y = curr_y
+
+                orig_w = curr_w or self._width or _WINDOW_SIZE[0]
+                orig_h = curr_h or self._height or _WINDOW_SIZE[1]
+
+                def _apply_presence() -> None:
+                    nat = getattr(window, "native", None)
+                    decorated_modified = False
+                    resized = False
+                    if nat is not None and hasattr(nat, "set_decorated"):
+                        nat.set_decorated(False)
+                        decorated_modified = True
+                    try:
+                        if hasattr(window, "resize"):
+                            window.resize(presence_w, presence_h)
+                            resized = True
+                        if hasattr(window, "move") and presence_x is not None and presence_y is not None:
+                            if presence_x != curr_x or presence_y != curr_y:
+                                window.move(presence_x, presence_y)
+                    except Exception:
+                        if resized and hasattr(window, "resize"):
+                            try:
+                                window.resize(orig_w, orig_h)
+                            except Exception:  # noqa: BLE001
+                                pass
+                        if decorated_modified and hasattr(nat, "set_decorated"):
+                            try:
+                                nat.set_decorated(True)
+                            except Exception:  # noqa: BLE001
+                                pass
+                        raise
+
+                ok, err = _dispatch_sync(_apply_presence, timeout=self._dispatch_timeout)
+                if not ok:
+                    code = "timeout" if isinstance(err, TimeoutError) else "window_mutation_failed"
+                    return {
+                        "ok": False,
+                        "code": code,
+                        "message": "The window operation could not be completed.",
+                    }
+
+                self._connect_screen_signals()
+
+                # Commit transactional state only after confirmed success
+                self._saved_geometry = candidate_saved_geometry
+                self._mode = "presence"
+                self._width = presence_w
+                self._height = presence_h
+                self._x = presence_x
+                self._y = presence_y
+
+                return {
+                    "ok": True,
+                    "mode": "presence",
+                    "on_top": self._on_top,
+                    "width": self._width,
+                    "height": self._height,
+                }
+            else:
+                saved_x, saved_y, saved_w, saved_h = self._saved_geometry
+                target_w = saved_w or _WINDOW_SIZE[0]
+                target_h = saved_h or _WINDOW_SIZE[1]
+
+                # Query or use injected workareas
+                workareas = self._workareas
+                primary_idx = 0
+                if workareas is None:
+                    queried, pri = _query_workareas_and_primary()
+                    if queried:
+                        workareas = queried
+                        primary_idx = pri
+
+                if workareas:
+                    clamped = clamp_window_geometry(
+                        (saved_x, saved_y, target_w, target_h),
+                        workareas,
+                        primary_index=primary_idx,
+                    )
+                    companion_w = clamped.width
+                    companion_h = clamped.height
+                    companion_x = clamped.x
+                    companion_y = clamped.y
+                else:
+                    companion_w = target_w
+                    companion_h = target_h
+                    companion_x = saved_x
+                    companion_y = saved_y
+
+                presence_w = getattr(window, "width", None)
+                if not isinstance(presence_w, int):
+                    presence_w = self._width if isinstance(self._width, int) else 200
+                presence_h = getattr(window, "height", None)
+                if not isinstance(presence_h, int):
+                    presence_h = self._height if isinstance(self._height, int) else 200
+
+                def _apply_companion() -> None:
+                    nat = getattr(window, "native", None)
+                    decorated_modified = False
+                    resized = False
+                    if nat is not None and hasattr(nat, "set_decorated"):
+                        nat.set_decorated(True)
+                        decorated_modified = True
+                    try:
+                        if hasattr(window, "resize"):
+                            window.resize(companion_w, companion_h)
+                            resized = True
+                        if hasattr(window, "move") and companion_x is not None and companion_y is not None:
+                            window.move(companion_x, companion_y)
+                    except Exception:
+                        if resized and hasattr(window, "resize"):
+                            try:
+                                window.resize(presence_w, presence_h)
+                            except Exception:  # noqa: BLE001
+                                pass
+                        if decorated_modified and hasattr(nat, "set_decorated"):
+                            try:
+                                nat.set_decorated(False)
+                            except Exception:  # noqa: BLE001
+                                pass
+                        raise
+
+                ok, err = _dispatch_sync(_apply_companion, timeout=self._dispatch_timeout)
+                if not ok:
+                    code = "timeout" if isinstance(err, TimeoutError) else "window_mutation_failed"
+                    return {
+                        "ok": False,
+                        "code": code,
+                        "message": "The window operation could not be completed.",
+                    }
+
+                # Commit transactional state only after confirmed success
+                self._mode = "companion"
+                self._width = companion_w
+                self._height = companion_h
+                self._x = companion_x
+                self._y = companion_y
+
+                return {
+                    "ok": True,
+                    "mode": "companion",
+                    "on_top": self._on_top,
+                    "width": self._width,
+                    "height": self._height,
+                }
+
+    def set_always_on_top(self, enabled: bool) -> dict[str, Any]:
+        """Toggle always-on-top layering for the window."""
+        with self._lock:
+            if self._window is None:
+                return {
+                    "ok": False,
+                    "code": "window_unavailable",
+                    "message": "The window is not available.",
+                }
+            window = self._window
+
+            def _apply_on_top() -> None:
+                if hasattr(window, "on_top"):
+                    window.on_top = enabled
+                else:
+                    raise RuntimeError("Native window capability not supported")
+
+            ok, err = _dispatch_sync(_apply_on_top, timeout=self._dispatch_timeout)
+            if not ok:
+                code = "timeout" if isinstance(err, TimeoutError) else "window_mutation_failed"
+                return {
+                    "ok": False,
+                    "code": code,
+                    "message": "The window operation could not be completed.",
+                }
+
+            self._on_top = enabled
+            return {"ok": True, "on_top": enabled}
+
+    def minimize_window(self) -> dict[str, Any]:
+        """Minimize the window to the desktop taskbar/dock (#342)."""
+        with self._lock:
+            if self._window is None:
+                return {
+                    "ok": False,
+                    "code": "window_unavailable",
+                    "message": "The window is not available.",
+                }
+            window = self._window
+
+            def _apply_minimize() -> None:
+                if hasattr(window, "minimize"):
+                    window.minimize()
+                else:
+                    native = getattr(window, "native", None)
+                    if native is not None and hasattr(native, "iconify"):
+                        native.iconify()
+                    else:
+                        raise RuntimeError("Native window capability not supported")
+
+            ok, err = _dispatch_sync(_apply_minimize, timeout=self._dispatch_timeout)
+            if not ok:
+                code = "timeout" if isinstance(err, TimeoutError) else "window_mutation_failed"
+                return {
+                    "ok": False,
+                    "code": code,
+                    "message": "The window operation could not be completed.",
+                }
+
+            return {"ok": True}
+
+    def window_state(self) -> dict[str, Any]:
+        """Return current window state snapshot."""
+        with self._lock:
+            state: dict[str, Any] = {
+                "ok": True,
+                "mode": self._mode,
+                "on_top": self._on_top,
+                "width": self._width,
+                "height": self._height,
+            }
+            if self._x is not None:
+                state["x"] = self._x
+            if self._y is not None:
+                state["y"] = self._y
+            return state
+
+    def close_window(self) -> dict[str, Any]:
+        """Request window destruction and clean shell shutdown."""
+        with self._lock:
+            if self._window is None:
+                return {
+                    "ok": False,
+                    "code": "window_unavailable",
+                    "message": "The window is not available.",
+                }
+            window = self._window
+
+            def _apply_close() -> None:
+                if hasattr(window, "destroy"):
+                    window.destroy()
+                else:
+                    raise RuntimeError("Native window capability not supported")
+
+            ok, err = _dispatch_sync(_apply_close, timeout=self._dispatch_timeout)
+            if not ok:
+                code = "timeout" if isinstance(err, TimeoutError) else "window_mutation_failed"
+                return {
+                    "ok": False,
+                    "code": code,
+                    "message": "The window operation could not be completed.",
+                }
+
+            return {"ok": True}
+
+
 class LocalBuildBridge:
     """``js_api`` facade that fails closed outside the local build (#334).
 
@@ -353,6 +1154,26 @@ class LocalBuildBridge:
     def reset_relationship_state(self, *args: Any) -> dict[str, Any]:
         """Privacy: reset relationship state, local-build-only; never raises."""
         return self._serve("reset_relationship_state", args)
+
+    def set_presence_mode(self, *args: Any) -> dict[str, Any]:
+        """Window presence mode, local-build-only; never raises."""
+        return self._serve("set_presence_mode", args)
+
+    def set_always_on_top(self, *args: Any) -> dict[str, Any]:
+        """Window always on top, local-build-only; never raises."""
+        return self._serve("set_always_on_top", args)
+
+    def window_state(self, *args: Any) -> dict[str, Any]:
+        """Window state query, local-build-only; never raises."""
+        return self._serve("window_state", args)
+
+    def close_window(self, *args: Any) -> dict[str, Any]:
+        """Window close, local-build-only; never raises."""
+        return self._serve("close_window", args)
+
+    def minimize_window(self, *args: Any) -> dict[str, Any]:
+        """Window minimize, local-build-only; never raises."""
+        return self._serve("minimize_window", args)
 
 
 class NavigationPolicy:
@@ -491,7 +1312,9 @@ def run_desktop_shell(
             return None
         return _get_url_safely(window_holder[0].get_current_url)
 
-    js_api = LocalBuildBridge(make_js_api(runtime=runtime), build, _current_url, trust)
+    window_controller = WindowController()
+    bridge_facade = make_js_api(runtime=runtime, window_controller=window_controller)
+    js_api = LocalBuildBridge(bridge_facade, build, _current_url, trust)
 
     window = webview.create_window(
         title=_WINDOW_TITLE,
@@ -499,8 +1322,11 @@ def run_desktop_shell(
         js_api=js_api,
         width=_WINDOW_SIZE[0],
         height=_WINDOW_SIZE[1],
+        transparent=True,
+        min_size=(120, 120),
     )
     window_holder.append(window)
+    window_controller.set_window(window)
 
     # Policy layer 1: on every completed load, commit local pages as
     # trusted and revert non-local navigation back to the build. A
@@ -515,6 +1341,7 @@ def run_desktop_shell(
         trust=trust,
     )
     window.events.loaded += policy.on_loaded
+    window.events.loaded += window_controller._connect_screen_signals
 
     try:
         webview.start()

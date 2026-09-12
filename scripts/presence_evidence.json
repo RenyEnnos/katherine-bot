@@ -1,0 +1,188 @@
+{
+  "status": "PASS",
+  "timestamp_utc": "2026-09-12T01:40:48Z",
+  "point_1_lifecycle": {
+    "status": "PASS",
+    "repetitions_count": 5,
+    "sequence": "companion -> presence -> companion -> presence -> minimize -> restore -> companion",
+    "repetitions": [
+      {
+        "repetition": 1,
+        "transitions": [
+          "companion_1",
+          "presence_1",
+          "companion_2",
+          "presence_2",
+          {
+            "step": "minimize",
+            "bridge_ok": true,
+            "native_iconified": true
+          },
+          "restore",
+          "companion_final"
+        ]
+      },
+      {
+        "repetition": 2,
+        "transitions": [
+          "companion_1",
+          "presence_1",
+          "companion_2",
+          "presence_2",
+          {
+            "step": "minimize",
+            "bridge_ok": true,
+            "native_iconified": true
+          },
+          "restore",
+          "companion_final"
+        ]
+      },
+      {
+        "repetition": 3,
+        "transitions": [
+          "companion_1",
+          "presence_1",
+          "companion_2",
+          "presence_2",
+          {
+            "step": "minimize",
+            "bridge_ok": true,
+            "native_iconified": true
+          },
+          "restore",
+          "companion_final"
+        ]
+      },
+      {
+        "repetition": 4,
+        "transitions": [
+          "companion_1",
+          "presence_1",
+          "companion_2",
+          "presence_2",
+          {
+            "step": "minimize",
+            "bridge_ok": true,
+            "native_iconified": true
+          },
+          "restore",
+          "companion_final"
+        ]
+      },
+      {
+        "repetition": 5,
+        "transitions": [
+          "companion_1",
+          "presence_1",
+          "companion_2",
+          "presence_2",
+          {
+            "step": "minimize",
+            "bridge_ok": true,
+            "native_iconified": true
+          },
+          "restore",
+          "companion_final"
+        ]
+      }
+    ],
+    "single_window_verified": true,
+    "zero_duplicate_runtime": true
+  },
+  "point_2_always_on_top": {
+    "status": "PASS",
+    "rule": "set_always_on_top is sole authority; state preserved across mode transitions",
+    "steps": [
+      {
+        "step": "startup_default",
+        "on_top": false,
+        "verified": true
+      },
+      {
+        "step": "enter_presence_maintains_false",
+        "on_top": false,
+        "aria_pressed": "false",
+        "verified": true
+      },
+      {
+        "step": "user_pins_true",
+        "on_top": true,
+        "aria_pressed": "true",
+        "verified": true
+      },
+      {
+        "step": "return_companion_preserves_true",
+        "on_top": true,
+        "verified": true
+      },
+      {
+        "step": "reenter_presence_preserves_true",
+        "on_top": true,
+        "aria_pressed": "true",
+        "verified": true
+      },
+      {
+        "step": "user_unpins_false",
+        "on_top": false,
+        "aria_pressed": "false",
+        "verified": true
+      },
+      {
+        "step": "return_companion_preserves_false",
+        "on_top": false,
+        "verified": true
+      }
+    ]
+  },
+  "point_3_privacy_canary": {
+    "status": "PASS",
+    "canary_token_found": false,
+    "leaked_forbidden_selectors_count": 0,
+    "leaked_selectors": [],
+    "chat_strings_leaked": false
+  },
+  "point_4_transparency": {
+    "is_composited": true,
+    "dom_presence_bg": "rgba(0, 0, 0, 0)",
+    "dom_root_bg": "rgba(0, 0, 0, 0)",
+    "tested_mode": "presence",
+    "pixbuf_has_alpha": true,
+    "corner_alpha": 0,
+    "status": "VERIFIED"
+  },
+  "point_5_resources": {
+    "companion": {
+      "rss_mb": 434.55,
+      "process_count": 3,
+      "webkit_process_count": 2,
+      "cpu_idle_percent": 100.0,
+      "cpu_percent": 0.0,
+      "tree_cpu_percent": 0.0,
+      "sample_interval_seconds": 0.5
+    },
+    "presence": {
+      "rss_mb": 448.37,
+      "process_count": 3,
+      "webkit_process_count": 2,
+      "cpu_idle_percent": 100.0,
+      "cpu_percent": 0.0,
+      "tree_cpu_percent": 0.0,
+      "sample_interval_seconds": 0.5
+    },
+    "delta_rss_mb": 13.82
+  },
+  "point_6_geometry_clamp": {
+    "status": "PASS",
+    "negative_out_of_bounds_recovered_to": [
+      0,
+      0
+    ],
+    "large_out_of_bounds_recovered_to": [
+      1720,
+      880
+    ],
+    "reconciled_without_mode_change": true,
+    "mode_after_reconciliation": "presence"
+  }
+}

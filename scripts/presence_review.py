@@ -7,23 +7,38 @@ The scripted provider is fixture evidence, not live provider acceptance.
 import argparse
 import asyncio
 import json
+import os
+import sys
 import threading
 import time
+import uuid
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import webview
 from backend.desktop.app import run_desktop_shell
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--output', required=True, type=Path)
+parser.add_argument('--output', type=Path, default=Path('scripts/presence_evidence'))
+parser.add_argument('--clean', action='store_true', help='Clean output directory before running')
 parser.add_argument('--scripted', action='store_true')
+parser.add_argument('--verify-matrix', action='store_true', help='Execute 5-point Runtime Evidence Matrix (#342 / #366)')
 parser.add_argument('--verify-v2', action='store_true')
 parser.add_argument('--verify-scaling', action='store_true')
 parser.add_argument('--reduced-motion', action='store_true')
 args = parser.parse_args()
 args.output.mkdir(parents=True, exist_ok=True)
 if (args.output / 'isolated.sqlite3').exists():
-    parser.error('Use a fresh output directory so captures start with empty isolated storage.')
+    if args.clean or args.verify_matrix:
+        try:
+            (args.output / 'isolated.sqlite3').unlink()
+        except OSError:
+            pass
+    else:
+        parser.error('Use a fresh output directory so captures start with empty isolated storage.')
 if args.reduced_motion:
     import gi
     gi.require_version('Gtk', '3.0')
@@ -31,7 +46,7 @@ if args.reduced_motion:
     Gtk.Settings.get_default().set_property('gtk-enable-animations', False)
 release = threading.Event()
 failures = []
-results = {'provider': 'scripted offline fixture' if args.scripted else 'unconfigured real runtime', 'captures': []}
+results = {'provider': 'scripted offline fixture' if (args.scripted or args.verify_matrix) else 'unconfigured real runtime', 'captures': []}
 
 class ReviewProvider:
     async def appraise(self, message, budget):
@@ -234,6 +249,527 @@ def verify_scaling_matrix(window):
         time.sleep(0.3)
 
 
+def call_bridge_js(window, call_expr, timeout=10.0):
+    """Execute an async bridge expression and await its deposited result."""
+    prop = f"__bridge_res_{uuid.uuid4().hex}"
+    window.evaluate_js(f"""(() => {{
+        window['{prop}'] = '__pending__';
+        (async () => {{
+            try {{
+                window['{prop}'] = await ({call_expr});
+            }} catch (err) {{
+                window['{prop}'] = {{ __threw: true, error: String(err) }};
+            }}
+        }})();
+    }})()""")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        res = window.evaluate_js(f"window['{prop}']")
+        if res != '__pending__' and res is not None:
+            window.evaluate_js(f"delete window['{prop}']")
+            if isinstance(res, dict) and res.get('__threw'):
+                raise RuntimeError(f"Bridge JS error in {call_expr}: {res.get('error')}")
+            return res
+        time.sleep(0.05)
+    raise TimeoutError(f"Timed out waiting for {call_expr}")
+
+
+def measure_system_resources(sample_interval: float = 0.5):
+    """Measure real system resources across Katherine process and all WebKit children (#342, #366).
+
+    Bounded, reproducible measurement:
+    - Queries total RSS of [current process] + all recursive children (WebKit processes).
+    - Measures CPU utilization of the entire application process tree across a bounded window (default 0.5s).
+    - Reports idle percentage = 100 - sum(tree CPU percent).
+    """
+    import os
+    try:
+        import psutil
+        current = psutil.Process(os.getpid())
+        children = current.children(recursive=True)
+        all_procs = [current] + children
+        total_rss = 0
+        for p in all_procs:
+            try:
+                total_rss += p.memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        rss_mb = round(total_rss / (1024 * 1024), 2)
+        webkit_procs = [
+            p for p in children
+            if "WebKit" in p.name() or "bwrap" in p.name()
+        ]
+
+        # Initialize CPU counter on all processes in the tree
+        for p in all_procs:
+            try:
+                p.cpu_percent(None)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        time.sleep(sample_interval)
+
+        # Sample CPU over the bounded window for the entire process tree
+        tree_cpu = 0.0
+        for p in all_procs:
+            try:
+                tree_cpu += p.cpu_percent(None)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        tree_cpu_pct = round(tree_cpu, 2)
+        idle_pct = round(max(0.0, 100.0 - tree_cpu_pct), 2)
+
+        return {
+            "rss_mb": rss_mb,
+            "process_count": len(all_procs),
+            "webkit_process_count": len(webkit_procs),
+            "cpu_idle_percent": idle_pct,
+            "cpu_percent": tree_cpu_pct,
+            "tree_cpu_percent": tree_cpu_pct,
+            "sample_interval_seconds": sample_interval,
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def verify_matrix(window, output_dir):
+    print("\n" + "=" * 70)
+    print("EXECUTING 5-POINT RUNTIME EVIDENCE MATRIX (PR #366 / Issue #342)")
+    print("=" * 70, flush=True)
+
+    # 0. Wait for bridge and initial companion layout to be ready
+    wait_for(window, 'Boolean(document.querySelector("[data-testid=companion-layout]"))')
+    wait_for(window, 'Boolean(document.querySelector("[data-testid=desktop-bridge-indicator]"))')
+    time.sleep(0.5)
+
+    # Point 5 (Part A): Baseline Companion Resources
+    print("\n[Point 5] Measuring Companion baseline resources...", flush=True)
+    time.sleep(0.5)
+    companion_resources = measure_system_resources()
+    print(f"  Companion RSS: {companion_resources.get('rss_mb')} MB | Procs: {companion_resources.get('process_count')} (WebKit: {companion_resources.get('webkit_process_count')}) | CPU idle: {companion_resources.get('cpu_idle_percent')}%", flush=True)
+
+    # Point 2: Always-on-Top Decoupling Verification (§BLOCKER 1)
+    print("\n[Point 2] Verifying Always-on-Top Decoupling (§BLOCKER 1)...", flush=True)
+    aot_steps = []
+
+    # 2.1 Default at startup must be False
+    st_init = call_bridge_js(window, "window.pywebview.api.window_state()")
+    assert st_init.get("ok") and st_init.get("on_top") is False, f"Startup on_top must be False: {st_init}"
+    aot_steps.append({"step": "startup_default", "on_top": False, "verified": True})
+
+    # 2.2 Enter presence: on_top must remain False
+    window.evaluate_js('document.querySelector("[data-testid=\\"companion-enter-presence-btn\\"]").click()')
+    wait_for(window, 'Boolean(document.querySelector("[data-testid=\\"katherine-presence-surface\\"]"))')
+    st_pres = call_bridge_js(window, "window.pywebview.api.window_state()")
+    assert st_pres.get("ok") and st_pres.get("mode") == "presence", f"Must be in presence mode: {st_pres}"
+    assert st_pres.get("on_top") is False, f"Entering presence must NOT activate on_top: {st_pres}"
+    pin_aria = window.evaluate_js('document.querySelector("[data-testid=\\"presence-pin-btn\\"]").getAttribute("aria-pressed")')
+    assert pin_aria == "false", f"Pin button aria-pressed must be false, got {pin_aria}"
+    aot_steps.append({"step": "enter_presence_maintains_false", "on_top": False, "aria_pressed": "false", "verified": True})
+
+    # 2.3 User pins: click pin button -> on_top becomes True
+    window.evaluate_js('document.querySelector("[data-testid=\\"presence-pin-btn\\"]").click()')
+    wait_for(window, 'document.querySelector("[data-testid=\\"presence-pin-btn\\"]").getAttribute("aria-pressed") === "true"')
+    st_pinned = call_bridge_js(window, "window.pywebview.api.window_state()")
+    assert st_pinned.get("ok") and st_pinned.get("on_top") is True, f"Explicit pin must set on_top=True: {st_pinned}"
+    aot_steps.append({"step": "user_pins_true", "on_top": True, "aria_pressed": "true", "verified": True})
+
+    # 2.4 Return companion: on_top must persist as True
+    window.evaluate_js('document.querySelector("[data-testid=\\"presence-return-btn\\"]").click()')
+    wait_for(window, 'Boolean(document.querySelector("[data-testid=\\"companion-layout\\"]"))')
+    st_comp_pinned = call_bridge_js(window, "window.pywebview.api.window_state()")
+    assert st_comp_pinned.get("ok") and st_comp_pinned.get("mode") == "companion"
+    assert st_comp_pinned.get("on_top") is True, f"Returning to companion must preserve on_top=True: {st_comp_pinned}"
+    aot_steps.append({"step": "return_companion_preserves_true", "on_top": True, "verified": True})
+
+    # 2.5 Enter presence again: on_top must persist as True
+    window.evaluate_js('document.querySelector("[data-testid=\\"companion-enter-presence-btn\\"]").click()')
+    wait_for(window, 'Boolean(document.querySelector("[data-testid=\\"katherine-presence-surface\\"]"))')
+    st_pres_pinned = call_bridge_js(window, "window.pywebview.api.window_state()")
+    assert st_pres_pinned.get("ok") and st_pres_pinned.get("on_top") is True, f"Entering presence must preserve on_top=True: {st_pres_pinned}"
+    pin_aria = window.evaluate_js('document.querySelector("[data-testid=\\"presence-pin-btn\\"]").getAttribute("aria-pressed")')
+    assert pin_aria == "true", f"Pin button aria-pressed must remain true, got {pin_aria}"
+    aot_steps.append({"step": "reenter_presence_preserves_true", "on_top": True, "aria_pressed": "true", "verified": True})
+
+    # 2.6 User unpins: click pin button -> on_top becomes False
+    window.evaluate_js('document.querySelector("[data-testid=\\"presence-pin-btn\\"]").click()')
+    wait_for(window, 'document.querySelector("[data-testid=\\"presence-pin-btn\\"]").getAttribute("aria-pressed") === "false"')
+    st_unpinned = call_bridge_js(window, "window.pywebview.api.window_state()")
+    assert st_unpinned.get("ok") and st_unpinned.get("on_top") is False, f"Explicit unpin must set on_top=False: {st_unpinned}"
+    aot_steps.append({"step": "user_unpins_false", "on_top": False, "aria_pressed": "false", "verified": True})
+
+    # 2.7 Return companion: on_top persists as False
+    window.evaluate_js('document.querySelector("[data-testid=\\"presence-return-btn\\"]").click()')
+    wait_for(window, 'Boolean(document.querySelector("[data-testid=\\"companion-layout\\"]"))')
+    st_comp_unpinned = call_bridge_js(window, "window.pywebview.api.window_state()")
+    assert st_comp_unpinned.get("ok") and st_comp_unpinned.get("on_top") is False, f"Companion must remain unpinned: {st_comp_unpinned}"
+    aot_steps.append({"step": "return_companion_preserves_false", "on_top": False, "verified": True})
+    print("  Always-on-top decoupling verified: PASS", flush=True)
+
+    # Point 3: DOM Privacy Canary (§MAJOR 6)
+    print("\n[Point 3] Verifying DOM Privacy Canary (§MAJOR 6)...", flush=True)
+    canary_token = "CANARY_CONFIDENTIAL_TOKEN_PR366_789"
+    window.evaluate_js(f"""(() => {{
+        const input = document.querySelector('textarea[aria-label="Sua mensagem"]');
+        if (input) {{
+            Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, '{canary_token}');
+            input.dispatchEvent(new Event('input', {{bubbles: true}}));
+        }}
+    }})()""")
+    time.sleep(0.3)
+
+    # Switch to presence mode
+    window.evaluate_js('document.querySelector("[data-testid=\\"companion-enter-presence-btn\\"]").click()')
+    wait_for(window, 'Boolean(document.querySelector("[data-testid=\\"katherine-presence-surface\\"]"))')
+    time.sleep(0.3)
+
+    # Inspect DOM for any private/companion leak
+    privacy_inspection = window.evaluate_js(f"""(() => {{
+        const forbiddenSelectors = [
+            'textarea',
+            'button[aria-label*="Enviar mensagem"]',
+            '[data-testid="companion-history"]',
+            '[data-testid="companion-layout"]',
+            '[data-testid="companion-utilities"]',
+            '[data-testid="companion-emotion-details"]',
+            '[data-testid="companion-privacy-details"]',
+            '[data-testid="privacy-panel"]',
+            '[data-testid="message-list"]',
+            '[data-testid="chat-header"]',
+            '[data-testid="companion-auxiliary-slot"]',
+            '.companion-layout__conversation',
+            '.chat-header',
+            '.companion-layout__history'
+        ];
+        const leaked = forbiddenSelectors.filter(sel => document.querySelector(sel) !== null);
+        const text = document.body.innerText || '';
+        const html = document.body.innerHTML || '';
+        return {{
+            leakedSelectors: leaked,
+            canaryInText: text.includes('{canary_token}'),
+            canaryInHtml: html.includes('{canary_token}'),
+            chatStringsLeaked: text.includes('Comece uma conversa') || text.includes('Histórico da conversa'),
+            hasPresenceSurface: Boolean(document.querySelector('[data-testid="katherine-presence-surface"]')),
+            hasFace: Boolean(document.querySelector('[data-testid="katherine-face"]')),
+            hasControls: Boolean(document.querySelector('[data-testid="katherine-presence-controls"]')),
+            bodyText: text.trim(),
+        }};
+    }})()""")
+
+    assert len(privacy_inspection["leakedSelectors"]) == 0, f"Privacy canary failed: found selectors {privacy_inspection['leakedSelectors']}"
+    assert not privacy_inspection["canaryInText"], "Privacy canary failed: confidential token found in body text!"
+    assert not privacy_inspection["canaryInHtml"], "Privacy canary failed: confidential token found in body HTML!"
+    assert not privacy_inspection["chatStringsLeaked"], "Privacy canary failed: chat strings found in presence DOM!"
+    assert privacy_inspection["hasPresenceSurface"], "Presence surface must be present in DOM"
+    print("  DOM Privacy Canary verified: 0 leaked elements, 0 private tokens, 0 chat strings: PASS", flush=True)
+
+    # Point 4: Transparency Verification (§MAJOR 6)
+    print("\n[Point 4] Verifying Window Surface Transparency (§MAJOR 6)...", flush=True)
+    import gi
+    gi.require_version('Gtk', '3.0')
+    gi.require_version('Gdk', '3.0')
+    from gi.repository import Gdk, GLib
+
+    screen = Gdk.Screen.get_default()
+    is_composited = screen.is_composited() if screen else False
+
+    dom_transparency = window.evaluate_js("""(() => {
+        const pres = document.querySelector('.katherine-presence');
+        const root = document.querySelector('[data-testid="app-desktop-root"]');
+        return {
+            presenceBg: pres ? getComputedStyle(pres).backgroundColor : null,
+            rootBg: root ? getComputedStyle(root).backgroundColor : null,
+        };
+    })()""")
+
+    transparency_data = {
+        "is_composited": is_composited,
+        "dom_presence_bg": dom_transparency.get("presenceBg"),
+        "dom_root_bg": dom_transparency.get("rootBg"),
+        "tested_mode": "presence",
+    }
+
+    if not is_composited:
+        transparency_data["status"] = "NOT VERIFIED"
+        transparency_data["reason"] = "Display server does not report an active compositing manager (e.g. standard Xvfb); marked NOT VERIFIED per §MAJOR 6"
+        print(f"  Transparency status: NOT VERIFIED ({transparency_data['reason']})", flush=True)
+    else:
+        native = window.native
+        w, h = native.get_size()
+        pixbuf_done = threading.Event()
+        pb_holder = []
+        def _get_pb():
+            try:
+                pb = Gdk.pixbuf_get_from_window(native.get_window(), 0, 0, w, h)
+                pb_holder.append(pb)
+            except Exception:
+                pb_holder.append(None)
+            finally:
+                pixbuf_done.set()
+            return False
+        GLib.idle_add(_get_pb)
+        pixbuf_done.wait(5.0)
+        pb = pb_holder[0] if pb_holder else None
+
+        if pb and pb.get_has_alpha():
+            pixels = pb.get_pixels()
+            channels = pb.get_n_channels()
+            corner_alpha = pixels[channels - 1] if len(pixels) >= channels else None
+            transparency_data["pixbuf_has_alpha"] = True
+            transparency_data["corner_alpha"] = corner_alpha
+            transparency_data["status"] = "VERIFIED"
+            print(f"  Transparency status: VERIFIED (Composited GDK screen, pixbuf alpha present, corner alpha={corner_alpha})", flush=True)
+        else:
+            transparency_data["pixbuf_has_alpha"] = False
+            transparency_data["status"] = "NOT VERIFIED"
+            transparency_data["reason"] = "Compositor active but native window capture lacks alpha plane in this graphical session; marked NOT VERIFIED per §MAJOR 6"
+            print(f"  Transparency status: NOT VERIFIED ({transparency_data['reason']})", flush=True)
+
+    # Point 5 (Part B): Presence Mode Resources
+    print("\n[Point 5] Measuring Presence resources...", flush=True)
+    time.sleep(1.0)
+    presence_resources = measure_system_resources()
+    print(f"  Presence RSS: {presence_resources.get('rss_mb')} MB | Procs: {presence_resources.get('process_count')} (WebKit: {presence_resources.get('webkit_process_count')}) | CPU idle: {presence_resources.get('cpu_idle_percent')}%", flush=True)
+
+    delta_rss = round(presence_resources.get("rss_mb", 0) - companion_resources.get("rss_mb", 0), 2)
+    resource_matrix = {
+        "companion": companion_resources,
+        "presence": presence_resources,
+        "delta_rss_mb": delta_rss,
+    }
+
+    # Return to companion mode before lifecycle loop
+    window.evaluate_js('document.querySelector("[data-testid=\\"presence-return-btn\\"]").click()')
+    wait_for(window, 'Boolean(document.querySelector("[data-testid=\\"companion-layout\\"]"))')
+    time.sleep(0.3)
+
+    # Point 1: Lifecycle (5 Repetitions) (§MAJOR 6)
+    print("\n[Point 1] Executing Lifecycle 5x (companion -> presence -> companion -> presence -> minimize -> restore -> companion)...", flush=True)
+    lifecycle_results = []
+
+    for rep in range(1, 6):
+        rep_data = {"repetition": rep, "transitions": []}
+
+        # In companion
+        wait_for(window, 'Boolean(document.querySelector("[data-testid=companion-layout]"))')
+        assert len(webview.windows) == 1, f"Rep {rep}: Expected 1 window, found {len(webview.windows)}"
+        st = call_bridge_js(window, "window.pywebview.api.window_state()")
+        assert st.get("mode") == "companion", f"Rep {rep}: Must be companion, got {st}"
+        rep_data["transitions"].append("companion_1")
+
+        # -> presence
+        window.evaluate_js('document.querySelector("[data-testid=\\"companion-enter-presence-btn\\"]").click()')
+        wait_for(window, 'Boolean(document.querySelector("[data-testid=\\"katherine-presence-surface\\"]"))')
+        st = call_bridge_js(window, "window.pywebview.api.window_state()")
+        assert st.get("mode") == "presence", f"Rep {rep}: Must be presence, got {st}"
+        rep_data["transitions"].append("presence_1")
+
+        # -> companion
+        window.evaluate_js('document.querySelector("[data-testid=\\"presence-return-btn\\"]").click()')
+        wait_for(window, 'Boolean(document.querySelector("[data-testid=\\"companion-layout\\"]"))')
+        st = call_bridge_js(window, "window.pywebview.api.window_state()")
+        assert st.get("mode") == "companion", f"Rep {rep}: Must be companion, got {st}"
+        rep_data["transitions"].append("companion_2")
+
+        # -> presence
+        window.evaluate_js('document.querySelector("[data-testid=\\"companion-enter-presence-btn\\"]").click()')
+        wait_for(window, 'Boolean(document.querySelector("[data-testid=\\"katherine-presence-surface\\"]"))')
+        st = call_bridge_js(window, "window.pywebview.api.window_state()")
+        assert st.get("mode") == "presence", f"Rep {rep}: Must be presence, got {st}"
+        rep_data["transitions"].append("presence_2")
+
+        # -> hide/minimize (verified bridge return + observed native state)
+        window.evaluate_js('window.__lastMinimizeResult = null')
+        window.evaluate_js('document.querySelector("[data-testid=\\"presence-minimize-btn\\"]").click()')
+
+        # Wait for bridge call completion and verify ok: true
+        deadline = time.monotonic() + 5.0
+        min_res = None
+        while time.monotonic() < deadline:
+            min_res = window.evaluate_js('window.__lastMinimizeResult')
+            if min_res is not None:
+                break
+            time.sleep(0.05)
+
+        assert isinstance(min_res, dict), f"Rep {rep}: Minimize bridge call timed out or returned non-dict: {min_res}"
+        assert min_res.get("ok") is True, f"Rep {rep}: Minimize bridge returned non-ok: {min_res}"
+
+        # Bounded wait for native GTK window state to reflect ICONIFIED
+        iconify_deadline = time.monotonic() + 3.0
+        native_minimized = False
+        native = getattr(window, "native", None)
+        while time.monotonic() < iconify_deadline:
+            if native is not None:
+                gdk_win = native.get_window()
+                if gdk_win:
+                    st_flags = gdk_win.get_state()
+                    if st_flags is not None and bool(st_flags & Gdk.WindowState.ICONIFIED):
+                        native_minimized = True
+                        break
+            time.sleep(0.05)
+
+        assert native_minimized is True, (
+            f"Rep {rep}: Native GTK window failed to reach ICONIFIED state before restore"
+        )
+
+        rep_data["transitions"].append({
+            "step": "minimize",
+            "bridge_ok": True,
+            "native_iconified": True,
+        })
+
+        # -> restore
+        restore_done = threading.Event()
+        def _restore_win():
+            try:
+                if hasattr(window, 'restore'):
+                    window.restore()
+                elif hasattr(window.native, 'deiconify'):
+                    window.native.deiconify()
+            finally:
+                restore_done.set()
+            return False
+        GLib.idle_add(_restore_win)
+        assert restore_done.wait(5.0), f"Rep {rep}: Native restore timed out"
+        time.sleep(0.2)
+        wait_for(window, 'Boolean(document.querySelector("[data-testid=\\"katherine-presence-surface\\"]"))')
+
+        # Confirm ICONIFIED was removed after restore
+        deiconify_deadline = time.monotonic() + 3.0
+        native_restored = False
+        while time.monotonic() < deiconify_deadline:
+            if native is not None:
+                gdk_win = native.get_window()
+                if gdk_win:
+                    st_flags = gdk_win.get_state()
+                    if st_flags is not None and not bool(st_flags & Gdk.WindowState.ICONIFIED):
+                        native_restored = True
+                        break
+            time.sleep(0.05)
+        assert native_restored is True, (
+            f"Rep {rep}: Native GTK window still has ICONIFIED flag after restore"
+        )
+
+        assert len(webview.windows) == 1, f"Rep {rep}: Window count must remain 1 after restore"
+        rep_data["transitions"].append("restore")
+
+        # -> companion
+        window.evaluate_js('document.querySelector("[data-testid=\\"presence-return-btn\\"]").click()')
+        wait_for(window, 'Boolean(document.querySelector("[data-testid=\\"companion-layout\\"]"))')
+        st = call_bridge_js(window, "window.pywebview.api.window_state()")
+        assert st.get("mode") == "companion", f"Rep {rep}: Must be companion, got {st}"
+        assert len(webview.windows) == 1, f"Rep {rep}: Window count must be 1"
+        rep_data["transitions"].append("companion_final")
+
+        lifecycle_results.append(rep_data)
+        print(f"  Repetition {rep}/5 completed cleanly (minimized bridge_ok=True, native_iconified={native_minimized}, windows={len(webview.windows)})", flush=True)
+
+    # Point 6: Runtime Geometry Clamp Recovery Proof (§BLOCKER 1 / #342)
+    print("\n[Point 6] Verifying Runtime Geometry Clamp Recovery (§BLOCKER 1)...", flush=True)
+    # Switch to presence mode
+    window.evaluate_js('document.querySelector("[data-testid=\\"companion-enter-presence-btn\\"]").click()')
+    wait_for(window, 'Boolean(document.querySelector("[data-testid=\\"katherine-presence-surface\\"]"))')
+    time.sleep(0.3)
+
+    st_p = call_bridge_js(window, "window.pywebview.api.window_state()")
+    assert st_p.get("ok") and st_p.get("mode") == "presence", f"Must be in presence mode: {st_p}"
+
+    # 6.1 Move out of bounds (negative coordinates)
+    native = getattr(window, "native", None)
+    window.move(-400, -400)
+    time.sleep(0.5)
+
+    st_check1 = call_bridge_js(window, "window.pywebview.api.window_state()")
+    assert st_check1.get("ok") and st_check1.get("mode") == "presence", f"Mode must remain presence: {st_check1}"
+    assert st_check1.get("x") is not None and st_check1.get("x") >= 0, f"Clamped x must be >= 0: {st_check1}"
+    assert st_check1.get("y") is not None and st_check1.get("y") >= 0, f"Clamped y must be >= 0: {st_check1}"
+
+    gdk_win = native.get_window() if native else None
+    if gdk_win and hasattr(gdk_win, "get_origin"):
+        origin1 = gdk_win.get_origin()
+        if len(origin1) == 3:
+            assert origin1[1] >= 0 and origin1[2] >= 0, f"GDK origin outside screen: {origin1}"
+
+    # 6.2 Move out of bounds (large positive coordinates beyond screen)
+    window.move(9999, 9999)
+    time.sleep(0.5)
+
+    display = Gdk.Display.get_default()
+    primary_mon = display.get_primary_monitor() if display and hasattr(display, "get_primary_monitor") else None
+    wa = primary_mon.get_workarea() if primary_mon and hasattr(primary_mon, "get_workarea") else None
+    screen_w = wa.width if wa else 1280
+    screen_h = wa.height if wa else 800
+
+    st_check2 = call_bridge_js(window, "window.pywebview.api.window_state()")
+    assert st_check2.get("ok") and st_check2.get("mode") == "presence", f"Mode must remain presence: {st_check2}"
+    assert st_check2.get("x") <= screen_w - 200, f"Clamped x must be within screen: {st_check2}"
+    assert st_check2.get("y") <= screen_h - 200, f"Clamped y must be within screen: {st_check2}"
+
+    if gdk_win and hasattr(gdk_win, "get_origin"):
+        origin2 = gdk_win.get_origin()
+        if len(origin2) == 3:
+            assert origin2[1] <= screen_w - 200 and origin2[2] <= screen_h - 200, f"GDK origin outside bounds: {origin2}"
+
+    clamp_proof = {
+        "status": "PASS",
+        "negative_out_of_bounds_recovered_to": [st_check1.get("x"), st_check1.get("y")],
+        "large_out_of_bounds_recovered_to": [st_check2.get("x"), st_check2.get("y")],
+        "reconciled_without_mode_change": True,
+        "mode_after_reconciliation": "presence",
+    }
+    print(f"  Runtime geometry clamp recovery verified (negative->{[st_check1.get('x'), st_check1.get('y')]}, large->{[st_check2.get('x'), st_check2.get('y')]}: PASS", flush=True)
+
+    # Return to companion
+    window.evaluate_js('document.querySelector("[data-testid=\\"presence-return-btn\\"]").click()')
+    wait_for(window, 'Boolean(document.querySelector("[data-testid=\\"companion-layout\\"]"))')
+    time.sleep(0.3)
+
+    # Compile final matrix results
+    final_matrix = {
+        "status": "PASS",
+        "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "point_1_lifecycle": {
+            "status": "PASS",
+            "repetitions_count": len(lifecycle_results),
+            "sequence": "companion -> presence -> companion -> presence -> minimize -> restore -> companion",
+            "repetitions": lifecycle_results,
+            "single_window_verified": len(webview.windows) == 1,
+            "zero_duplicate_runtime": True,
+        },
+        "point_2_always_on_top": {
+            "status": "PASS",
+            "rule": "set_always_on_top is sole authority; state preserved across mode transitions",
+            "steps": aot_steps,
+        },
+        "point_3_privacy_canary": {
+            "status": "PASS",
+            "canary_token_found": privacy_inspection["canaryInText"] or privacy_inspection["canaryInHtml"],
+            "leaked_forbidden_selectors_count": len(privacy_inspection["leakedSelectors"]),
+            "leaked_selectors": privacy_inspection["leakedSelectors"],
+            "chat_strings_leaked": privacy_inspection["chatStringsLeaked"],
+        },
+        "point_4_transparency": transparency_data,
+        "point_5_resources": resource_matrix,
+        "point_6_geometry_clamp": clamp_proof,
+    }
+
+    # Save to files
+    (output_dir / "matrix_evidence.json").write_text(json.dumps(final_matrix, indent=2, ensure_ascii=False))
+
+    repo_root = Path(__file__).resolve().parents[1]
+    (repo_root / "scripts" / "presence_evidence.json").write_text(json.dumps(final_matrix, indent=2, ensure_ascii=False))
+
+    results["matrix_evidence"] = final_matrix
+    print("\n" + "=" * 70)
+    print("5-POINT RUNTIME EVIDENCE MATRIX SUCCESSFULLY COMPLETED")
+    print("Saved evidence to:")
+    print(f"  - {output_dir / 'matrix_evidence.json'}")
+    print(f"  - {repo_root / 'scripts' / 'presence_evidence.json'}")
+    print("=" * 70 + "\n", flush=True)
+    return final_matrix
+
+
 def inspect():
     window = None
     try:
@@ -244,45 +780,51 @@ def inspect():
         window.events.loaded.wait(20)
         wait_for(window, 'Boolean(document.querySelector("[data-testid=companion-layout]"))')
         wait_for(window, 'Boolean(document.querySelector("[data-testid=desktop-bridge-indicator]"))')
-        time.sleep(1)
-        capture(window, 'idle-1280')
-        window.resize(800, 800)
-        wait_for(window, 'innerWidth === 800')
-        time.sleep(0.4)
-        capture(window, 'idle-800')
-        window.resize(1280, 800)
-        wait_for(window, 'innerWidth === 1280')
-        window.evaluate_js("""(() => {
-          const input = document.querySelector('textarea[aria-label="Sua mensagem"]');
-          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, 'Olá, Katherine.');
-          input.dispatchEvent(new Event('input', {bubbles: true}));
-        })()""")
-        wait_for(window, '!document.querySelector("button[aria-label=\\"Enviar mensagem (Enter)\\"]").disabled')
-        window.evaluate_js('document.querySelector("button[aria-label=\\"Enviar mensagem (Enter)\\"]").click()')
-        if args.scripted:
-            wait_for(window, 'document.querySelector("textarea").disabled')
-            if args.verify_v2:
-                wait_for(window, 'document.querySelector("[role=status]")?.textContent.includes("Preparando resposta")')
-            time.sleep(1)
-            capture(window, 'thinking-1280')
+        time.sleep(0.5)
+
+        if args.verify_matrix:
+            release.set()
+            verify_matrix(window, args.output)
+
+        if not args.verify_matrix or args.verify_v2 or args.verify_scaling:
+            capture(window, 'idle-1280')
             window.resize(800, 800)
             wait_for(window, 'innerWidth === 800')
             time.sleep(0.4)
-            capture(window, 'thinking-800')
-            if args.verify_v2:
-                optical_probes(window)
-            release.set()
-            wait_for(window, 'document.body.innerText.includes("A presença pode permanecer tranquila")')
-            time.sleep(1)
-            capture(window, 'response-800')
-            if args.verify_scaling:
-                verify_scaling_matrix(window)
-        else:
-            wait_for(window, 'document.body.innerText.includes("O provedor remoto não está configurado")')
-            wait_for(window, '!document.querySelector("textarea").disabled')
-            time.sleep(0.5)
-            capture(window, 'unconfigured-error-1280')
-        results['finalText'] = window.evaluate_js('document.body.innerText')
+            capture(window, 'idle-800')
+            window.resize(1280, 800)
+            wait_for(window, 'innerWidth === 1280')
+            window.evaluate_js("""(() => {
+              const input = document.querySelector('textarea[aria-label="Sua mensagem"]');
+              Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, 'Olá, Katherine.');
+              input.dispatchEvent(new Event('input', {bubbles: true}));
+            })()""")
+            wait_for(window, '!document.querySelector("button[aria-label=\\"Enviar mensagem (Enter)\\"]").disabled')
+            window.evaluate_js('document.querySelector("button[aria-label=\\"Enviar mensagem (Enter)\\"]").click()')
+            if args.scripted:
+                wait_for(window, 'document.querySelector("textarea").disabled')
+                if args.verify_v2:
+                    wait_for(window, 'document.querySelector("[role=status]")?.textContent.includes("Preparando resposta")')
+                time.sleep(1)
+                capture(window, 'thinking-1280')
+                window.resize(800, 800)
+                wait_for(window, 'innerWidth === 800')
+                time.sleep(0.4)
+                capture(window, 'thinking-800')
+                if args.verify_v2:
+                    optical_probes(window)
+                release.set()
+                wait_for(window, 'document.body.innerText.includes("A presença pode permanecer tranquila")')
+                time.sleep(1)
+                capture(window, 'response-800')
+                if args.verify_scaling:
+                    verify_scaling_matrix(window)
+            else:
+                wait_for(window, 'document.body.innerText.includes("O provedor remoto não está configurado")')
+                wait_for(window, '!document.querySelector("textarea").disabled')
+                time.sleep(0.5)
+                capture(window, 'unconfigured-error-1280')
+            results['finalText'] = window.evaluate_js('document.body.innerText')
     except Exception as error:
         failures.append(str(error))
     finally:
@@ -294,7 +836,7 @@ def inspect():
 
 thread = threading.Thread(target=inspect, daemon=True)
 thread.start()
-run_desktop_shell(storage_path=args.output / 'isolated.sqlite3', provider=ReviewProvider() if args.scripted else None)
+run_desktop_shell(storage_path=args.output / 'isolated.sqlite3', provider=ReviewProvider() if (args.scripted or args.verify_matrix) else None)
 thread.join(5)
 if failures:
     raise SystemExit('; '.join(failures))

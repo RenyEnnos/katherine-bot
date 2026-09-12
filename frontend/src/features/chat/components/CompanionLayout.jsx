@@ -2,7 +2,6 @@ import React from 'react';
 import { Minimize2 } from 'lucide-react';
 import ChatHeader from './ChatHeader';
 import ChatInput from './ChatInput';
-import EmotionPanel from './EmotionPanel';
 import MessageList from './MessageList';
 import KatherineFace from '../../katherine-face/KatherineFace.jsx';
 import PrivacyPanel from '../../privacy/PrivacyPanel';
@@ -102,15 +101,6 @@ export default function CompanionLayout({
                         data-testid="companion-utilities"
                         aria-label="Ferramentas do companion"
                     >
-                        {emotionState && (
-                            <details data-testid="companion-emotion-details">
-                                <summary>Detalhes do estado</summary>
-                                <div className="companion-layout__utility-content">
-                                    <EmotionPanel emotionState={emotionState} />
-                                </div>
-                            </details>
-                        )}
-
                         {hasDesktopPrivacy && (
                             <details data-testid="companion-privacy-details">
                                 <summary>Privacidade local</summary>
